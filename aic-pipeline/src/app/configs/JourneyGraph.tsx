@@ -1267,6 +1267,14 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
 
   // ELK runs asynchronously; it overrides dagre positions once the layered
   // layout with aspectRatio returns, then consumes the viewport latch.
+  // Gate visibility so the user doesn't see dagre's positions flip to ELK's
+  // a beat later — the canvas stays hidden until ELK settles.
+  const [elkPending, setElkPending] = useState(layoutEngine === "elk");
+
+  useEffect(() => {
+    setElkPending(layoutEngine === "elk");
+  }, [rawNodes, baseEdges, isCompact, layoutEngine, layoutKey]);
+
   useEffect(() => {
     if (layoutEngine !== "elk") return;
     let cancelled = false;
@@ -1274,6 +1282,7 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
       if (cancelled) return;
       setRfNodes(positioned);
       applyPendingViewport();
+      setElkPending(false);
     });
     return () => { cancelled = true; };
   }, [rawNodes, baseEdges, isCompact, layoutEngine, layoutKey, setRfNodes, applyPendingViewport]);
@@ -1777,6 +1786,7 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
           })()
         ) : (
           <ReactFlow
+            className={cn("transition-opacity duration-150", elkPending && "opacity-0")}
             nodes={displayNodes}
             edges={displayEdges}
             nodeTypes={nodeTypes}
@@ -1834,6 +1844,18 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
           onNavigate={navigateToTree}
           onClose={() => setNodePanel(null)}
         />
+
+        {displayView === "graph" && elkPending && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="flex items-center gap-2 bg-white/90 border border-slate-200 rounded-lg px-3 py-2 shadow-sm text-xs text-slate-500 backdrop-blur-sm">
+              <svg className="w-3.5 h-3.5 animate-spin text-sky-500" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              Laying out…
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── Preview modal (ScriptedDecisionNode / InnerTreeEvaluatorNode) ─────── */}
