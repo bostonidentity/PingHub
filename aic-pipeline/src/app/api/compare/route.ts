@@ -256,7 +256,12 @@ export async function POST(req: NextRequest) {
         // Check which resolved dependency items are missing on the target.
         // Since deps were always pulled (added to scopeSelections above),
         // items that don't exist on the target will have no files in targetConfigDir.
-        if (resolvedDeps && (resolvedDeps.subJourneys.length > 0 || resolvedDeps.scriptUuids.length > 0)) {
+        //
+        // Only surface this as a warning when includeDeps is off: with
+        // includeDeps on, the missing items will be staged and pushed as
+        // part of the promote (see promote-items route), so the warning
+        // has nothing left to ask the user to do.
+        if (!includeDeps && resolvedDeps && (resolvedDeps.subJourneys.length > 0 || resolvedDeps.scriptUuids.length > 0)) {
           const targetJourneyNames = new Set<string>();
           const targetScriptNames = new Set<string>();
 
