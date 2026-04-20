@@ -48,7 +48,7 @@ export function NavBar() {
   const dot = active ? COLOR_RING[active.color] ?? COLOR_RING.slate : "bg-slate-300";
 
   return (
-    <header className="bg-white/80 backdrop-blur border-b border-slate-200/60 sticky top-0 z-50">
+    <header className="bg-slate-900/95 backdrop-blur border-b border-slate-800 sticky top-0 z-50">
       <div className="max-w-[1600px] mx-auto px-6 sm:px-10 lg:px-16">
         <div className="flex items-center justify-between h-14">
           <div className="flex items-center gap-6 min-w-0">
@@ -64,7 +64,7 @@ export function NavBar() {
                 });
                 if (ok) router.push("/");
               } : undefined}
-              className="font-semibold text-[15px] tracking-tight shrink-0 text-slate-900"
+              className="font-semibold text-[15px] tracking-tight shrink-0 text-white"
             >
               AIC Pipeline
             </Link>
@@ -88,8 +88,8 @@ export function NavBar() {
                     className={cn(
                       "px-3 py-1.5 rounded-lg text-sm transition-colors whitespace-nowrap",
                       isActive
-                        ? "bg-indigo-50 text-indigo-700 font-medium"
-                        : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+                        ? "bg-indigo-500/15 text-indigo-200 font-medium ring-1 ring-inset ring-indigo-400/20"
+                        : "text-slate-300 hover:text-white hover:bg-slate-800/80"
                     )}
                   >
                     {label}
@@ -100,10 +100,10 @@ export function NavBar() {
           </div>
 
           {active && (
-            <div className="flex items-center gap-2 px-2.5 py-1 border border-slate-200 rounded-lg bg-white text-xs text-slate-600 shrink-0">
+            <div className="flex items-center gap-2 px-2.5 py-1 border border-slate-700 rounded-lg bg-slate-800/60 text-xs shrink-0">
               <span className={cn("w-1.5 h-1.5 rounded-full", dot)} />
-              <span className="hidden sm:inline text-slate-400">working env</span>
-              <span className="font-medium text-slate-700">{active.label}</span>
+              <span className="hidden sm:inline text-slate-500">working env</span>
+              <span className="font-medium text-slate-100">{active.label}</span>
             </div>
           )}
         </div>
