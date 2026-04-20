@@ -7,6 +7,8 @@ import {
   Environment,
 } from "@/lib/fr-config";
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   const envs = getEnvironments();
   return NextResponse.json(envs);
