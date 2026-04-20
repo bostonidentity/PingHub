@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { LogEntry } from "@/hooks/useStreamingLogs";
 import { ServiceAccountScopeSelector } from "@/components/ServiceAccountScopeSelector";
 import { StatusPill } from "@/components/ui/StatusPill";
+import { useDialog } from "@/components/ConfirmDialog";
 
 // ── Field definitions ────────────────────────────────────────────────────────
 
@@ -579,6 +580,7 @@ function RestartButton({
   const [dccMode, setDccMode] = useState(false);
   const pollingRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const { confirm } = useDialog();
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -677,6 +679,15 @@ function RestartButton({
   };
 
   const handleRestart = async () => {
+    const ok = await confirm({
+      title: `Restart tenant "${environmentName}"?`,
+      message:
+        "This restarts the tenant backend. Active sessions may be interrupted and the tenant will be unavailable for a few minutes while it comes back up.",
+      confirmLabel: "Restart tenant",
+      variant: "danger",
+    });
+    if (!ok) return;
+
     setLogs([]);
     setFinalStatus(null);
     log("Initiating restart...");
@@ -993,15 +1004,21 @@ export function EnvEditor({ env, onUpdate, onBusyChange }: { env: Environment; o
           {/* ═══════════ fr-config section ═══════════ */}
           {section === "fr-config" && (
             <>
-              {/* Test connection & restart */}
-              <div className="py-3 border-b border-slate-100 bg-slate-50/50 space-y-3">
-                <TestConnectionButton liveValues={values} />
-                <RestartButton
-                  environmentName={env.name}
-                  envType={envType}
-                  isDev={devEnvironment}
-                  onBusyChange={onBusyChange}
-                />
+              {/* Test connection & restart — side by side */}
+              <div className="py-3 border-b border-slate-100 bg-slate-50/50">
+                <div className="flex flex-wrap gap-x-6 gap-y-3 items-start">
+                  <div className="flex-1 min-w-[260px]">
+                    <TestConnectionButton liveValues={values} />
+                  </div>
+                  <div className="flex-1 min-w-[260px]">
+                    <RestartButton
+                      environmentName={env.name}
+                      envType={envType}
+                      isDev={devEnvironment}
+                      onBusyChange={onBusyChange}
+                    />
+                  </div>
+                </div>
               </div>
 
               {/* Sub-tabs: Form / Raw */}
