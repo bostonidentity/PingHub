@@ -173,6 +173,27 @@ function TreeView({ environment }: { environment: string }) {
       .finally(() => setTreeLoading(false));
   }, [environment]);
 
+  // Quiet refresh on window focus / tab visibility so the tree reflects
+  // external mutations (e.g. a pull run in another tab) without forcing a
+  // full re-select or clearing the visible file content.
+  useEffect(() => {
+    if (!environment) return;
+    const refresh = () => {
+      fetch(`/api/configs/${environment}`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => { if (data) { setTree(data.tree ?? []); setConfigDir(data.configDir ?? ""); } })
+        .catch(() => {});
+    };
+    const onFocus = () => refresh();
+    const onVisibility = () => { if (document.visibilityState === "visible") refresh(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [environment]);
+
   const handleFileSelect = async (relativePath: string, name: string, line?: number) => {
     setSelectedFile(relativePath);
     setSelectedFileName(name);
@@ -441,6 +462,31 @@ function SectionsView({
       .then((data: AuditEntry[]) => setAuditData(data))
       .finally(() => setAuditLoading(false));
   }, [environment]);
+
+  // Refresh the audit (scope item listings) without tearing down
+  // selection state. Used on window focus / tab visibility change so
+  // changes from pulls (here or in another tab) appear without a full
+  // page reload. The per-component file tree has its own re-fetch logic.
+  const refreshListings = useCallback(() => {
+    if (!environment) return;
+    const params = new URLSearchParams({ environment, scopes: ALL_SCOPES.join(",") });
+    fetch(`/api/push/audit?${params}`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data: AuditEntry[] | null) => { if (data) setAuditData(data); })
+      .catch(() => {});
+  }, [environment]);
+
+  useEffect(() => {
+    if (!environment) return;
+    const onFocus = () => refreshListings();
+    const onVisibility = () => { if (document.visibilityState === "visible") refreshListings(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [environment, refreshListings]);
 
   // Reset usage panel when item changes
   useEffect(() => { setUsageOpen(false); setUsageData(null); setEndpointUsageData(null); setJourneyUsageData(null); }, [selectedItem]);
