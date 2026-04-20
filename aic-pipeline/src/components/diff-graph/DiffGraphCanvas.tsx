@@ -8,6 +8,7 @@ import {
   Controls,
   MiniMap,
   Panel,
+  SelectionMode,
   useNodesState,
   useReactFlow,
   type Node,
@@ -309,6 +310,12 @@ function DiffGraphCanvasInner({
       fitView
       minZoom={0.1}
       maxZoom={2}
+      // Marquee selection: left-click-drag on empty pane draws a
+      // rectangle; only fully-enclosed nodes are selected. Panning
+      // moves to middle/right mouse drag (scroll still zooms).
+      selectionOnDrag
+      selectionMode={SelectionMode.Full}
+      panOnDrag={[1, 2]}
     >
       <Background color="#e2e8f0" gap={20} size={1} />
       <Controls showInteractive={false} showFitView={false} />
