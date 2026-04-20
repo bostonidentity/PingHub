@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, forwardRef, useImperativeHandle } from "react";
 import { Environment, EnvironmentType } from "@/lib/fr-config-types";
 import { EnvironmentBadge } from "@/components/EnvironmentBadge";
 import { parseEnvFile, serializeEnvFile } from "@/lib/env-parser";
@@ -559,17 +559,24 @@ function TestConnectionButton({
 
 // ── Restart Tenant ────────────────────────────────────────────────────────
 
-function RestartButton({
-  environmentName,
-  envType,
-  isDev,
-  onBusyChange,
-}: {
+export type RestartHandle = { triggerRestart: () => void; isPolling: () => boolean };
+
+interface RestartButtonProps {
   environmentName: string;
   envType: EnvironmentType;
   isDev: boolean;
   onBusyChange?: (busy: boolean) => void;
-}) {
+  /** Hide the internal "Restart Tenant" trigger; use the imperative ref instead. */
+  hideTrigger?: boolean;
+}
+
+const RestartButton = forwardRef<RestartHandle, RestartButtonProps>(function RestartButton({
+  environmentName,
+  envType,
+  isDev,
+  onBusyChange,
+  hideTrigger,
+}, ref) {
   const [logs, setLogs] = useState<string[]>([]);
   const [polling, setPolling] = useState(false);
   const [stopping, setStopping] = useState(false);
@@ -718,17 +725,24 @@ function RestartButton({
   const statusLabel = finalStatus === "ready" ? "Ready" : finalStatus === "error" ? "Failed" : polling ? "Restarting" : "";
   const statusTextColor = finalStatus === "ready" ? "text-green-400" : finalStatus === "error" ? "text-red-400" : "text-yellow-400";
 
+  useImperativeHandle(ref, () => ({
+    triggerRestart: handleRestart,
+    isPolling: () => polling,
+  }), [handleRestart, polling]);
+
   return (
     <div className="space-y-2 w-full">
       <div className="flex items-center gap-2 flex-wrap">
-        <button
-          type="button"
-          onClick={handleRestart}
-          disabled={polling}
-          className="px-3 py-1.5 text-xs font-medium rounded border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-40 transition-colors"
-        >
-          Restart Tenant
-        </button>
+        {!hideTrigger && (
+          <button
+            type="button"
+            onClick={handleRestart}
+            disabled={polling}
+            className="px-3 py-1.5 text-xs font-medium rounded border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-40 transition-colors"
+          >
+            Restart Tenant
+          </button>
+        )}
         <button
           type="button"
           onClick={handlePollStatus}
@@ -800,7 +814,7 @@ function RestartButton({
       )}
     </div>
   );
-}
+});
 
 // ── Main Editor ───────────────────────────────────────────────────────────────
 
@@ -808,6 +822,8 @@ type Section = "fr-config" | "log-api";
 type SubTab = "form" | "raw";
 
 export function EnvEditor({ env, onUpdate, onBusyChange }: { env: Environment; onUpdate?: (updated: Environment) => void; onBusyChange?: (busy: boolean) => void }) {
+  const restartRef = useRef<RestartHandle>(null);
+  const [restartPolling, setRestartPolling] = useState(false);
   const [section, setSection] = useState<Section>("fr-config");
   const [subTab, setSubTab] = useState<SubTab>("form");
   const [rawContent, setRawContent] = useState("");
@@ -1004,21 +1020,29 @@ export function EnvEditor({ env, onUpdate, onBusyChange }: { env: Environment; o
           {/* ═══════════ fr-config section ═══════════ */}
           {section === "fr-config" && (
             <>
-              {/* Test connection & restart — side by side */}
-              <div className="py-3 border-b border-slate-100 bg-slate-50/50">
-                <div className="flex flex-wrap gap-x-6 gap-y-3 items-start">
-                  <div className="flex-1 min-w-[260px]">
+              {/* Test connection & restart */}
+              <div className="py-3 border-b border-slate-100 bg-slate-50/50 space-y-3">
+                <div className="flex items-start gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => restartRef.current?.triggerRestart()}
+                    disabled={restartPolling}
+                    className="px-3 py-1.5 text-xs font-medium rounded border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-40 transition-colors shrink-0"
+                  >
+                    Restart Tenant
+                  </button>
+                  <div className="flex-1 min-w-0">
                     <TestConnectionButton liveValues={values} />
                   </div>
-                  <div className="flex-1 min-w-[260px]">
-                    <RestartButton
-                      environmentName={env.name}
-                      envType={envType}
-                      isDev={devEnvironment}
-                      onBusyChange={onBusyChange}
-                    />
-                  </div>
                 </div>
+                <RestartButton
+                  ref={restartRef}
+                  environmentName={env.name}
+                  envType={envType}
+                  isDev={devEnvironment}
+                  onBusyChange={(busy) => { setRestartPolling(busy); onBusyChange?.(busy); }}
+                  hideTrigger
+                />
               </div>
 
               {/* Sub-tabs: Form / Raw */}
