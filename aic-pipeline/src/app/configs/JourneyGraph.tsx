@@ -11,6 +11,7 @@ import {
   Panel,
   Handle,
   Position,
+  SelectionMode,
   useReactFlow,
   useNodesState,
   type Node,
@@ -1804,6 +1805,12 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
             fitViewOptions={{ padding: 0.25 }}
             minZoom={0.1}
             maxZoom={2}
+            // Marquee selection: left-click-drag on empty pane draws a
+            // rectangle; only fully-enclosed nodes are selected. Panning
+            // moves to middle/right mouse drag (scroll still zooms).
+            selectionOnDrag
+            selectionMode={SelectionMode.Full}
+            panOnDrag={[1, 2]}
           >
             {!compact && (
               <Panel position="top-left">
