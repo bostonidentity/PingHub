@@ -1,0 +1,131 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --border: #e2e8f0;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --primary: #0ea5e9;
+  --primary-foreground: #ffffff;
+  --destructive: #ef4444;
+  --success: #22c55e;
+  --warning: #f59e0b;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* ── Console animations ──────────────────────────────────────────────────── */
+
+@keyframes log-fade-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-log-line {
+  animation: log-fade-in 0.15s ease-out both;
+}
+
+@keyframes progress-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(500%); }
+}
+.animate-progress-slide {
+  animation: progress-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes match-flash {
+  0%   { background-color: rgb(251 191 36 / 0.5); }  /* amber-400/50 */
+  100% { background-color: transparent; }
+}
+.animate-match-flash {
+  animation: match-flash 600ms ease-out forwards;
+}
+
+/* ── Code viewer typography ──────────────────────────────────────────────── */
+
+.code-mono {
+  font-family:
+    "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular,
+    "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-feature-settings: "calt" 0, "liga" 0;  /* predictable code rendering */
+  font-variant-ligatures: none;
+}
+
+/* ── Thin custom scrollbar (dark theme) ───────────────────────────────────── */
+
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(71 85 105 / 0.7) transparent;  /* slate-500/70 */
+}
+.scrollbar-thin::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgb(71 85 105 / 0.5);  /* slate-500/50 */
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgb(100 116 139 / 0.8);  /* slate-400 */
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ── Calm SaaS design tokens ───────────────────────────────── */
+@layer components {
+  .card {
+    @apply bg-white border border-slate-200/60 rounded-xl shadow-[0_1px_2px_rgba(15,23,42,0.04)];
+  }
+  .card-padded {
+    @apply bg-white border border-slate-200/60 rounded-xl shadow-[0_1px_2px_rgba(15,23,42,0.04)] p-4;
+  }
+  .section-title {
+    @apply text-base font-semibold text-slate-900;
+  }
+  .section-subtitle {
+    @apply text-sm text-slate-500;
+  }
+  .page-title {
+    @apply text-2xl font-bold text-slate-900 tracking-tight;
+  }
+  .label-xs {
+    @apply text-[11px] font-semibold text-slate-500;
+  }
+  .btn-primary {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 transition-colors shadow-[0_1px_2px_rgba(79,70,229,0.25)] disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-secondary {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-white border border-slate-200 text-slate-900 text-sm font-medium hover:bg-slate-50 transition-colors;
+  }
+  .btn-danger-outline {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-white border border-rose-200 text-rose-700 text-sm font-medium hover:bg-rose-50 transition-colors;
+  }
+  .btn-danger-solid {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-rose-600 text-white text-sm font-medium hover:bg-rose-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .pill-success{ @apply inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-full ring-1 bg-emerald-50 text-emerald-700 ring-emerald-200; }
+  .pill-warning  { @apply inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-full ring-1 bg-amber-50   text-amber-700   ring-amber-200; }
+  .pill-danger   { @apply inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-full ring-1 bg-rose-50    text-rose-700    ring-rose-200; }
+  .pill-info     { @apply inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-full ring-1 bg-indigo-50  text-indigo-700  ring-indigo-200; }
+  .pill-neutral  { @apply inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-full ring-1 bg-slate-50   text-slate-600   ring-slate-200; }
+}

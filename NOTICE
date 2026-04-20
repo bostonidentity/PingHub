@@ -1,0 +1,28 @@
+PingHub
+Copyright 2026 Boston Identity
+
+This product is licensed under the Apache License, Version 2.0
+(see LICENSE).
+
+-------------------------------------------------------------------------------
+Third-party software included in source form
+-------------------------------------------------------------------------------
+
+The aic-pipeline project includes source code from the ForgeRock
+fr-config-manager project, vendored under
+aic-pipeline/src/vendor/fr-config-manager/. That code is licensed under
+the MIT License (see aic-pipeline/src/vendor/fr-config-manager/LICENSE).
+
+    fr-config-manager
+    https://github.com/ForgeRock/fr-config-manager
+    Copyright (c) 2019 - 2024 ForgeRock
+
+-------------------------------------------------------------------------------
+Third-party runtime dependencies
+-------------------------------------------------------------------------------
+
+Additional third-party libraries (Next.js, React, Radix UI, Tailwind CSS,
+dagre, elkjs, @xyflow/react, jose, axios, js-beautify, prettier, and
+others) are distributed under their respective licenses as declared in
+each package's metadata. The full list is available via `npm ls` or in
+node_modules/<package>/LICENSE after installation.
