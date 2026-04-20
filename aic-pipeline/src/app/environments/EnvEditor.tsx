@@ -559,15 +559,19 @@ function TestConnectionButton({
 
 // ── Restart Tenant ────────────────────────────────────────────────────────
 
-export type RestartHandle = { triggerRestart: () => void; isPolling: () => boolean };
+export type RestartHandle = {
+  triggerRestart: () => void;
+  triggerPollStatus: () => void;
+  isPolling: () => boolean;
+};
 
 interface RestartButtonProps {
   environmentName: string;
   envType: EnvironmentType;
   isDev: boolean;
   onBusyChange?: (busy: boolean) => void;
-  /** Hide the internal "Restart Tenant" trigger; use the imperative ref instead. */
-  hideTrigger?: boolean;
+  /** Hide the internal "Restart Tenant" + "Poll Status" triggers; use the imperative ref instead. */
+  hideTriggers?: boolean;
 }
 
 const RestartButton = forwardRef<RestartHandle, RestartButtonProps>(function RestartButton({
@@ -575,7 +579,7 @@ const RestartButton = forwardRef<RestartHandle, RestartButtonProps>(function Res
   envType,
   isDev,
   onBusyChange,
-  hideTrigger,
+  hideTriggers,
 }, ref) {
   const [logs, setLogs] = useState<string[]>([]);
   const [polling, setPolling] = useState(false);
@@ -727,13 +731,14 @@ const RestartButton = forwardRef<RestartHandle, RestartButtonProps>(function Res
 
   useImperativeHandle(ref, () => ({
     triggerRestart: handleRestart,
+    triggerPollStatus: handlePollStatus,
     isPolling: () => polling,
-  }), [handleRestart, polling]);
+  }), [handleRestart, handlePollStatus, polling]);
 
   return (
     <div className="space-y-2 w-full">
       <div className="flex items-center gap-2 flex-wrap">
-        {!hideTrigger && (
+        {!hideTriggers && (
           <button
             type="button"
             onClick={handleRestart}
@@ -743,14 +748,16 @@ const RestartButton = forwardRef<RestartHandle, RestartButtonProps>(function Res
             Restart Tenant
           </button>
         )}
-        <button
-          type="button"
-          onClick={handlePollStatus}
-          disabled={polling}
-          className="px-3 py-1.5 text-xs font-medium rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-40 transition-colors"
-        >
-          Poll Status
-        </button>
+        {!hideTriggers && (
+          <button
+            type="button"
+            onClick={handlePollStatus}
+            disabled={polling}
+            className="px-3 py-1.5 text-xs font-medium rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-40 transition-colors"
+          >
+            Poll Status
+          </button>
+        )}
         {polling && (
           <button
             type="button"
@@ -1025,15 +1032,23 @@ export function EnvEditor({ env, onUpdate, onBusyChange }: { env: Environment; o
                 <div className="flex items-start gap-2 flex-wrap">
                   <button
                     type="button"
+                    onClick={() => restartRef.current?.triggerPollStatus()}
+                    disabled={restartPolling}
+                    className="px-3 py-1.5 text-xs font-medium rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-40 transition-colors shrink-0"
+                  >
+                    Poll Status
+                  </button>
+                  <div className="flex-1 min-w-0">
+                    <TestConnectionButton liveValues={values} />
+                  </div>
+                  <button
+                    type="button"
                     onClick={() => restartRef.current?.triggerRestart()}
                     disabled={restartPolling}
                     className="px-3 py-1.5 text-xs font-medium rounded border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-40 transition-colors shrink-0"
                   >
                     Restart Tenant
                   </button>
-                  <div className="flex-1 min-w-0">
-                    <TestConnectionButton liveValues={values} />
-                  </div>
                 </div>
                 <RestartButton
                   ref={restartRef}
@@ -1041,7 +1056,7 @@ export function EnvEditor({ env, onUpdate, onBusyChange }: { env: Environment; o
                   envType={envType}
                   isDev={devEnvironment}
                   onBusyChange={(busy) => { setRestartPolling(busy); onBusyChange?.(busy); }}
-                  hideTrigger
+                  hideTriggers
                 />
               </div>
 
