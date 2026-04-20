@@ -2,6 +2,7 @@ import { execSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import { getHistoryGitRoot, buildTrailers, type OpMetadata } from "./op-history";
+import { getRealmRoots } from "./realm-paths";
 
 const REPO_ROOT = process.cwd();
 const ENVIRONMENTS_DIR = path.join(REPO_ROOT, "environments");
@@ -72,12 +73,14 @@ export function getScopePruneTargets(configDirAbs: string, scope: string): strin
     targets.push(path.join(configDirAbs, SCOPE_DIR[scope]));
   }
   if (scope in REALM_SCOPE_SUBDIR) {
-    const realmsDir = path.join(configDirAbs, "realms");
-    if (fs.existsSync(realmsDir)) {
-      for (const entry of fs.readdirSync(realmsDir, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        targets.push(path.join(realmsDir, entry.name, REALM_SCOPE_SUBDIR[scope]));
-      }
+    // getRealmRoots handles both on-disk layouts:
+    //   realms/<realm>/<subdir>/... (upstream)
+    //   <realm>/<subdir>/...         (vendored pull)
+    // Filtering by the required subdir avoids matching global scope dirs
+    // (access-config, esvs, etc.) as realms.
+    const subdir = REALM_SCOPE_SUBDIR[scope];
+    for (const root of getRealmRoots(configDirAbs, subdir)) {
+      targets.push(path.join(root, subdir));
     }
   }
   return targets;
