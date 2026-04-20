@@ -119,8 +119,30 @@ export function JourneyForceGraph({ journeys, scripts }: Props) {
   const [dims, setDims] = useState({ width: 800, height: 600 });
   const [hovered, setHovered] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  // Per-category visibility toggles (click the legend dot to flip).
+  const [showRoots, setShowRoots] = useState(true);
+  const [showJourneys, setShowJourneys] = useState(true);
+  const [showScripts, setShowScripts] = useState(true);
 
-  const data = useMemo(() => buildGraphData(journeys, scripts), [journeys, scripts]);
+  const fullData = useMemo(() => buildGraphData(journeys, scripts), [journeys, scripts]);
+
+  // Apply the category filters. Dropping a node also drops any link that
+  // would be dangling so ForceGraph2D doesn't create stray stub nodes.
+  const data = useMemo(() => {
+    const visible = (n: GraphNode) => {
+      if (n.kind === "script") return showScripts;
+      if (n.isRoot)             return showRoots;
+      return showJourneys;
+    };
+    const keptNodes = fullData.nodes.filter(visible);
+    const keptIds = new Set(keptNodes.map((n) => n.id));
+    const keptLinks = fullData.links.filter((l) => {
+      const src = typeof l.source === "string" ? l.source : (l.source as GraphNode).id;
+      const tgt = typeof l.target === "string" ? l.target : (l.target as GraphNode).id;
+      return keptIds.has(src) && keptIds.has(tgt);
+    });
+    return { nodes: keptNodes, links: keptLinks };
+  }, [fullData, showRoots, showJourneys, showScripts]);
 
   // Precompute adjacency for neighborhood highlighting.
   const neighbors = useMemo(() => {
@@ -182,11 +204,13 @@ export function JourneyForceGraph({ journeys, scripts }: Props) {
         if (e.target === wrapperRef.current) setSelected(null);
       }}
     >
-      <div className="absolute top-3 left-3 z-10 text-[11px] text-slate-400 space-y-1 pointer-events-none bg-slate-900/70 backdrop-blur px-2.5 py-1.5 rounded border border-slate-800">
-        <div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-white inline-block" /> Root journey</div>
-        <div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-slate-300 inline-block" /> Journey</div>
-        <div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" /> Script</div>
-        <div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-amber-400 inline-block" /> Selected</div>
+      <div className="absolute top-3 left-3 z-10 text-[11px] text-slate-400 space-y-1 bg-slate-900/70 backdrop-blur px-2.5 py-1.5 rounded border border-slate-800">
+        <CategoryToggle color="bg-white"        label="Root journey" active={showRoots}    onToggle={() => setShowRoots((v) => !v)} />
+        <CategoryToggle color="bg-slate-300"    label="Journey"      active={showJourneys} onToggle={() => setShowJourneys((v) => !v)} />
+        <CategoryToggle color="bg-emerald-400"  label="Script"       active={showScripts}  onToggle={() => setShowScripts((v) => !v)} />
+        <div className="flex items-center gap-2 pt-1 mt-1 border-t border-slate-800 pointer-events-none text-slate-500">
+          <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" /> Selected
+        </div>
       </div>
       <div className="absolute top-3 right-3 z-10 text-[11px] text-slate-400 bg-slate-900/70 backdrop-blur px-2.5 py-1.5 rounded border border-slate-800">
         {data.nodes.length} nodes · {data.links.length} links
@@ -248,5 +272,38 @@ export function JourneyForceGraph({ journeys, scripts }: Props) {
         enableNodeDrag
       />
     </div>
+  );
+}
+
+/** Legend dot + label as a toggle button. Dimmed when hidden. */
+function CategoryToggle({
+  color,
+  label,
+  active,
+  onToggle,
+}: {
+  color: string;
+  label: string;
+  active: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className={[
+        "flex items-center gap-2 w-full text-left transition-colors hover:text-slate-200",
+        active ? "text-slate-400" : "text-slate-600",
+      ].join(" ")}
+      aria-pressed={active}
+      title={active ? `Hide ${label}` : `Show ${label}`}
+    >
+      <span className={[
+        "w-2 h-2 rounded-full inline-block transition-opacity",
+        color,
+        active ? "opacity-100" : "opacity-30",
+      ].join(" ")} />
+      <span className={active ? "" : "line-through"}>{label}</span>
+    </button>
   );
 }
