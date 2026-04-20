@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadSettings, saveSettings, targetHasGit, resolveTargetDir, runGit } from "@/lib/git-settings";
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   const settings = loadSettings();
   return NextResponse.json({
