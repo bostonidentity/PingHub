@@ -13,7 +13,9 @@ import type { ScopeSelection, ConfigScope } from "@/lib/fr-config-types";
 import { useDialog } from "@/components/ConfirmDialog";
 import { formatScopeLabel } from "@/lib/compare";
 import { FileContentViewer } from "@/components/FileContentViewer";
+import { EsvDisplayToggle } from "@/components/EsvDisplayToggle";
 import { pathToScopeItem } from "@/lib/scope-paths";
+import { useEsvDisplayMode, isEsvPath, decodeEsvContent } from "@/lib/esv-decode";
 
 // ── Client-side content formatting ───────────────────────────────────────────
 
@@ -617,17 +619,24 @@ function FileRow({ file, sourceLabel, targetLabel, extraActions, checked, onTogg
   const [wrap, setWrap] = useState(defaultOn);
   const [format, setFormat] = useState(defaultOn);
 
+  // Optional ESV decoding: transform both sides when the scope toggle is
+  // "decoded" so the diff operates on human-readable values.
+  const [esvMode] = useEsvDisplayMode();
+  const esvDecode = isEsvPath(file.relativePath) && esvMode === "decoded";
+  const baseLocal  = esvDecode && file.localContent  != null ? decodeEsvContent(file.localContent)  : file.localContent;
+  const baseRemote = esvDecode && file.remoteContent != null ? decodeEsvContent(file.remoteContent) : file.remoteContent;
+
   // When format is on, pretty-print both sides and recompute diffLines client-side
-  const fmtLocal    = format && file.localContent  != null ? formatContent(file.localContent,  file.relativePath) : file.localContent;
-  const fmtRemote   = format && file.remoteContent != null ? formatContent(file.remoteContent, file.relativePath) : file.remoteContent;
+  const fmtLocal    = format && baseLocal  != null ? formatContent(baseLocal,  file.relativePath) : baseLocal;
+  const fmtRemote   = format && baseRemote != null ? formatContent(baseRemote, file.relativePath) : baseRemote;
   const fmtDiffLines: DiffLine[] | undefined = useMemo(() => {
-    if (!format) return file.diffLines;
+    if (!format && !esvDecode) return file.diffLines;
     if (fmtLocal != null && fmtRemote != null) return clientDiff(fmtLocal, fmtRemote);
     if (fmtRemote != null) return fmtRemote.split("\n").map((c) => ({ type: "added"   as const, content: c }));
     if (fmtLocal  != null) return fmtLocal.split("\n").map((c)  => ({ type: "removed" as const, content: c }));
     return file.diffLines;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [format, fmtLocal, fmtRemote]);
+  }, [format, esvDecode, fmtLocal, fmtRemote]);
   const s = STATUS_STYLES[file.status];
   const hasDiff = !!file.diffLines?.length;
   const hasContent = file.localContent !== undefined || file.remoteContent !== undefined;
@@ -3090,6 +3099,7 @@ export function DiffReport({ report, tasks = [], mode = "compare", dryRunMode, s
   const router = useRouter();
   const [scopeSearch, setScopeSearch] = useState("");
   const [onlyUsedEsvs, setOnlyUsedEsvs] = useState(true);
+  const [esvMode, setEsvMode] = useEsvDisplayMode();
   const [usedEsvs, setUsedEsvs] = useState<Set<string> | null>(null);
   const [usedEsvsLoading, setUsedEsvsLoading] = useState(false);
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
@@ -3361,6 +3371,11 @@ export function DiffReport({ report, tasks = [], mode = "compare", dryRunMode, s
             Only used ESVs
             {usedEsvsLoading && <span className="text-[10px] text-slate-400">loading…</span>}
           </label>
+
+          <div className="flex items-center gap-1.5 text-xs text-slate-500">
+            <span>ESV values:</span>
+            <EsvDisplayToggle mode={esvMode} onChange={setEsvMode} />
+          </div>
 
           <div className="flex items-center gap-1.5">
             <svg className="w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

@@ -10,6 +10,8 @@ import { cn } from "@/lib/utils";
 import { FileContentViewer } from "@/components/FileContentViewer";
 import { JsonFileViewer } from "@/components/JsonFileViewer";
 import { ScriptFileViewer, type NavigateTarget } from "@/components/ScriptFileViewer";
+import { EsvDisplayToggle } from "@/components/EsvDisplayToggle";
+import { useEsvDisplayMode, isEsvScope, applyEsvDecoding } from "@/lib/esv-decode";
 import { JourneyGraph } from "./JourneyGraph";
 import { WorkflowGraph } from "./WorkflowGraph";
 
@@ -389,6 +391,7 @@ function SectionsView({
   const [fullscreen, setFullscreen] = useState(false);
   const [wrapScripts, setWrapScripts] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [esvMode, setEsvMode] = useEsvDisplayMode();
   const [col1Width, setCol1Width] = useState(192);
   const [col2Width, setCol2Width] = useState(224);
   const [usageOpen, setUsageOpen] = useState(false);
@@ -901,6 +904,9 @@ function SectionsView({
               {(selectedScope === "scripts" || selectedScope === "endpoints") && (
                 <WrapButton wrap={wrapScripts} onToggle={() => setWrapScripts((w) => !w)} />
               )}
+              {isEsvScope(selectedScope) && (
+                <EsvDisplayToggle mode={esvMode} onChange={setEsvMode} />
+              )}
               <FullscreenButton
                 fullscreen={fullscreen}
                 onToggle={() => setFullscreen((f) => !f)}
@@ -1128,8 +1134,8 @@ function SectionsView({
                 activeFile.name.toLowerCase().endsWith(".json") ? (
                   <div className="h-full min-h-0 overflow-hidden">
                     <JsonFileViewer
-                      key={`${selectedItem?.id ?? ""}:${activeFile.name}`}
-                      content={activeFile.content}
+                      key={`${selectedItem?.id ?? ""}:${activeFile.name}:${isEsvScope(selectedScope) ? esvMode : ""}`}
+                      content={isEsvScope(selectedScope) ? applyEsvDecoding(activeFile.content, esvMode) : activeFile.content}
                       fileName={activeFile.name}
                       highlightLine={highlightLine}
                     />
