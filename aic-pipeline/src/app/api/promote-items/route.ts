@@ -48,6 +48,21 @@ function copyDirSync(src: string, dest: string) {
   }
 }
 
+/**
+ * Rel path under the temp staging dir for a source scope dir. The vendored
+ * fr-config-manager push modules expect `realms/<realm>/<scope>/…`, so when
+ * the source was pulled in the vendored-pull layout (`<realm>/<scope>/…`
+ * without the `realms/` prefix), this prepends `realms/` for realm-scoped
+ * scopes. Global scopes are left as-is.
+ */
+function stagingRelPath(configDir: string, srcDir: string, scope: string): string {
+  const rel = path.relative(configDir, srcDir).split(path.sep).join("/");
+  if ((scope in REALM_SCOPE_SUBDIR) && !rel.startsWith("realms/")) {
+    return `realms/${rel}`;
+  }
+  return rel;
+}
+
 /** Resolve scope to absolute directory paths within a config dir. */
 function resolveScopeDirs(configDir: string, scope: string): string[] {
   if (scope in REALM_SCOPE_SUBDIR) {
@@ -295,7 +310,7 @@ export async function POST(req: NextRequest) {
         for (const sel of scopeSelections) {
           const sourceDirs = resolveScopeDirs(sourceConfigDir, sel.scope);
           for (const srcDir of sourceDirs) {
-            const relPath = path.relative(sourceConfigDir, srcDir).split(path.sep).join("/");
+            const relPath = stagingRelPath(sourceConfigDir, srcDir, sel.scope);
             const destDir = path.join(tempConfigDir, relPath);
 
             if (!sel.items || sel.items.length === 0) {
@@ -385,7 +400,7 @@ export async function POST(req: NextRequest) {
             for (const subName of deps.subJourneys) {
               if (journeyScope.items.includes(subName)) continue; // already copied
               for (const srcDir of resolveScopeDirs(sourceConfigDir, "journeys")) {
-                const relPath = path.relative(sourceConfigDir, srcDir).split(path.sep).join("/");
+                const relPath = stagingRelPath(sourceConfigDir, srcDir, "journeys");
                 const srcSub = path.join(srcDir, subName);
                 const destSub = path.join(tempConfigDir, relPath, subName);
                 if (fs.existsSync(srcSub)) {
@@ -401,7 +416,7 @@ export async function POST(req: NextRequest) {
               const scriptScope = scopeSelections.find((s) => s.scope === "scripts");
               const existingScriptItems = new Set(scriptScope?.items ?? []);
               for (const srcDir of resolveScopeDirs(sourceConfigDir, "scripts")) {
-                const relPath = path.relative(sourceConfigDir, srcDir).split(path.sep).join("/");
+                const relPath = stagingRelPath(sourceConfigDir, srcDir, "scripts");
                 const configSrc = path.join(srcDir, "scripts-config");
                 if (!fs.existsSync(configSrc)) continue;
                 const configDest = path.join(tempConfigDir, relPath, "scripts-config");
