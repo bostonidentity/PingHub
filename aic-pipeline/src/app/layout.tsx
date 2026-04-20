@@ -20,6 +20,11 @@ export const metadata: Metadata = {
   description: "Ping Advanced Identity Cloud Configuration Pipeline UI",
 };
 
+// Every page reads per-request filesystem state (tenant configs, history,
+// logs, git status). Opt the whole app out of static generation so pages
+// re-render on each request in `next start`.
+export const dynamic = "force-dynamic";
+
 export default function RootLayout({
   children,
 }: Readonly<{
