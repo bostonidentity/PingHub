@@ -1,4 +1,5 @@
 import type { CompareReport, FileDiff } from "@/lib/diff-types";
+import { pathToScopeItem } from "@/lib/scope-paths";
 
 export interface DiffSummary {
   scope: string;
@@ -30,11 +31,12 @@ export function formatScopeLabel(scope: string): string {
 function scopeOf(file: FileDiff): string | null {
   if (file.scope) return file.scope;
   if (!file.relativePath) return null;
-  const parts = file.relativePath.split("/");
-  // Realm-based: realms/<realm>/<scope>/...
-  if (parts[0] === "realms" && parts.length >= 3) return parts[2];
-  // Global: <scope>/...
-  return parts[0];
+  // pathToScopeItem understands both on-disk layouts
+  //   "realms/<realm>/<scope>/..."   (upstream)
+  //   "<realm>/<scope>/..."           (vendored pull)
+  // as well as global scopes ("esvs/variables/...", "iga/workflows/...",
+  // "endpoints/...", "managed-objects/...", etc.).
+  return pathToScopeItem(file.relativePath)?.scope ?? null;
 }
 
 /** Scopes where each "item" is a directory containing multiple files. */
@@ -46,14 +48,8 @@ const DIR_ITEM_SCOPES = new Set([
 /** Extract a logical item key from a file path for dir-based scopes. */
 function itemKeyForFile(file: FileDiff, scope: string): string {
   if (!DIR_ITEM_SCOPES.has(scope)) return file.relativePath;
-  const parts = file.relativePath.split("/");
-  // Realm-based: realms/<realm>/<scope>/<item>/...
-  if (parts[0] === "realms" && parts.length >= 4) return `${parts[1]}/${parts[3]}`;
-  // Global: <scope>/<item>/...
-  // custom-nodes has an extra nodes/ level: custom-nodes/nodes/<item>/...
-  let idx = 1;
-  if (scope === "custom-nodes" && parts[idx] === "nodes") idx++;
-  return parts[idx] ?? file.relativePath;
+  const info = pathToScopeItem(file.relativePath);
+  return info?.item ? `${scope}/${info.item}` : file.relativePath;
 }
 
 /**
