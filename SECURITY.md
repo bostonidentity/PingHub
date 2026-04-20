@@ -6,7 +6,7 @@
 
 If you believe you have found a security issue in PingHub, report it privately so we can triage and fix it before disclosure.
 
-Report by emailing: **security@bostonidentity.com**
+Report by emailing: **le.deng@bostonidentity.com**
 
 Please include:
 
