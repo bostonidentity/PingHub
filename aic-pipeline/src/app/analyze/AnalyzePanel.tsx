@@ -3,6 +3,7 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import type { JourneyInfo, AnalyzeResult, AnalyzeSummary, ScriptUsage } from "@/app/api/analyze/route";
+import { JourneyForceGraph } from "./JourneyForceGraph";
 import type { EsvOrphanReport, EsvOrphan, EsvReference } from "@/lib/analyze/esv-orphans";
 import { FileContentViewer } from "@/components/FileContentViewer";
 import { pathToScopeItem } from "@/lib/scope-paths";
@@ -508,8 +509,6 @@ export function AnalyzePanel({ environments }: { environments: { name: string }[
   const [error, setError] = useState<string | null>(null);
   const [journeyResult, setJourneyResult] = useState<AnalyzeResult | null>(null);
   const [esvResult, setEsvResult] = useState<EsvOrphanReport | null>(null);
-  const [tab, setTab] = useState<"summary" | "tree" | "scripts">("summary");
-  const [searchQ, setSearchQ] = useState("");
   const [hydrated, setHydrated] = useState(false);
 
   const currentTask = TASKS.find((t) => t.id === taskId)!;
@@ -549,7 +548,6 @@ export function AnalyzePanel({ environments }: { environments: { name: string }[
         if (data.error) { setError(data.error); return; }
         const parsed = data as AnalyzeResult;
         setJourneyResult(parsed);
-        setTab("summary");
         postAnalyzeHistory({
           env,
           startedAt: started.toISOString(),
@@ -631,52 +629,9 @@ export function AnalyzePanel({ environments }: { environments: { name: string }[
         <div className="px-4 py-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg">{error}</div>
       )}
 
-      {/* Journey results */}
+      {/* Journey results — force-directed map of journeys + scripts */}
       {taskId === "journeys" && journeyResult && (
-        <div className="space-y-4">
-          <div className="flex items-center gap-1 border-b border-slate-200">
-            {([
-              { key: "summary" as const, label: "Summary" },
-              { key: "tree" as const, label: "Dependency Tree" },
-              { key: "scripts" as const, label: "Script Usage" },
-            ]).map((t) => (
-              <button
-                key={t.key}
-                onClick={() => setTab(t.key)}
-                className={cn(
-                  "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
-                  tab === t.key
-                    ? "border-sky-500 text-sky-600"
-                    : "border-transparent text-slate-500 hover:text-slate-700",
-                )}
-              >
-                {t.label}
-              </button>
-            ))}
-
-            {tab === "tree" && (
-              <div className="ml-auto relative pb-1">
-                <input
-                  type="text"
-                  value={searchQ}
-                  onChange={(e) => setSearchQ(e.target.value)}
-                  placeholder="Search journeys…"
-                  className="pl-7 pr-6 py-1 text-xs border border-slate-200 rounded bg-white text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
-                />
-                <svg className="absolute left-2 top-1/2 -translate-y-1/2 mb-0.5 w-3.5 h-3.5 text-slate-400 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" />
-                </svg>
-                {searchQ && (
-                  <button type="button" onClick={() => setSearchQ("")} className="absolute right-1.5 top-1/2 -translate-y-1/2 mb-0.5 text-slate-400 hover:text-slate-600 text-[10px]">✕</button>
-                )}
-              </div>
-            )}
-          </div>
-
-          {tab === "summary" && <SummaryDashboard summary={journeyResult.summary} journeys={journeyResult.journeys} />}
-          {tab === "tree" && <JourneyDependencyTree journeys={journeyResult.journeys} searchQ={searchQ.toLowerCase()} />}
-          {tab === "scripts" && <ScriptUsagePanel scripts={journeyResult.scriptUsage} />}
-        </div>
+        <JourneyForceGraph journeys={journeyResult.journeys} scripts={journeyResult.scriptUsage} />
       )}
 
       {/* ESV orphan results */}
