@@ -31,6 +31,9 @@ export function useDataPullJobs(opts: UseDataPullJobsOpts = {}) {
 
   useEffect(() => {
     refresh();
+    // pollMs <= 0 disables the interval — caller drives refresh()
+    // manually (e.g. on tab visibility change).
+    if (pollMs <= 0) return;
     const id = setInterval(refresh, pollMs);
     return () => clearInterval(id);
   }, [refresh, pollMs]);

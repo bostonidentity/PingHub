@@ -6,6 +6,7 @@ import type { Environment } from "@/lib/fr-config";
 import type { SnapshotType } from "@/lib/data/types";
 import type { GlobalSearchHit, GlobalSearchResponse } from "@/app/api/data/search/[env]/route";
 import { useSnapshotRecords } from "@/hooks/useSnapshotRecords";
+import { useDataEnv, timeAgoShort } from "@/hooks/useDataEnv";
 import { RecordDetailPane } from "./RecordDetailPane";
 import { cn } from "@/lib/utils";
 
@@ -26,7 +27,7 @@ function saveTitlePrefs(prefs: Record<string, string>): void {
 const prefKey = (env: string, type: string) => `${env}::${type}`;
 
 export function BrowsePanel({ environments }: { environments: Environment[] }) {
-  const [env, setEnv] = useState(environments[0]?.name ?? "");
+  const { env, setEnv } = useDataEnv(environments);
   const [types, setTypes] = useState<SnapshotType[]>([]);
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -49,6 +50,12 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
 
   const titleField = selectedType ? (titlePrefs[prefKey(env, selectedType)] || undefined) : undefined;
   const { q, setQ, page, setPage, data, loading } = useSnapshotRecords(env, selectedType, titleField);
+
+  // Most-recent pull timestamp across all snapshotted types for this env.
+  const envLastPulledAt = useMemo(
+    () => types.reduce((mx, t) => Math.max(mx, t.pulledAt), 0) || null,
+    [types],
+  );
 
   function setTitleFieldForCurrent(field: string) {
     if (!selectedType) return;
@@ -131,7 +138,14 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
     <div className="space-y-4">
       <div className="flex items-end gap-3 flex-wrap">
         <div className="flex flex-col gap-1">
-          <label className="text-xs text-slate-500 font-medium">Environment</label>
+          <label className="text-xs text-slate-500 font-medium">
+            Environment
+            {envLastPulledAt && (
+              <span className="ml-2 text-slate-400 font-normal" title={new Date(envLastPulledAt).toLocaleString()}>
+                · last pulled {timeAgoShort(envLastPulledAt)}
+              </span>
+            )}
+          </label>
           <select
             value={env}
             onChange={(e) => { setEnv(e.target.value); setSelectedId(null); }}
