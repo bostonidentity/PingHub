@@ -41,23 +41,28 @@ function postAnalyzeHistory(payload: {
   }).catch(() => { /* non-fatal */ });
 }
 
+// "journeys" and "managed-objects" are hidden from the selector for now but
+// their handlers and renderers remain wired so re-enabling is just a matter of
+// uncommenting the entries here.
 const TASKS: TaskDef[] = [
-  {
-    id: "journeys",
-    name: "Journey analysis",
-    description: "Entry points, shared sub-journeys, orphans, and script usage across journeys.",
-  },
-  {
-    id: "managed-objects",
-    name: "Managed object schema",
-    description: "Force-directed map of managed object types and the resourceCollection relationships between them.",
-  },
+  // {
+  //   id: "journeys",
+  //   name: "Journey analysis",
+  //   description: "Entry points, shared sub-journeys, orphans, and script usage across journeys.",
+  // },
+  // {
+  //   id: "managed-objects",
+  //   name: "Managed object schema",
+  //   description: "Force-directed map of managed object types and the resourceCollection relationships between them.",
+  // },
   {
     id: "esv-orphans",
     name: "ESV orphan references",
     description: "Find ESV placeholders and systemEnv lookups that aren't defined under esvs/.",
   },
 ];
+
+const DEFAULT_TASK_ID: TaskId = "esv-orphans";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -511,7 +516,7 @@ export function AnalyzePanel({ environments }: { environments: { name: string }[
   // Seed state from defaults only. Rehydrating from localStorage during the
   // initial render produces a hydration mismatch because localStorage is
   // browser-only. Load the persisted snapshot in a post-mount effect instead.
-  const [taskId, setTaskId] = useState<TaskId>("journeys");
+  const [taskId, setTaskId] = useState<TaskId>(DEFAULT_TASK_ID);
   const [env, setEnv] = useState(environments[0]?.name ?? "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -520,12 +525,13 @@ export function AnalyzePanel({ environments }: { environments: { name: string }[
   const [managedObjectsResult, setManagedObjectsResult] = useState<ManagedObjectsReport | null>(null);
   const [hydrated, setHydrated] = useState(false);
 
-  const currentTask = TASKS.find((t) => t.id === taskId)!;
+  const currentTask = TASKS.find((t) => t.id === taskId) ?? TASKS[0];
 
   // Rehydrate from localStorage once, after mount, to avoid SSR/CSR mismatch.
   useEffect(() => {
     const p = loadPersisted();
-    if (p.taskId) setTaskId(p.taskId);
+    // If the persisted taskId refers to a hidden/removed task, fall back.
+    if (p.taskId && TASKS.some((t) => t.id === p.taskId)) setTaskId(p.taskId);
     if (p.env) setEnv(p.env);
     if (p.journeyResult) setJourneyResult(p.journeyResult);
     if (p.esvResult) setEsvResult(p.esvResult);
