@@ -201,8 +201,31 @@ export function ManagedObjectsForceGraph({ types, relationships }: Props) {
     return () => ro.disconnect();
   }, []);
 
+  // Tune the force simulation for a managed-object schema: fewer nodes than
+  // the journey graph, so push charge/link distance up to keep the filtered
+  // subgraph from clumping.
   useEffect(() => {
-    fgRef.current?.d3ReheatSimulation();
+    const fg = fgRef.current;
+    if (!fg) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const link = (fg as any).d3Force?.("link");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const charge = (fg as any).d3Force?.("charge");
+    if (link && typeof link.distance === "function") link.distance(80);
+    if (charge && typeof charge.strength === "function") charge.strength(-320);
+  }, []);
+
+  // Whenever the filtered dataset changes, reheat the simulation so the
+  // remaining nodes spread out against the new forces, and fit the camera
+  // to the subgraph so the extra whitespace is actually visible on screen.
+  useEffect(() => {
+    const fg = fgRef.current;
+    if (!fg) return;
+    fg.d3ReheatSimulation();
+    const t = setTimeout(() => {
+      try { fg.zoomToFit(400, 40); } catch { /* ignore if sim not ready */ }
+    }, 600);
+    return () => clearTimeout(t);
   }, [data]);
 
   return (
