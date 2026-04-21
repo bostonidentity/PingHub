@@ -3,12 +3,14 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import type { JourneyInfo, AnalyzeResult, AnalyzeSummary, ScriptUsage } from "@/app/api/analyze/route";
+import type { ManagedObjectsReport } from "@/app/api/analyze/managed-objects/route";
 import { JourneyForceGraph } from "./JourneyForceGraph";
+import { ManagedObjectsForceGraph } from "./ManagedObjectsForceGraph";
 import type { EsvOrphanReport, EsvOrphan, EsvReference } from "@/lib/analyze/esv-orphans";
 import { FileContentViewer } from "@/components/FileContentViewer";
 import { pathToScopeItem } from "@/lib/scope-paths";
 
-type TaskId = "journeys" | "esv-orphans";
+type TaskId = "journeys" | "esv-orphans" | "managed-objects";
 
 interface TaskDef {
   id: TaskId;
@@ -44,6 +46,11 @@ const TASKS: TaskDef[] = [
     id: "journeys",
     name: "Journey analysis",
     description: "Entry points, shared sub-journeys, orphans, and script usage across journeys.",
+  },
+  {
+    id: "managed-objects",
+    name: "Managed object schema",
+    description: "Force-directed map of managed object types and the resourceCollection relationships between them.",
   },
   {
     id: "esv-orphans",
@@ -489,6 +496,7 @@ interface PersistedState {
   env: string;
   journeyResult: AnalyzeResult | null;
   esvResult: EsvOrphanReport | null;
+  managedObjectsResult: ManagedObjectsReport | null;
 }
 
 function loadPersisted(): Partial<PersistedState> {
@@ -509,6 +517,7 @@ export function AnalyzePanel({ environments }: { environments: { name: string }[
   const [error, setError] = useState<string | null>(null);
   const [journeyResult, setJourneyResult] = useState<AnalyzeResult | null>(null);
   const [esvResult, setEsvResult] = useState<EsvOrphanReport | null>(null);
+  const [managedObjectsResult, setManagedObjectsResult] = useState<ManagedObjectsReport | null>(null);
   const [hydrated, setHydrated] = useState(false);
 
   const currentTask = TASKS.find((t) => t.id === taskId)!;
@@ -520,6 +529,7 @@ export function AnalyzePanel({ environments }: { environments: { name: string }[
     if (p.env) setEnv(p.env);
     if (p.journeyResult) setJourneyResult(p.journeyResult);
     if (p.esvResult) setEsvResult(p.esvResult);
+    if (p.managedObjectsResult) setManagedObjectsResult(p.managedObjectsResult);
     setHydrated(true);
   }, []);
 
@@ -527,10 +537,10 @@ export function AnalyzePanel({ environments }: { environments: { name: string }[
   useEffect(() => {
     if (!hydrated) return;
     try {
-      const payload: PersistedState = { taskId, env, journeyResult, esvResult };
+      const payload: PersistedState = { taskId, env, journeyResult, esvResult, managedObjectsResult };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch { /* ignore quota */ }
-  }, [hydrated, taskId, env, journeyResult, esvResult]);
+  }, [hydrated, taskId, env, journeyResult, esvResult, managedObjectsResult]);
 
   async function runTask() {
     setLoading(true);
@@ -572,6 +582,24 @@ export function AnalyzePanel({ environments }: { environments: { name: string }[
           durationMs: Date.now() - started.getTime(),
           summary: `ESV orphans · ${report.orphans.length} orphan${report.orphans.length === 1 ? "" : "s"}, ${report.unused.length} unused, ${report.totalReferences} refs across ${report.scannedFiles} files`,
           taskName: "ESV orphan references",
+        });
+      } else if (taskId === "managed-objects") {
+        setManagedObjectsResult(null);
+        const res = await fetch("/api/analyze/managed-objects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ env }),
+        });
+        const data = await res.json();
+        if (data.error) { setError(data.error); return; }
+        const report = data as ManagedObjectsReport;
+        setManagedObjectsResult(report);
+        postAnalyzeHistory({
+          env,
+          startedAt: started.toISOString(),
+          durationMs: Date.now() - started.getTime(),
+          summary: `Managed object schema · ${report.types.length} types, ${report.relationships.length} relationships`,
+          taskName: "Managed object schema",
         });
       }
     } catch (e) {
@@ -632,6 +660,14 @@ export function AnalyzePanel({ environments }: { environments: { name: string }[
       {/* Journey results — force-directed map of journeys + scripts */}
       {taskId === "journeys" && journeyResult && (
         <JourneyForceGraph journeys={journeyResult.journeys} scripts={journeyResult.scriptUsage} />
+      )}
+
+      {/* Managed object schema — force-directed map of managed object types + relationships */}
+      {taskId === "managed-objects" && managedObjectsResult && (
+        <ManagedObjectsForceGraph
+          types={managedObjectsResult.types}
+          relationships={managedObjectsResult.relationships}
+        />
       )}
 
       {/* ESV orphan results */}
