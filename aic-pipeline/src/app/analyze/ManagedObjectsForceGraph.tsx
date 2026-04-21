@@ -105,11 +105,46 @@ export function ManagedObjectsForceGraph({ types, relationships }: Props) {
   const [showIdentity, setShowIdentity] = useState(true);
   const [showCustom, setShowCustom] = useState(true);
   const [hideReverse, setHideReverse] = useState(true);
+  const [filter, setFilter] = useState("");
+  const [includeNeighbors, setIncludeNeighbors] = useState(true);
 
   const full = useMemo(() => buildGraph(types, relationships), [types, relationships]);
 
+  // Adjacency on the full (unfiltered) graph — used to expand a name filter
+  // to include direct neighbors of matches.
+  const fullAdj = useMemo(() => {
+    const m = new Map<string, Set<string>>();
+    for (const l of full.links) {
+      const s = typeof l.source === "string" ? l.source : (l.source as GNode).id;
+      const t = typeof l.target === "string" ? l.target : (l.target as GNode).id;
+      if (!m.has(s)) m.set(s, new Set());
+      if (!m.has(t)) m.set(t, new Set());
+      m.get(s)!.add(t);
+      m.get(t)!.add(s);
+    }
+    return m;
+  }, [full.links]);
+
   const data = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    const matchesFilter = (n: GNode) => !q || n.name.toLowerCase().includes(q);
+
+    // Filter set: matches (+ their neighbors when includeNeighbors is on).
+    const filterSet = new Set<string>();
+    if (q) {
+      for (const n of full.nodes) if (matchesFilter(n)) filterSet.add(n.id);
+      if (includeNeighbors) {
+        const expanded = new Set(filterSet);
+        for (const id of filterSet) {
+          for (const nb of fullAdj.get(id) ?? []) expanded.add(nb);
+        }
+        filterSet.clear();
+        for (const id of expanded) filterSet.add(id);
+      }
+    }
+
     const nodeVisible = (n: GNode) => {
+      if (q && !filterSet.has(n.id)) return false;
       if (n.category === "core") return showCore;
       if (n.category === "custom") return showCustom;
       return showIdentity;
@@ -123,7 +158,7 @@ export function ManagedObjectsForceGraph({ types, relationships }: Props) {
       return keptIds.has(s) && keptIds.has(t);
     });
     return { nodes: keptNodes, links: keptLinks };
-  }, [full, showCore, showIdentity, showCustom, hideReverse]);
+  }, [full, fullAdj, showCore, showIdentity, showCustom, hideReverse, filter, includeNeighbors]);
 
   const neighbors = useMemo(() => {
     const map = new Map<string, Set<string>>();
@@ -177,17 +212,47 @@ export function ManagedObjectsForceGraph({ types, relationships }: Props) {
       style={{ height: "70vh", minHeight: 480 }}
       onClick={(e) => { if (e.target === wrapperRef.current) setSelected(null); }}
     >
-      <div className="absolute top-3 left-3 z-10 text-[11px] text-slate-400 space-y-1 bg-slate-900/70 backdrop-blur px-2.5 py-1.5 rounded border border-slate-800">
-        <CategoryToggle color="bg-white"       label="Core (user, role, group, …)" active={showCore}     onToggle={() => setShowCore((v) => !v)} />
-        <CategoryToggle color="bg-slate-300"   label="Identity / project types"     active={showIdentity} onToggle={() => setShowIdentity((v) => !v)} />
-        <CategoryToggle color="bg-violet-400"  label="Custom / *nik* types"         active={showCustom}   onToggle={() => setShowCustom((v) => !v)} />
-        <div className="pt-1 mt-1 border-t border-slate-800">
+      <div className="absolute top-3 left-3 z-10 text-[11px] text-slate-400 space-y-1.5 bg-slate-900/70 backdrop-blur px-2.5 py-2 rounded border border-slate-800 w-64">
+        <div className="relative">
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter types by name…"
+            className="w-full pl-7 pr-6 py-1 text-[11px] rounded bg-slate-800/80 border border-slate-700 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+          />
+          <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-500 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" />
+          </svg>
+          {filter && (
+            <button
+              type="button"
+              onClick={() => setFilter("")}
+              title="Clear filter"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-[10px]"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+        {filter && (
+          <label className="flex items-center gap-2 cursor-pointer select-none hover:text-slate-200 text-slate-500 text-[10px]">
+            <input type="checkbox" checked={includeNeighbors} onChange={(e) => setIncludeNeighbors(e.target.checked)} className="accent-sky-500" />
+            Include direct neighbors
+          </label>
+        )}
+        <div className="space-y-1 pt-1 border-t border-slate-800">
+          <CategoryToggle color="bg-white"       label="Core (user, role, group, …)" active={showCore}     onToggle={() => setShowCore((v) => !v)} />
+          <CategoryToggle color="bg-slate-300"   label="Identity / project types"     active={showIdentity} onToggle={() => setShowIdentity((v) => !v)} />
+          <CategoryToggle color="bg-violet-400"  label="Custom / *nik* types"         active={showCustom}   onToggle={() => setShowCustom((v) => !v)} />
+        </div>
+        <div className="pt-1 border-t border-slate-800">
           <label className="flex items-center gap-2 cursor-pointer select-none hover:text-slate-200">
             <input type="checkbox" checked={hideReverse} onChange={(e) => setHideReverse(e.target.checked)} className="accent-sky-500" />
             Hide reverse relationships
           </label>
         </div>
-        <div className="flex items-center gap-2 pt-1 mt-1 border-t border-slate-800 pointer-events-none text-slate-500">
+        <div className="flex items-center gap-2 pt-1 border-t border-slate-800 pointer-events-none text-slate-500">
           <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" /> Selected
         </div>
       </div>
