@@ -3,8 +3,10 @@
 
 import { useEffect, useState, useMemo } from "react";
 import { useDataPullJobs } from "@/hooks/useDataPullJobs";
+import { useDataEnv, timeAgoShort } from "@/hooks/useDataEnv";
 import { JobCard } from "./JobCard";
 import type { Environment } from "@/lib/fr-config";
+import type { SnapshotType } from "@/lib/data/types";
 import { cn } from "@/lib/utils";
 
 // Probe results persist across reloads, keyed by "<env>::<type>".
@@ -29,10 +31,11 @@ export function PullPanel({
   environments: Environment[];
   typesByEnv: Record<string, string[]>;
 }) {
-  const [env, setEnv] = useState(environments[0]?.name ?? "");
+  const { env, setEnv } = useDataEnv(environments);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [envLastPulledAt, setEnvLastPulledAt] = useState<number | null>(null);
   // Counts are sparse: undefined = never probed, null = probed but tenant
   // declined to count, number = real count. Keyed by type within the current env.
   // All probed counts across envs, mirrored to localStorage so they survive reloads.
@@ -84,6 +87,25 @@ export function PullPanel({
     () => jobs.find((j) => j.env === env && (j.status === "running" || j.status === "queued" || j.status === "aborting")),
     [jobs, env],
   );
+
+  // Fetch the env's most-recent pull time. Re-fetches on env change and whenever
+  // a job transitions to a terminal state, so the label stays fresh after a pull.
+  const terminalCount = jobs.filter((j) =>
+    j.env === env && (j.status === "completed" || j.status === "failed" || j.status === "aborted"),
+  ).length;
+  useEffect(() => {
+    if (!env) { setEnvLastPulledAt(null); return; }
+    let cancelled = false;
+    fetch(`/api/data/snapshots/${env}`)
+      .then((r) => r.ok ? r.json() : { types: [] })
+      .then((d: { types: SnapshotType[] }) => {
+        if (cancelled) return;
+        const max = d.types.reduce((mx, t) => Math.max(mx, t.pulledAt), 0);
+        setEnvLastPulledAt(max || null);
+      })
+      .catch(() => { /* non-fatal */ });
+    return () => { cancelled = true; };
+  }, [env, terminalCount]);
 
   const toggle = (t: string) => setSelected((prev) => {
     const next = new Set(prev);
@@ -184,7 +206,14 @@ export function PullPanel({
       <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
         <div className="flex items-end gap-3 flex-wrap">
           <div className="flex flex-col gap-1">
-            <label className="text-xs text-slate-500 font-medium">Environment</label>
+            <label className="text-xs text-slate-500 font-medium">
+              Environment
+              {envLastPulledAt && (
+                <span className="ml-2 text-slate-400 font-normal" title={new Date(envLastPulledAt).toLocaleString()}>
+                  · last pulled {timeAgoShort(envLastPulledAt)}
+                </span>
+              )}
+            </label>
             <select
               value={env}
               onChange={(e) => {
@@ -328,7 +357,24 @@ export function PullPanel({
         {jobs.length === 0 && (
           <p className="text-xs text-slate-400 italic">No jobs yet.</p>
         )}
-        {jobs.map((j) => <JobCard key={j.id} job={j} onAbort={() => abort(j.id)} />)}
+        {jobs.map((j) => {
+          // Per-job probed-count map: counts for j.env/type, in case the server
+          // preflight returned null (tenant doesn't honor _countPolicy).
+          const probedForJob: Record<string, number | null> = {};
+          for (const [key, entry] of Object.entries(allProbes)) {
+            const sep = key.indexOf("::");
+            if (sep < 0) continue;
+            if (key.slice(0, sep) === j.env) probedForJob[key.slice(sep + 2)] = entry.count;
+          }
+          return (
+            <JobCard
+              key={j.id}
+              job={j}
+              probedCounts={probedForJob}
+              onAbort={() => abort(j.id)}
+            />
+          );
+        })}
       </div>
     </div>
   );
