@@ -486,6 +486,11 @@ function TailTerminal({
   const [scrollTop, setScrollTop] = useState(0);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
+  // Timestamp of the most recent programmatic scroll (auto-tail, match-nav).
+  // handleScroll skips its at-bottom flip for ~400ms after that so the
+  // programmatic scroll's cascade of scroll events doesn't flip auto-tail
+  // back on and yank the user off a match they're inspecting.
+  const lastProgrammaticScrollRef = useRef(0);
 
   // Track container height for virtual list calculations
   useEffect(() => {
@@ -510,6 +515,7 @@ function TailTerminal({
   // Auto-scroll to bottom when new entries arrive
   useEffect(() => {
     if (!atBottomRef.current) return;
+    lastProgrammaticScrollRef.current = Date.now();
     if (wrapLines) {
       if (entries.length > 0) wrapVirtualizer.scrollToIndex(entries.length - 1, { align: "end" });
     } else if (outerRef.current) {
@@ -521,6 +527,7 @@ function TailTerminal({
   // Scroll to match index
   useEffect(() => {
     if (scrollToIndex === null || scrollToIndex < 0) return;
+    lastProgrammaticScrollRef.current = Date.now();
     if (wrapLines) {
       wrapVirtualizer.scrollToIndex(scrollToIndex, { align: "center" });
     } else if (outerRef.current) {
@@ -533,8 +540,12 @@ function TailTerminal({
 
   function handleScroll(e: React.UIEvent<HTMLDivElement>) {
     const el = e.currentTarget;
-    const atBot = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
     setScrollTop(el.scrollTop);
+    // Within ~400ms of a programmatic scroll, skip the at-bottom flip so
+    // the cascade of scroll events from that programmatic scroll can't
+    // re-enable auto-tail and drag the user off a match they're inspecting.
+    if (Date.now() - lastProgrammaticScrollRef.current < 400) return;
+    const atBot = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
     if (atBot !== atBottomRef.current) {
       atBottomRef.current = atBot;
       setAtBottom(atBot);
