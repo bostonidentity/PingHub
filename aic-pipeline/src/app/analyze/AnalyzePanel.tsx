@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import type { JourneyInfo, AnalyzeResult, AnalyzeSummary, ScriptUsage } from "@/app/api/analyze/route";
 import type { ManagedObjectsReport } from "@/app/api/analyze/managed-objects/route";
 import { JourneyForceGraph } from "./JourneyForceGraph";
-import { ManagedObjectsForceGraph } from "./ManagedObjectsForceGraph";
+import { ManagedObjectsGraph } from "./ManagedObjectsGraph";
 import type { EsvOrphanReport, EsvOrphan, EsvReference } from "@/lib/analyze/esv-orphans";
 import { FileContentViewer } from "@/components/FileContentViewer";
 import { pathToScopeItem } from "@/lib/scope-paths";
@@ -662,9 +662,9 @@ export function AnalyzePanel({ environments }: { environments: { name: string }[
         <JourneyForceGraph journeys={journeyResult.journeys} scripts={journeyResult.scriptUsage} />
       )}
 
-      {/* Managed object schema — force-directed map of managed object types + relationships */}
+      {/* Managed object schema — layered ReactFlow + dagre map of types + relationships */}
       {taskId === "managed-objects" && managedObjectsResult && (
-        <ManagedObjectsForceGraph
+        <ManagedObjectsGraph
           types={managedObjectsResult.types}
           relationships={managedObjectsResult.relationships}
         />
