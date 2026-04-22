@@ -1198,7 +1198,19 @@ function FrConfigSection({
             extraPhases={verifyRunning ? [{ scope: "verify", status: "running" }] : verifyDone ? [{ scope: "verify", status: "done" }] : undefined}
           />
           <div className="rounded-lg border border-slate-200 overflow-hidden">
-            <ScopedLogViewer logs={mergedLogs} running={running || dccBusy} exitCode={exitCode} onClear={() => { clear(); setDccLogs([]); }} />
+            <ScopedLogViewer
+              logs={mergedLogs}
+              // Stay in "running" while ANY phase is still in flight:
+              //   - `running`: the /api/promote-items POST is streaming
+              //   - `dccBusy`: DCC session apply / verify-pull is happening
+              //   - `verifyRunning`: the post-apply compare diff is running
+              // Otherwise the viewer flashes "All scopes completed" the
+              // moment push exits, which is wrong for controlled-env
+              // promotes where apply + verify still need to finish.
+              running={running || dccBusy || verifyRunning}
+              exitCode={exitCode}
+              onClear={() => { clear(); setDccLogs([]); }}
+            />
           </div>
         </div>
       )}
