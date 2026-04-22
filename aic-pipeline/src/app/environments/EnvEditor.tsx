@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, forwardRef, useImperativeHandle } from "react";
 import { Environment, EnvironmentType } from "@/lib/fr-config-types";
-import { EnvironmentBadge } from "@/components/EnvironmentBadge";
 import { parseEnvFile, serializeEnvFile } from "@/lib/env-parser";
 import { cn } from "@/lib/utils";
 import { LogEntry } from "@/hooks/useStreamingLogs";
@@ -821,7 +820,37 @@ function FrConfigControls({
 type Section = "fr-config" | "log-api";
 type SubTab = "form" | "raw";
 
-export function EnvEditor({ env, onUpdate, onBusyChange }: { env: Environment; onUpdate?: (updated: Environment) => void; onBusyChange?: (busy: boolean) => void }) {
+export interface EnvEditorHandle {
+  save: () => Promise<void>;
+}
+
+export interface EnvSaveState {
+  saving: boolean;
+  saved: boolean;
+  loading: boolean;
+  error: string;
+}
+
+export interface EnvMeta {
+  label: string;
+  color: Environment["color"];
+}
+
+export interface EnvEditorProps {
+  env: Environment;
+  onUpdate?: (updated: Environment) => void;
+  onBusyChange?: (busy: boolean) => void;
+  onSaveStateChange?: (state: EnvSaveState) => void;
+  onMetaChange?: (meta: EnvMeta) => void;
+}
+
+export const EnvEditor = forwardRef<EnvEditorHandle, EnvEditorProps>(function EnvEditor({
+  env,
+  onUpdate,
+  onBusyChange,
+  onSaveStateChange,
+  onMetaChange,
+}, ref) {
   const [section, setSection] = useState<Section>("fr-config");
   const [subTab, setSubTab] = useState<SubTab>("form");
   const [rawContent, setRawContent] = useState("");
@@ -882,7 +911,7 @@ export function EnvEditor({ env, onUpdate, onBusyChange }: { env: Environment; o
 
   const currentRaw = subTab === "form" ? serializeEnvFile(values, rawContent) : rawContent;
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     setSaving(true);
     setError("");
     const body: Record<string, unknown> = {
@@ -909,31 +938,23 @@ export function EnvEditor({ env, onUpdate, onBusyChange }: { env: Environment; o
       setError("Save failed.");
     }
     setSaving(false);
-  };
+  }, [label, color, envType, devEnvironment, currentRaw, logApiKey, logApiSecret, env.name, onUpdate]);
+
+  useImperativeHandle(ref, () => ({ save: handleSave }), [handleSave]);
+
+  // Propagate save state + live meta to parent (modal header).
+  useEffect(() => {
+    onSaveStateChange?.({ saving, saved, loading, error });
+  }, [saving, saved, loading, error, onSaveStateChange]);
+
+  useEffect(() => {
+    onMetaChange?.({ label, color });
+  }, [label, color, onMetaChange]);
 
   const missing = getMissingRequired(values);
 
   return (
-    <div className="card-padded space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-3">
-          <EnvironmentBadge env={{ ...env, label, color }} />
-          <span className="text-xs font-mono text-slate-400">{env.name}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          {error && <span className="text-xs text-red-600">{error}</span>}
-          {saved && <StatusPill tone="success">Saved</StatusPill>}
-          <button
-            onClick={handleSave}
-            disabled={saving || loading}
-            className="btn-primary"
-          >
-            {saving ? "Saving..." : "Save"}
-          </button>
-        </div>
-      </div>
-
+    <div className="space-y-4">
       {loading ? (
         <div className="py-8 text-slate-400 text-sm text-center">Loading...</div>
       ) : (
@@ -1197,4 +1218,4 @@ export function EnvEditor({ env, onUpdate, onBusyChange }: { env: Environment; o
       )}
     </div>
   );
-}
+});
