@@ -33,14 +33,7 @@ export async function GET(
   if (schema) {
     display = deriveDisplayFields(schema);
   } else {
-    const dir = path.join(envsRoot, env, "managed-data", type);
-    const firstFile = fs.existsSync(dir)
-      ? fs.readdirSync(dir).find((f) => f.endsWith(".json") && f !== "_manifest.json")
-      : undefined;
-    const sample = firstFile
-      ? JSON.parse(fs.readFileSync(path.join(dir, firstFile), "utf-8")) as Record<string, unknown>
-      : { _id: "" };
-    display = fallbackDisplayFields(sample);
+    display = fallbackDisplayFields({});
   }
 
   const result = listRecords(envsRoot, env, type, { q, page, limit, display, titleField });
