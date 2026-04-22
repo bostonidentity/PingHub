@@ -290,11 +290,37 @@ export async function dispatchFrConfig(input: DispatchInput): Promise<DispatchRe
       return { handled: true, code: 0 };
     }
     switch (scope) {
-      case "managed-objects":
-        for (const n of (filterItems ?? (name ? [name] : [undefined as string | undefined]))) {
+      case "managed-objects": {
+        // The vendored push has two modes:
+        //   - With `name`: GET → splice → PUT (merges the named object into
+        //     target's existing managed config).
+        //   - Without `name`: PUT `{objects:[everything in configDir/managed-objects]}`
+        //     which REPLACES target's full managed config.
+        // For promote (especially DCC) the configDir is a staging temp that
+        // only contains the SELECTED object(s), so the no-name branch wipes
+        // out every other managed object and IDM crashes server-side
+        // (`TypeError: Cannot read property "schema" from undefined`).
+        // Always push per-item so the merge flow runs. If no items were
+        // passed, discover them from the temp dir.
+        let items: string[] = filterItems ?? (name ? [name] : []);
+        if (items.length === 0) {
+          const moDir = path.join(configDir, "managed-objects");
+          if (fs.existsSync(moDir)) {
+            items = fs
+              .readdirSync(moDir, { withFileTypes: true })
+              .filter((d) => d.isDirectory())
+              .map((d) => d.name);
+          }
+        }
+        if (items.length === 0) {
+          emit("No managed-objects to push.\n", "stdout");
+          return { handled: true, code: 0 };
+        }
+        for (const n of items) {
           await vendor.pushManagedObjects({ configDir, tenantUrl, token: t, name: n, log });
         }
         return { handled: true, code: 0 };
+      }
       case "scripts":
         for (const n of (filterItems ?? (name ? [name] : [undefined as string | undefined]))) {
           await vendor.pushScripts({ configDir, tenantUrl, token: t, realms, name: n, log });
