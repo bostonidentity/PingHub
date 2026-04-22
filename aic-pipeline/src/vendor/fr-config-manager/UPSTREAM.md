@@ -133,7 +133,12 @@
     `Request failed with status code 400`, which makes 4xx/5xx from AIC
     impossible to triage without a debugger. With this patch the
     caller's stderr line shows the AIC error envelope
-    (`{code, reason, message}`) inline.
+    (`{code, reason, message}`) inline. Also retry network-level errors
+    (no HTTP response: `ECONNRESET`, `ETIMEDOUT`, `EAI_AGAIN`, …) the
+    same way upstream retries 5xx, and decorate the thrown message with
+    `err.code` / `err.cause.code` plus the request URL so a network
+    failure isn't just `TypeError: network error` with no clue what
+    failed.
 
 ## Security note
 
