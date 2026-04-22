@@ -9,6 +9,33 @@ const PAGE_SIZE = 1000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Rename with retry for transient Windows locks.
+ *
+ * On Windows, fs.rename() can fail with EPERM / EACCES / EBUSY when a
+ * file watcher (Next.js/turbopack, VS Code, Windows Search Indexer) or
+ * antivirus briefly holds a handle on a file inside src or dst — very
+ * common right after we've written thousands of JSON records into the
+ * staging dir. POSIX doesn't hit this; we just retry with backoff so
+ * the locks clear. ENOTEMPTY covers the Windows variant "dst exists
+ * and is non-empty".
+ */
+async function renameWithRetry(src: string, dst: string, maxAttempts = 5): Promise<void> {
+  let lastErr: unknown = null;
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      fs.renameSync(src, dst);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY" && code !== "ENOTEMPTY") throw err;
+      lastErr = err;
+      await sleep(100 * Math.pow(2, i)); // 100, 200, 400, 800, 1600 ms
+    }
+  }
+  throw lastErr;
+}
+
 export interface RunPullOpts {
   job: DataPullJob;
   registry: Registry;
@@ -220,10 +247,12 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
     }
 
     // Atomic swap: prev → .prev-<job>-<type>, new → current, delete prev.
+    // Uses renameWithRetry so transient Windows file-handle locks don't
+    // fail the pull after we've already fetched every record.
     const currentDir = path.join(envsRoot, job.env, "managed-data", type);
     const backupDir = path.join(envsRoot, job.env, "managed-data", `.prev-${job.id}-${type}`);
-    if (fs.existsSync(currentDir)) fs.renameSync(currentDir, backupDir);
-    fs.renameSync(typePullingDir, currentDir);
+    if (fs.existsSync(currentDir)) await renameWithRetry(currentDir, backupDir);
+    await renameWithRetry(typePullingDir, currentDir);
     fs.writeFileSync(
       path.join(currentDir, "_manifest.json"),
       JSON.stringify({ type, pulledAt: Date.now(), count: fetched, jobId: job.id }, null, 2),
