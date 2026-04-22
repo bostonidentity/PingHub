@@ -10,11 +10,13 @@ Built on top of a vendored subset of [`fr-config-manager`](https://github.com/Fo
 
 - **Pull** — stream live CLI output while fetching config for any scope (journeys, scripts, IDM managed objects, endpoints, IGA applications/entitlements, SAML, CSP, themes, and more — 40+ scopes).
 - **Push** — apply local config back to a tenant, with a production-only confirmation step.
-- **Promote** — multi-phase workflow: lock → dry-run diff → review → promote → verify → unlock, with rollback.
+- **Promote** — multi-phase workflow: lock → dry-run diff → review → promote → verify → unlock, with rollback. Controlled environments use an in-process Direct Configuration Change (DCC) session: open → dry-run → push (with `X-Configuration-Type: mutable`) → apply → pull-target → verify, with each phase surfaced as its own log section.
 - **Journey viewer** — browse journeys as an interactive ReactFlow graph, outline, table, swim-lane, or raw JSON. Inline node details, script overlay, search, trace upstream/downstream/data paths, fold passthrough chains, ELK or dagre layouts.
 - **Semantic journey diff** — compare journeys across environments with a canvas that highlights added / removed / modified / unchanged nodes, side-by-side script diffs, and inner-tree navigation.
-- **Environments manager** — add tenants through a guided wizard; raw `.env` editor and tenant connection test.
-- **Search / analyze** — global search across scopes, "find usage" for scripts, endpoints, and inner journeys.
+- **Data** — browse managed-object snapshots and run on-demand data pulls from the UI. Per-type record tables, detail pane, JSON export, shared env pill, last-pulled age, ETA, idle banner, and a global banner that surfaces in-flight background jobs across navigation.
+- **Environments manager** — add tenants through a guided wizard; raw `.env` editor, tenant connection test, and in-process tenant restart.
+- **Analyze** — ESV orphan references: find `&{esv}` placeholders and `systemEnv.` lookups that aren't defined under `esvs/`.
+- **Search** — global search across scopes, "find usage" for scripts, endpoints, and inner journeys.
 
 ## Requirements
 
@@ -81,14 +83,16 @@ npm run test:watch # watch mode
 ```
 src/
   app/
-    api/           # Next.js API routes (pull, push, promote, compare, ...)
+    api/           # Next.js API routes (pull, push, promote, compare, data, ...)
     configs/       # Browse / viewer (journeys, scripts, endpoints, ...)
     compare/       # Journey + workflow diff canvas
-    promote/       # Promotion workflow UI
+    promote/       # Promotion workflow UI (incl. Direct-Control sessions)
     environments/  # Environment manager + wizard
-    analyze/       # Usage / analysis views
-  components/      # Shared UI (legend modal, log viewer, diff graph, ...)
-  lib/             # CLI spawning, env parsing, diff, semantic compare
+    data/          # Managed-object snapshot browser + on-demand pull
+    analyze/       # ESV orphan references
+  components/      # Shared UI (legend modal, log viewer, diff graph, global job banner, ...)
+  hooks/           # useDataEnv, useDataPullJobs, useSnapshotRecords, useStreamingLogs
+  lib/             # CLI spawning, env parsing, diff, semantic compare, tenant-control, data snapshot-fs
   vendor/
     fr-config-manager/  # Vendored MIT-licensed upstream — see LICENSE inside
 ```
