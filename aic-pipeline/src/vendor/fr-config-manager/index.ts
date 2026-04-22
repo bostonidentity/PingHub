@@ -966,3 +966,16 @@ const amRealmPush = require("./push/update-am-realm-config.js") as {
 export async function pushAmRealmConfig(opts: { configDir: string; tenantUrl: string; token: string; realms?: string[]; configName: string; log?: (line: string) => void }): Promise<void> {
   await amRealmPush.pushAmRealmConfig(opts);
 }
+
+// ── Direct-control / DCC mode toggle ─────────────────────────────────────────
+// Flipping this to `true` makes every subsequent restClient call carry
+// `X-Configuration-Type: mutable` so AIC routes the writes through an open
+// direct-configuration session. Match each setDirectControlMode(true) with
+// a setDirectControlMode(false) in a finally block.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const restClient = require("./common/restClient.js") as {
+  setDirectControlMode: (on: boolean) => void;
+  getDirectControlMode: () => boolean;
+};
+export const setDirectControlMode = restClient.setDirectControlMode;
+export const getDirectControlMode = restClient.getDirectControlMode;
