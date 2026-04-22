@@ -1058,11 +1058,18 @@ function FrConfigSection({
       }
 
       // Poll until SESSION_APPLIED (or error). Apply typically takes 2-3 min
-      // on temp-dcc; allow up to 6 min for safety.
+      // on temp-dcc, but it can transition into a tenant-restart state
+      // (`MUTABLE_RESTART_REQUESTED` / `MUTABLE_RESTARTING`) when the
+      // staged config requires AM/IDM to bounce. Restart-during-apply
+      // routinely takes 5-15 min on a cold tenant; allow up to 20 min so
+      // we don't spuriously abort the session mid-restart. Upstream
+      // `fr-config-push direct-control-apply --wait` polls indefinitely;
+      // we keep a ceiling so a wedged tenant eventually surfaces a clear
+      // failure instead of the page just hanging.
       const pollStart = Date.now();
       let lastLoggedStatus = "";
       let applied = false;
-      while (Date.now() - pollStart < 360_000) {
+      while (Date.now() - pollStart < 1_200_000) {
         await new Promise((r) => setTimeout(r, DCC_POLL_INTERVAL_MS));
         if (abortRequestedRef.current) break;
         const pollRes = await callDcc("direct-control-state");
