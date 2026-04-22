@@ -48,15 +48,17 @@ function nestedJsonFiles(dir) {
   return out;
 }
 
-async function pushNode(baseUrl, node, token) {
+async function pushNode(baseUrl, node, token, emit) {
   const nodeRequestUrl = `${baseUrl}/nodes/${node._type._id}/${node._id}`;
   delete node._rev;
+  if (emit) emit(`  PUT ${nodeRequestUrl}\n`);
   await restPut(nodeRequestUrl, node, token, "protocol=2.1,resource=1.0");
 }
 
-async function pushJourney(journey, baseUrl, token) {
+async function pushJourney(journey, baseUrl, token, emit) {
   delete journey._rev;
   const requestUrl = `${baseUrl}/trees/${journey._id}`;
+  if (emit) emit(`  PUT ${requestUrl}\n`);
   await restPut(requestUrl, journey, token, "protocol=2.1,resource=1.0");
 }
 
@@ -70,7 +72,7 @@ async function handleNodes(ctx, nodeDir, fileList) {
     } else if (pushScripts && journeyNodeNeedsScript(node)) {
       await pushScriptById({ configDir, scriptId: node.script, tenantUrl, realm, token, log: emit });
     }
-    await pushNode(baseUrl, node, token);
+    await pushNode(baseUrl, node, token, emit);
   }
 }
 
@@ -96,7 +98,7 @@ async function handleJourney(ctx, journeyFile) {
   const childCtx = { ...ctx, baseUrl };
   await handleNodes(childCtx, nodeDir, nestedJsonFiles(nodeDir));
   await handleNodes(childCtx, nodeDir, topLevelJsonFiles(nodeDir));
-  await pushJourney(journey, baseUrl, token);
+  await pushJourney(journey, baseUrl, token, emit);
 }
 
 async function updateAuthTrees({ configDir, tenantUrl, realms, name, pushInnerJourneys, pushScripts, token, log }) {

@@ -92,8 +92,20 @@
    Upstream bug at `scripts/managed.js:66`.
 2. **`push/update-scripts.js`** — inner `pushScript` call is `await`ed.
    Upstream (`update-scripts.js:208`) fires the calls concurrently.
+   Also already emits `PUT <url>` per script (line 34) so the operator
+   can see which write is in flight.
 3. **`pull/journeys.js`** — `exportScriptById` and recursive `processJourneys`
    are `await`ed; `journeyCache` scoped per-call.
+
+   Also **`push/update-auth-trees.js`** — `pushNode` and `pushJourney`
+   now emit `  PUT <url>` per request (matching the pattern already in
+   `update-scripts.js:34`). Upstream emits only one `Pushing journey
+   <realm>/<id>` line at the start of `handleJourney`, so when the
+   sequence of node + tree PUTs that follows hangs, the operator has no
+   way to tell which request stalled. With this patch every
+   node/tree PUT is logged before it's sent — pairs cleanly with the
+   restClient timeout (#14) so a hung request shows up as
+   `ECONNABORTED` against a known URL.
 4. **`pull/password-policy.js`** — writes to `{exportDir}/realms/<realm>/...`
    instead of upstream's `{exportDir}/<realm>/...` (upstream pull+push don't
    round-trip otherwise).
