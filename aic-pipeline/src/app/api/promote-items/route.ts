@@ -1172,10 +1172,32 @@ export async function POST(req: NextRequest) {
           return true;
         });
 
+        // Push dependencies before dependents. Scripts (and other "leaf"
+        // resources) must reach the tenant before journeys, otherwise the
+        // journey/node PUT references script UUIDs the tenant doesn't know
+        // yet and AIC returns 400. The non-DCC path enforces this implicitly
+        // via the per-scope blocks above (scriptsSel block runs before
+        // journeysSel block), but the DCC path falls through to spawnFrConfig
+        // with whatever order scopeSelections happens to be in. Sort here.
+        const SCOPE_PUSH_RANK: Record<string, number> = {
+          // Leaf resources first (no inbound deps from other selected scopes).
+          "scripts": 10,
+          "managed-objects": 20,
+          // Anything not listed lands in the middle (rank 50).
+          // Dependents last.
+          "journeys": 90,
+        };
+        spawnPushScopes.sort((a, b) =>
+          (SCOPE_PUSH_RANK[a as string] ?? 50) - (SCOPE_PUSH_RANK[b as string] ?? 50)
+        );
+
         let pushFailed = managedPushFailed || scriptsPushFailed || journeysPushFailed || idmFlatPushFailed || passwordPolicyPushFailed || orgPrivilegesPushFailed || cookieDomainsPushFailed || corsPushFailed || cspPushFailed || localesPushFailed || endpointsPushFailed || internalRolesPushFailed || emailTemplatesPushFailed || customNodesPushFailed || themesPushFailed || emailProviderPushFailed || schedulesPushFailed || igaWorkflowsPushFailed || termsPushFailed || serviceObjectsPushFailed || rawPushFailed || authzPoliciesPushFailed || oauth2AgentsPushFailed || servicesPushFailed || telemetryPushFailed || connectorDefsPushFailed || connectorMappingsPushFailed || remoteServersPushFailed || secretsPushFailed || secretMappingsPushFailed;
 
         if (spawnPushScopes.length > 0) {
-          emit({ type: "stdout", data: `Pushing ${spawnPushScopes.length} scope(s) via fr-config-push: ${spawnPushScopes.join(", ")}${directControl ? " (via /mutable endpoints)" : ""}...\n`, ts: Date.now() });
+          // Note: --direct-control adds an X-Configuration-Type: mutable
+          // request header (per upstream restClient v1.5.12); URLs are
+          // unchanged. Phrase the banner accordingly.
+          emit({ type: "stdout", data: `Pushing ${spawnPushScopes.length} scope(s) via fr-config-push: ${spawnPushScopes.join(", ")}${directControl ? " (X-Configuration-Type: mutable)" : ""}...\n`, ts: Date.now() });
           const { stream: pushStream } = spawnFrConfig({
             command: "fr-config-push",
             environment: targetEnvironment,

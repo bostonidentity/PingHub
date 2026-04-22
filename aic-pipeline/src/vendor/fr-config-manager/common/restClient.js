@@ -43,6 +43,24 @@ async function httpRequest(config, token) {
       }
     }
   }
+  // Surface the tenant's response body in the thrown message so the caller's
+  // log shows e.g. "Request failed with status code 400: <reason from AIC>"
+  // instead of just axios's status-code-only default. Body can be a string
+  // or a JSON object {code,reason,message,…}.
+  if (lastErr?.response) {
+    const body = lastErr.response.data;
+    let snippet = "";
+    if (body) {
+      try { snippet = typeof body === "string" ? body : JSON.stringify(body); }
+      catch { snippet = String(body); }
+    }
+    if (snippet) {
+      // Cap the snippet so one giant body doesn't drown the log line.
+      if (snippet.length > 500) snippet = snippet.slice(0, 500) + "…(truncated)";
+      const baseMsg = lastErr.message || "Request failed";
+      lastErr.message = `${baseMsg}: ${snippet}`;
+    }
+  }
   throw lastErr;
 }
 
