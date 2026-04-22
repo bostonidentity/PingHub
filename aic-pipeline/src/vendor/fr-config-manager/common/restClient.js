@@ -8,6 +8,14 @@
 const axios = require("axios");
 
 const MAX_RETRIES = 2;
+// Per-request timeout. Upstream sets none (axios default 0 = wait forever),
+// which means a hung AIC endpoint silently hangs the entire push — the
+// streaming HTTP response from our API route stays open with no further
+// bytes, the browser eventually drops the fetch as a network error, and
+// the operator has no idea WHICH request stalled. A generous-but-finite
+// budget surfaces the underlying ECONNABORTED with the URL via the
+// error-decoration code below, which is what we actually need to triage.
+const REQUEST_TIMEOUT_MS = 60_000;
 
 // Direct-control / DCC staging mode. When true, every outbound request
 // also carries `X-Configuration-Type: mutable` so the AIC backend routes
@@ -24,6 +32,7 @@ async function httpRequest(config, token) {
   if (token) headers.Authorization = `Bearer ${token}`;
   if (directControlMode) headers["X-Configuration-Type"] = "mutable";
   const merged = {
+    timeout: REQUEST_TIMEOUT_MS,
     ...config,
     headers,
     validateStatus: (s) => s >= 200 && s < 300,

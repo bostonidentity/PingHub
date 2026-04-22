@@ -138,7 +138,10 @@
     same way upstream retries 5xx, and decorate the thrown message with
     `err.code` / `err.cause.code` plus the request URL so a network
     failure isn't just `TypeError: network error` with no clue what
-    failed.
+    failed. Adds a 60s per-request timeout (`REQUEST_TIMEOUT_MS`) so a
+    hung AIC endpoint surfaces an `ECONNABORTED` instead of stalling
+    the entire push and forcing the browser to drop the streaming HTTP
+    response.
 
 ## Security note
 
