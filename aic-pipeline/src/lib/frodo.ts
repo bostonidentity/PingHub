@@ -82,7 +82,10 @@ export function spawnFrodo(options: {
         try {
           sharedToken = await getAccessToken(
             envVars as Record<string, string>,
-            (msg) => encode(`[token] ${msg}\n`, "stderr"),
+            // Informational token progress — real errors go via the catch
+            // branch below. Keep these on stdout so they don't land in the
+            // promote UI's "Error logs" panel.
+            (msg) => encode(`[token] ${msg}\n`, "stdout"),
           );
         } catch (err) {
           encode(`token acquisition failed: ${err instanceof Error ? err.message : String(err)}\n`, "stderr");

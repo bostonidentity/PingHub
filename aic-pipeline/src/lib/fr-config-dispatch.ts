@@ -116,7 +116,10 @@ export async function dispatchFrConfig(input: DispatchInput): Promise<DispatchRe
     try {
       token = await getAccessToken(
         envVars as Record<string, string>,
-        (msg) => emit(`[token] ${msg}\n`, "stderr"),
+        // Progress messages from the token helper are informational; only
+        // the catch branch below is a real error. Emit as stdout so they
+        // don't pollute the promote "Error logs" panel.
+        (msg) => emit(`[token] ${msg}\n`, "stdout"),
       );
       return token;
     } catch (err) {
