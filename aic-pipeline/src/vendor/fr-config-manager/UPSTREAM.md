@@ -118,6 +118,15 @@
     DCC session (controlled-env promote) without spawning the upstream
     CLI. `fr-config-dispatch.ts` toggles the flag from
     `--direct-control` in `extraArgs`, in a try/finally.
+13. **`pull/scripts.js`** — accept `name` as `string | string[]` and
+    match against either `script.name` or `script._id` (UUID). Upstream
+    only matches by name and only accepts a single value, which forced
+    the dispatcher to call `pullScripts` once per item — each call
+    re-fetched all scripts on the tenant (60+) and discarded all but
+    one. The batched call does one fetch per realm and filters in
+    memory; per-item misses are reported individually. The "Pulling N
+    script(s)" banner is now phrased as "Fetched N script(s) … filtering
+    for …" so the count isn't read as the number actually saved.
 
 ## Security note
 

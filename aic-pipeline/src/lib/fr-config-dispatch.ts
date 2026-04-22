@@ -150,11 +150,30 @@ export async function dispatchFrConfig(input: DispatchInput): Promise<DispatchRe
             await vendor.pullManagedObjects({ exportDir, tenantUrl, token: t, name: n, log });
           }
           return { handled: true, code: 0 };
-        case "scripts":
-          for (const n of (filterItems ?? (name ? [name] : [undefined as string | undefined]))) {
-            await vendor.pullScripts({ exportDir, tenantUrl, token: t, realms, prefixes: prefixesOf(envVars), name: n, log });
-          }
+        case "scripts": {
+          // Items may arrive as bare names, `<uuid>.json` filenames, or
+          // `name:<n>` tags (the original task-item form that survives when
+          // promote-items Step 0 can't resolve the name to a UUID). Strip
+          // both decorations so the vendored pull matches by name OR _id.
+          const rawItems = filterItems ?? (name ? [name] : null);
+          const cleaned = rawItems?.map((it) =>
+            it.startsWith("name:") ? it.slice(5)
+            : it.endsWith(".json") ? it.slice(0, -5)
+            : it
+          );
+          // Single call regardless of item count — vendor.pullScripts now
+          // batches them into one fetch + in-memory filter (was N fetches).
+          await vendor.pullScripts({
+            exportDir,
+            tenantUrl,
+            token: t,
+            realms,
+            prefixes: prefixesOf(envVars),
+            name: cleaned ?? undefined,
+            log,
+          });
           return { handled: true, code: 0 };
+        }
         case "journeys":
           for (const n of (filterItems ?? (name ? [name] : [undefined as string | undefined]))) {
             await vendor.pullJourneys({ exportDir, tenantUrl, token: t, realms, name: n, pullDependencies: false, log });
