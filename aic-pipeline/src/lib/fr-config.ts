@@ -193,9 +193,23 @@ export function spawnFrConfig(options: RunOptions & { envOverrides?: Record<stri
       // we ever get the ECONNABORTED that would tell us which URL stalled.
       // Tick a tiny `heartbeat` event every 10s to keep the connection
       // open. Client filters these out of the visible log.
+      let heartbeatTick = 0;
       heartbeat = setInterval(() => {
+        heartbeatTick++;
+        // eslint-disable-next-line no-console
+        console.log(`[fr-config heartbeat #${heartbeatTick} @ ${new Date().toISOString()}]`);
         try {
+          // Emit BOTH the silent heartbeat (to keep the TCP stream warm)
+          // AND a visible stderr line during diagnostic mode so the
+          // operator can confirm the keepalive is firing if a request
+          // appears to hang. Once we've verified the heartbeat works
+          // reliably we can drop the visible variant.
           controller.enqueue(JSON.stringify({ type: "heartbeat", ts: Date.now() }) + "\n");
+          controller.enqueue(JSON.stringify({
+            type: "stderr",
+            data: `[heartbeat #${heartbeatTick}] still in flight…\n`,
+            ts: Date.now(),
+          }) + "\n");
         } catch {
           // Stream already closed — let the cleanup below handle it.
         }
