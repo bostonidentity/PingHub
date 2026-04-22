@@ -53,14 +53,14 @@ async function readBody(res: Response): Promise<string> {
 export async function restartTenant(environment: string): Promise<CommandResult> {
   try {
     const { tenantUrl, token } = await bootstrap(environment);
-    const res = await fetch(`${tenantUrl}/environment/startup`, {
+    // _action is a query parameter on this endpoint, not a body field.
+    const res = await fetch(`${tenantUrl}/environment/startup?_action=restart`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
         "Accept-API-Version": RESTART_API_VERSION,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ _action: "restart" }),
     });
     const body = await readBody(res);
     if (!res.ok) return { stdout: "", stderr: `HTTP ${res.status}: ${body}`, exitCode: 1 };
