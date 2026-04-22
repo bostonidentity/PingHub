@@ -36,6 +36,6 @@ export async function GET(
     display = fallbackDisplayFields({});
   }
 
-  const result = listRecords(envsRoot, env, type, { q, page, limit, display, titleField });
+  const result = await listRecords(envsRoot, env, type, { q, page, limit, display, titleField });
   return NextResponse.json(result);
 }
