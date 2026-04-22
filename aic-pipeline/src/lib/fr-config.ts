@@ -223,7 +223,10 @@ export function spawnFrConfig(options: RunOptions & { envOverrides?: Record<stri
         try {
           sharedToken = await getAccessToken(
             baseEnv as Record<string, string>,
-            (msg) => encode(`[token] ${msg}\n`, "stderr"),
+            // Informational token progress — real errors go via the catch
+            // branch below. Keeping these on stdout prevents them showing
+            // up under the promote UI's "Error logs" section.
+            (msg) => encode(`[token] ${msg}\n`, "stdout"),
           );
         } catch (err) {
           encode(`token acquisition failed: ${err instanceof Error ? err.message : String(err)}\n`, "stderr");
