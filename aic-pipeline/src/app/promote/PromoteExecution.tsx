@@ -876,13 +876,18 @@ function FrConfigSection({
       dccScopeStart("open-session");
 
       // Only SESSION_INITIALISED lets us push directly. CLEAN_STATES are safe
-      // to init from. INIT_PENDING_STATES just need waiting. Anything else
-      // (ABORT_REQUESTED, ABORTING, APPLY_REQUESTED, APPLYING, ERROR, …) is
-      // a stale session that must be torn down before a fresh init — pushing
-      // into it returns 403 because the tenant has no usable session.
+      // to init from. *_PENDING_STATES just need waiting (no abort/init
+      // needed). Anything else (ERROR, unknown) is a stale session that must
+      // be torn down before a fresh init — pushing into it returns 403
+      // because the tenant has no usable session.
       const READY_STATE = "SESSION_INITIALISED";
       const CLEAN_STATES = new Set(["", "NO_SESSION", "SESSION_APPLIED", "SESSION_ABORTED"]);
       const INIT_PENDING_STATES = new Set(["SESSION_INITIALISE_REQUESTED", "SESSION_INITIALISING"]);
+      // Abort already in flight on the tenant — calling abort again returns
+      // 409 ("session cannot be aborted from its current state"). Just wait.
+      const ABORT_PENDING_STATES = new Set(["SESSION_ABORT_REQUESTED", "SESSION_ABORTING"]);
+      // Apply in flight — wait for SESSION_APPLIED, then init from clean.
+      const APPLY_PENDING_STATES = new Set(["SESSION_APPLY_REQUESTED", "SESSION_APPLYING"]);
 
       const fail = (msg: string) => {
         pushDccLog(msg, "stderr");
@@ -901,21 +906,28 @@ function FrConfigSection({
       };
 
       // Poll until `predicate(status)` is true, ERROR, abort, or timeout.
-      // Returns the final status, or null on timeout/abort/ERROR.
+      // Returns the final status, or null on timeout/abort/ERROR. Emits a
+      // heartbeat every ~30s when the state hasn't changed, so a long wait
+      // doesn't look frozen.
       const pollUntil = async (
         predicate: (status: string) => boolean,
         timeoutMs: number,
       ): Promise<string | null> => {
         const start = Date.now();
         let last = "";
+        let lastHeartbeat = start;
         while (Date.now() - start < timeoutMs) {
           await new Promise((r) => setTimeout(r, 5000));
           if (abortRequestedRef.current) return null;
           const s = await fetchState();
+          const elapsed = Math.round((Date.now() - start) / 1000);
           if (s !== last) {
-            const elapsed = Math.round((Date.now() - start) / 1000);
             pushDccLog(`${s || "(no status)"} (${elapsed}s)`);
             last = s;
+            lastHeartbeat = Date.now();
+          } else if (Date.now() - lastHeartbeat >= 30_000) {
+            pushDccLog(`still ${s || "(no status)"} — ${elapsed}s elapsed, waiting…`);
+            lastHeartbeat = Date.now();
           }
           if (s === "ERROR") return null;
           if (predicate(s)) return s;
@@ -959,18 +971,33 @@ function FrConfigSection({
           fail("Aborted or timed out while waiting for in-progress init.");
           return;
         }
+      } else if (ABORT_PENDING_STATES.has(status)) {
+        // Abort already in flight on the tenant — calling abort again would
+        // 409. Just wait for it to settle, then init from clean.
+        pushDccLog(`Session is ${status} — abort already in flight, waiting for it to clear…`);
+        const cleared = await pollUntil((s) => CLEAN_STATES.has(s), 240_000);
+        if (cleared === null || !CLEAN_STATES.has(cleared)) {
+          fail("Timed out (or ERROR) waiting for in-flight abort to clear.");
+          return;
+        }
+        if (!(await initSession())) return;
+      } else if (APPLY_PENDING_STATES.has(status)) {
+        // Apply in flight — wait for SESSION_APPLIED, then init from clean.
+        pushDccLog(`Session is ${status} — apply in flight, waiting for SESSION_APPLIED before re-initialising…`);
+        const applied = await pollUntil((s) => s === "SESSION_APPLIED" || CLEAN_STATES.has(s), 360_000);
+        if (applied === null) {
+          fail("Timed out (or ERROR) waiting for in-flight apply to settle.");
+          return;
+        }
+        if (!(await initSession())) return;
       } else {
-        // Stale or transitional session (SESSION_ABORT_REQUESTED, ABORTING,
-        // APPLY_REQUESTED, APPLYING, ERROR, …). Abort to clear it, then
-        // init from scratch.
+        // Truly stale (ERROR or unknown). Abort to clear, then init.
         pushDccLog(`Session is in ${status} — aborting before re-initialising…`, "stderr");
         const abortRes = await callDcc("direct-control-abort");
         if (abortRes.exitCode !== 0) {
-          // Abort itself failed — still try to wait for a clean state in case
-          // the tenant resolves on its own.
           pushDccLog(`Abort returned exit ${abortRes.exitCode}: ${abortRes.stderr || abortRes.stdout}`, "stderr");
         }
-        const cleared = await pollUntil((s) => CLEAN_STATES.has(s), 120_000);
+        const cleared = await pollUntil((s) => CLEAN_STATES.has(s), 240_000);
         if (cleared === null || !CLEAN_STATES.has(cleared)) {
           fail("Timed out (or ERROR) waiting for stale session to clear.");
           return;
