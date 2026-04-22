@@ -86,38 +86,51 @@ export function listRecords(
   }
   const fields = [...fieldSet].sort();
 
-  const matching: { id: string; record: Record<string, unknown> }[] = [];
+  const titleField = opts.titleField ?? opts.display.title;
+  const start = (opts.page - 1) * opts.limit;
+
+  if (!q) {
+    // No search — total is the file count; only read the page slice to
+    // extract titles, avoiding thousands of unnecessary file reads.
+    const total = files.length;
+    const pageFiles = files.slice(start, start + opts.limit);
+    const records = pageFiles.map((f) => {
+      const id = f.replace(/\.json$/, "");
+      try {
+        const record = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8")) as Record<string, unknown>;
+        const key = findKeyCI(record, titleField);
+        const title = (key && stringOrEmpty(record[key])) || id;
+        return { id, title };
+      } catch {
+        return { id, title: id };
+      }
+    });
+    return { total, page: opts.page, limit: opts.limit, fields, records };
+  }
+
+  // Search: scan raw text for matches but only parse JSON for the page slice.
+  const matchingFiles: string[] = [];
   for (const f of files) {
     try {
       const raw = fs.readFileSync(path.join(dir, f), "utf-8");
-      const record = JSON.parse(raw) as Record<string, unknown>;
-      if (!q) {
-        matching.push({ id: f.replace(/\.json$/, ""), record });
-        continue;
-      }
-      // Full-JSON substring: match on any key or value anywhere in the record.
-      // Structural characters may create false positives, acceptable trade for
-      // "find anything" ergonomics.
       if (raw.toLowerCase().includes(q)) {
-        matching.push({ id: f.replace(/\.json$/, ""), record });
+        matchingFiles.push(f);
       }
     } catch { /* skip unreadable file */ }
   }
 
-  const total = matching.length;
-  const start = (opts.page - 1) * opts.limit;
-  const slice = matching.slice(start, start + opts.limit);
-
-  const titleField = opts.titleField ?? opts.display.title;
-  return {
-    total,
-    page: opts.page,
-    limit: opts.limit,
-    fields,
-    records: slice.map(({ id, record }) => {
+  const total = matchingFiles.length;
+  const pageFiles = matchingFiles.slice(start, start + opts.limit);
+  const records = pageFiles.map((f) => {
+    const id = f.replace(/\.json$/, "");
+    try {
+      const record = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8")) as Record<string, unknown>;
       const key = findKeyCI(record, titleField);
       const title = (key && stringOrEmpty(record[key])) || id;
       return { id, title };
-    }),
-  };
+    } catch {
+      return { id, title: id };
+    }
+  });
+  return { total, page: opts.page, limit: opts.limit, fields, records };
 }
