@@ -79,9 +79,19 @@ export function useStreamingLogs() {
         }
       }
     } catch (err) {
+      // Browser fetch readers raise generic "TypeError: network error" when
+      // the server-side stream is interrupted (server crash, dev-server
+      // reload, proxy timeout, or a hung upstream that the browser gave up
+      // on). The raw message is unhelpful — make it explicit so the operator
+      // checks the server console rather than assuming the operation failed.
+      const raw = err instanceof Error ? err.message : String(err);
+      const isNetworkDrop = err instanceof TypeError && /network|fetch|load failed/i.test(raw);
+      const data = isNetworkDrop
+        ? `Streaming connection to server was interrupted (${raw}). The operation may still be running, succeeded, or failed on the server — check the dev-server console for the actual outcome before re-running.`
+        : raw;
       setLogs((prev) => [
         ...prev,
-        { type: "error", data: String(err), ts: Date.now() },
+        { type: "error", data, ts: Date.now() },
       ]);
     } finally {
       setRunning(false);
