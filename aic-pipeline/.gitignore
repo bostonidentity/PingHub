@@ -51,3 +51,8 @@ next-env.d.ts
 .superpowers/
 .claude/
 .playwright-mcp/
+
+# AI-agent guidance — tracked locally only so contributors can keep notes
+# alongside the project without shipping them in the published branches.
+CLAUDE.md
+AGENTS.md
