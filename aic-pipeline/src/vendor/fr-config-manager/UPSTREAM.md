@@ -127,6 +127,13 @@
     memory; per-item misses are reported individually. The "Pulling N
     script(s)" banner is now phrased as "Fetched N script(s) … filtering
     for …" so the count isn't read as the number actually saved.
+14. **`common/restClient.js`** — on a final HTTP failure, append the
+    tenant's response body (truncated at 500 chars) to the thrown
+    error's `message`. Upstream rethrows axios's bare
+    `Request failed with status code 400`, which makes 4xx/5xx from AIC
+    impossible to triage without a debugger. With this patch the
+    caller's stderr line shows the AIC error envelope
+    (`{code, reason, message}`) inline.
 
 ## Security note
 
