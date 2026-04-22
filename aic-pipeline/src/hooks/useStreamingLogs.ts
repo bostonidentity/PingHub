@@ -65,6 +65,10 @@ export function useStreamingLogs() {
             const entry: LogEntry = JSON.parse(line);
             if (entry.type === "report") {
               if (entry.data) setReport(JSON.parse(entry.data) as CompareReport);
+            } else if ((entry.type as string) === "heartbeat") {
+              // Server-side keepalive ping (see fr-config.ts spawnFrConfig).
+              // Drop it — it's only there to keep the browser fetch reader
+              // from timing out during a long-running PUT.
             } else {
               setLogs((prev) => [...prev, entry]);
               if (entry.type === "exit") {
