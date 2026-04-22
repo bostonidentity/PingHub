@@ -47,6 +47,14 @@ async function pullIgaWorkflows({ exportDir, tenantUrl, token, name, includeImmu
   const response = await restGet(endpoint, { _pageSize: 100 }, token);
   const workflows = response.data.result;
 
+  // Tenants with no IGA workflows return a payload without `result` (or an
+  // empty/non-array value). Treat that as "no workflows configured" rather
+  // than letting the for…of below throw "workflows is not iterable".
+  if (!Array.isArray(workflows) || workflows.length === 0) {
+    emit("No IGA workflows found.\n");
+    return;
+  }
+
   const targetDir = path.join(exportDir, EXPORT_SUBDIR);
   let workflowFound = false;
 

@@ -1,13 +1,14 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useCallback } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 import { Environment, EnvironmentType } from "@/lib/fr-config-types";
 import { EnvironmentBadge } from "@/components/EnvironmentBadge";
-import { EnvEditor } from "./EnvEditor";
+import { EnvEditor, type EnvEditorHandle, type EnvSaveState, type EnvMeta } from "./EnvEditor";
 import { cn } from "@/lib/utils";
 import { ServiceAccountScopeSelector } from "@/components/ServiceAccountScopeSelector";
+import { StatusPill } from "@/components/ui/StatusPill";
 import { useDialog } from "@/components/ConfirmDialog";
 
 const COLOR_OPTIONS: { value: Environment["color"]; label: string }[] = [
@@ -101,7 +102,9 @@ export function EnvironmentsManager({
   const { confirm } = useDialog();
   const [environments, setEnvironments] = useState(initialEnvironments);
   const [editing, setEditing] = useState<Environment | null>(null);
-  const [editorBusy, setEditorBusy] = useState(false);
+  const [editorSave, setEditorSave] = useState<EnvSaveState>({ saving: false, saved: false, loading: false, error: "" });
+  const [editorMeta, setEditorMeta] = useState<EnvMeta | null>(null);
+  const editorRef = useRef<EnvEditorHandle>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [addStep, setAddStep] = useState<AddStep>("meta");
   const [form, setForm] = useState<NewEnvForm>(EMPTY_FORM);
@@ -198,7 +201,7 @@ export function EnvironmentsManager({
     const res = await fetch(`/api/environments/${name}`, { method: "DELETE" });
     if (res.ok) {
       setEnvironments((prev) => prev.filter((e) => e.name !== name));
-      if (editing?.name === name) setEditing(null);
+      if (editing?.name === name) openEditor(null);
     }
   };
 
@@ -206,6 +209,21 @@ export function EnvironmentsManager({
     setEnvironments((prev) => prev.map((e) => (e.name === updated.name ? updated : e)));
     setEditing(updated);
   };
+
+  // Open/close the editor while keeping live meta + save state in sync with
+  // the env being edited (avoids a stale badge flash when switching envs).
+  const openEditor = useCallback((env: Environment | null) => {
+    setEditorMeta(null);
+    setEditorSave({ saving: false, saved: false, loading: false, error: "" });
+    setEditing(env);
+  }, []);
+
+  const handleSaveStateChange = useCallback((s: EnvSaveState) => setEditorSave(s), []);
+  const handleMetaChange = useCallback((m: EnvMeta) => setEditorMeta(m), []);
+
+  const editingDisplay: Environment | null = editing
+    ? (editorMeta ? { ...editing, label: editorMeta.label, color: editorMeta.color } : editing)
+    : null;
 
   const stepIdx = STEPS.indexOf(addStep);
 
@@ -225,7 +243,7 @@ export function EnvironmentsManager({
               "group card-padded text-left cursor-pointer transition-shadow hover:shadow-[0_2px_8px_rgba(15,23,42,0.06)]",
               dragOverIdx === idx && "ring-2 ring-indigo-400 ring-offset-1"
             )}
-            onClick={() => { setEditing(env); setShowAdd(false); }}
+            onClick={() => { openEditor(env); setShowAdd(false); }}
           >
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-center gap-2.5 min-w-0 flex-1">
@@ -568,23 +586,33 @@ export function EnvironmentsManager({
       )}
 
       {/* Edit dialog */}
-      <Dialog.Root open={editing !== null} onOpenChange={(open) => { if (!open && !editorBusy) { setEditing(null); setEditorBusy(false); } }}>
+      <Dialog.Root open={editing !== null} onOpenChange={(open) => { if (!open) openEditor(null); }}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 data-[state=open]:animate-in data-[state=open]:fade-in" />
           <Dialog.Content
-            onPointerDownOutside={(e) => { if (editorBusy) e.preventDefault(); }}
-            onInteractOutside={(e) => { if (editorBusy) e.preventDefault(); }}
-            onEscapeKeyDown={(e) => { if (editorBusy) e.preventDefault(); }}
             className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[min(900px,calc(100vw-32px))] max-h-[calc(100vh-48px)] overflow-y-auto bg-white rounded-2xl shadow-2xl"
           >
             <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-              <div className="flex items-center gap-3">
-                {editing && <EnvironmentBadge env={editing} />}
+              <div className="flex items-center gap-3 min-w-0">
+                {editingDisplay && <EnvironmentBadge env={editingDisplay} />}
                 <Dialog.Title className="text-sm font-semibold text-slate-700">
                   Edit Environment
                 </Dialog.Title>
+                {editing && (
+                  <span className="text-xs font-mono text-slate-400 truncate">{editing.name}</span>
+                )}
               </div>
               <div className="flex items-center gap-2">
+                {editorSave.error && <span className="text-xs text-red-600">{editorSave.error}</span>}
+                {editorSave.saved && <StatusPill tone="success">Saved</StatusPill>}
+                <button
+                  type="button"
+                  onClick={() => editorRef.current?.save()}
+                  disabled={editorSave.saving || editorSave.loading}
+                  className="btn-primary text-xs px-3 py-1.5"
+                >
+                  {editorSave.saving ? "Saving..." : "Save"}
+                </button>
                 {editing && (
                   <button
                     type="button"
@@ -607,9 +635,11 @@ export function EnvironmentsManager({
             <div className="p-5">
               {editing && (
                 <EnvEditor
+                  ref={editorRef}
                   env={editing}
                   onUpdate={handleEnvUpdated}
-                  onBusyChange={setEditorBusy}
+                  onSaveStateChange={handleSaveStateChange}
+                  onMetaChange={handleMetaChange}
                 />
               )}
             </div>

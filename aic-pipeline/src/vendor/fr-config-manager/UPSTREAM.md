@@ -78,7 +78,12 @@
 
 - **saml** — 170-line pull + 325-line push with XML + signing keys. Intentionally deferred: needs human review.
 - **Frodo scopes** (`am-agents`, `oidc-providers`, `variables`) — require adopting `@rockcarver/frodo-lib` as an npm dependency with its own connection-state model. Intentionally deferred.
-- **Direct-control / DCC staging** — production-critical path. The vendor route keeps the `spawnFrConfig` path for `directControl: true` cases (`directControl` flag forces fall-through to spawn).
+- **Direct-control / DCC staging** — handled in-process via the
+  `setDirectControlMode(true)` toggle on `restClient` (see local patch
+  #12). Vendored push functions can now run inside an open DCC session;
+  no spawn is needed. The session lifecycle itself
+  (`init` / `apply` / `abort` / `state`) is implemented in
+  `src/lib/tenant-control.ts`.
 
 ## Local patches
 
@@ -87,8 +92,20 @@
    Upstream bug at `scripts/managed.js:66`.
 2. **`push/update-scripts.js`** — inner `pushScript` call is `await`ed.
    Upstream (`update-scripts.js:208`) fires the calls concurrently.
+   Also already emits `PUT <url>` per script (line 34) so the operator
+   can see which write is in flight.
 3. **`pull/journeys.js`** — `exportScriptById` and recursive `processJourneys`
    are `await`ed; `journeyCache` scoped per-call.
+
+   Also **`push/update-auth-trees.js`** — `pushNode` and `pushJourney`
+   now emit `  PUT <url>` per request (matching the pattern already in
+   `update-scripts.js:34`). Upstream emits only one `Pushing journey
+   <realm>/<id>` line at the start of `handleJourney`, so when the
+   sequence of node + tree PUTs that follows hangs, the operator has no
+   way to tell which request stalled. With this patch every
+   node/tree PUT is logged before it's sent — pairs cleanly with the
+   restClient timeout (#14) so a hung request shows up as
+   `ECONNABORTED` against a known URL.
 4. **`pull/password-policy.js`** — writes to `{exportDir}/realms/<realm>/...`
    instead of upstream's `{exportDir}/<realm>/...` (upstream pull+push don't
    round-trip otherwise).
@@ -101,6 +118,42 @@
 9. **`push/update-idm-schedules.js`** — awaits each restPut (upstream doesn't).
 10. **`push/update-secret-mappings.js`** — sequential awaited loop instead of
     concurrent Promise.all.
+11. **`pull/iga-workflows.js`** — guard against non-array `result`. Tenants
+    with no IGA workflows configured return a payload without `result`,
+    which upstream iterates blindly and throws "workflows is not iterable".
+    We treat that as "no workflows" and return cleanly so the scope
+    succeeds instead of triggering retries + a hard failure.
+12. **`common/restClient.js`** — adds module-level
+    `setDirectControlMode(on)` / `getDirectControlMode()` and injects
+    `X-Configuration-Type: mutable` on every request when on. Lets the
+    in-process dispatcher run vendored push functions inside an open AIC
+    DCC session (controlled-env promote) without spawning the upstream
+    CLI. `fr-config-dispatch.ts` toggles the flag from
+    `--direct-control` in `extraArgs`, in a try/finally.
+13. **`pull/scripts.js`** — accept `name` as `string | string[]` and
+    match against either `script.name` or `script._id` (UUID). Upstream
+    only matches by name and only accepts a single value, which forced
+    the dispatcher to call `pullScripts` once per item — each call
+    re-fetched all scripts on the tenant (60+) and discarded all but
+    one. The batched call does one fetch per realm and filters in
+    memory; per-item misses are reported individually. The "Pulling N
+    script(s)" banner is now phrased as "Fetched N script(s) … filtering
+    for …" so the count isn't read as the number actually saved.
+14. **`common/restClient.js`** — on a final HTTP failure, append the
+    tenant's response body (truncated at 500 chars) to the thrown
+    error's `message`. Upstream rethrows axios's bare
+    `Request failed with status code 400`, which makes 4xx/5xx from AIC
+    impossible to triage without a debugger. With this patch the
+    caller's stderr line shows the AIC error envelope
+    (`{code, reason, message}`) inline. Also retry network-level errors
+    (no HTTP response: `ECONNRESET`, `ETIMEDOUT`, `EAI_AGAIN`, …) the
+    same way upstream retries 5xx, and decorate the thrown message with
+    `err.code` / `err.cause.code` plus the request URL so a network
+    failure isn't just `TypeError: network error` with no clue what
+    failed. Adds a 60s per-request timeout (`REQUEST_TIMEOUT_MS`) so a
+    hung AIC endpoint surfaces an `ECONNABORTED` instead of stalling
+    the entire push and forcing the browser to drop the streaming HTTP
+    response.
 
 ## Security note
 

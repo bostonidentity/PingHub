@@ -3,6 +3,13 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { spawnFrConfig, getConfigDir, getEnvFileContent } from "@/lib/fr-config";
+
+// Long-running streaming response. Force the Node.js runtime, opt out of
+// route-level caching, and bump the per-request max duration to 10 min so
+// neither Next.js nor a downstream optimization layer truncates the stream.
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 600;
 import { dispatchFrConfig } from "@/lib/fr-config-dispatch";
 import { parseEnvFile } from "@/lib/env-parser";
 import type { ScopeSelection } from "@/lib/fr-config-types";
@@ -160,33 +167,52 @@ function remapIds(tempDirs: string[], scope: string, sourceNameToId: Map<string,
     // Journeys match by directory name — no _id remapping needed
     logs.push("Journeys matched by directory name — no ID remapping needed");
   } else {
-    // Generic: remap _id in JSON files
+    // Generic: remap _id in JSON files. Mirror buildNameToIdMap's key logic so
+    // dir-based scopes (email-templates, connector-mappings) key on directory
+    // name — the stable identity that matches `_id`'s suffix. Using
+    // `json.name` would miscollide when a copy inherits the original's name
+    // field (e.g. kyidEmailOtpCopy has json.name "kyidEmailOtp", same as the
+    // original template — so the old code remapped the copy onto the original
+    // and overwrote it on the target).
     for (const dir of tempDirs) {
-      const processDir = (d: string) => {
-        if (!fs.existsSync(d)) return;
-        for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
-          if (entry.isDirectory()) {
-            processDir(path.join(d, entry.name));
-          } else if (entry.name.endsWith(".json")) {
-            const fp = path.join(d, entry.name);
-            try {
-              const json = JSON.parse(fs.readFileSync(fp, "utf-8"));
-              if (!json._id) continue;
-              const name = json.name ?? path.basename(entry.name, ".json");
-              const targetId = targetNameToId.get(name);
-              if (targetId && targetId !== json._id) {
-                const oldId = json._id;
-                json._id = targetId;
-                fs.writeFileSync(fp, JSON.stringify(json, null, 2));
-                logs.push(`Remapped "${name}": ${oldId} → ${targetId}`);
-              } else if (!targetId) {
-                logs.push(`"${name}" not found on target — will be created`);
-              }
-            } catch { /* skip */ }
-          }
+      if (!fs.existsSync(dir)) continue;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          // Dir-based entry: <dir>/<name>/<name>.json
+          const inner = path.join(dir, entry.name, `${entry.name}.json`);
+          if (!fs.existsSync(inner)) continue;
+          try {
+            const json = JSON.parse(fs.readFileSync(inner, "utf-8"));
+            if (!json._id) continue;
+            const targetId = targetNameToId.get(entry.name);
+            if (targetId && targetId !== json._id) {
+              const oldId = json._id;
+              json._id = targetId;
+              fs.writeFileSync(inner, JSON.stringify(json, null, 2));
+              logs.push(`Remapped "${entry.name}": ${oldId} → ${targetId}`);
+            } else if (!targetId) {
+              logs.push(`"${entry.name}" not found on target — will be created`);
+            }
+          } catch { /* skip */ }
+        } else if (entry.name.endsWith(".json")) {
+          // Flat entry: <dir>/<name>.json
+          const fp = path.join(dir, entry.name);
+          try {
+            const json = JSON.parse(fs.readFileSync(fp, "utf-8"));
+            if (!json._id) continue;
+            const name = json.name ?? path.basename(entry.name, ".json");
+            const targetId = targetNameToId.get(name);
+            if (targetId && targetId !== json._id) {
+              const oldId = json._id;
+              json._id = targetId;
+              fs.writeFileSync(fp, JSON.stringify(json, null, 2));
+              logs.push(`Remapped "${name}": ${oldId} → ${targetId}`);
+            } else if (!targetId) {
+              logs.push(`"${name}" not found on target — will be created`);
+            }
+          } catch { /* skip */ }
         }
-      };
-      processDir(dir);
+      }
     }
   }
 }
@@ -557,8 +583,7 @@ export async function POST(req: NextRequest) {
         if (pushScopes.length === 0) {
           emit({ type: "stdout", data: "No items to push — temp directory is empty.\n", ts: Date.now() });
           emit({ type: "exit", code: 0, ts: Date.now() });
-          controller.close();
-          return;
+          return;  // outer `finally` closes the controller
         }
 
         // ── Push ──────────────────────────────────────────────────────────
@@ -1172,10 +1197,32 @@ export async function POST(req: NextRequest) {
           return true;
         });
 
+        // Push dependencies before dependents. Scripts (and other "leaf"
+        // resources) must reach the tenant before journeys, otherwise the
+        // journey/node PUT references script UUIDs the tenant doesn't know
+        // yet and AIC returns 400. The non-DCC path enforces this implicitly
+        // via the per-scope blocks above (scriptsSel block runs before
+        // journeysSel block), but the DCC path falls through to spawnFrConfig
+        // with whatever order scopeSelections happens to be in. Sort here.
+        const SCOPE_PUSH_RANK: Record<string, number> = {
+          // Leaf resources first (no inbound deps from other selected scopes).
+          "scripts": 10,
+          "managed-objects": 20,
+          // Anything not listed lands in the middle (rank 50).
+          // Dependents last.
+          "journeys": 90,
+        };
+        spawnPushScopes.sort((a, b) =>
+          (SCOPE_PUSH_RANK[a as string] ?? 50) - (SCOPE_PUSH_RANK[b as string] ?? 50)
+        );
+
         let pushFailed = managedPushFailed || scriptsPushFailed || journeysPushFailed || idmFlatPushFailed || passwordPolicyPushFailed || orgPrivilegesPushFailed || cookieDomainsPushFailed || corsPushFailed || cspPushFailed || localesPushFailed || endpointsPushFailed || internalRolesPushFailed || emailTemplatesPushFailed || customNodesPushFailed || themesPushFailed || emailProviderPushFailed || schedulesPushFailed || igaWorkflowsPushFailed || termsPushFailed || serviceObjectsPushFailed || rawPushFailed || authzPoliciesPushFailed || oauth2AgentsPushFailed || servicesPushFailed || telemetryPushFailed || connectorDefsPushFailed || connectorMappingsPushFailed || remoteServersPushFailed || secretsPushFailed || secretMappingsPushFailed;
 
         if (spawnPushScopes.length > 0) {
-          emit({ type: "stdout", data: `Pushing ${spawnPushScopes.length} scope(s) via fr-config-push: ${spawnPushScopes.join(", ")}${directControl ? " (via /mutable endpoints)" : ""}...\n`, ts: Date.now() });
+          // Note: --direct-control adds an X-Configuration-Type: mutable
+          // request header (per upstream restClient v1.5.12); URLs are
+          // unchanged. Phrase the banner accordingly.
+          emit({ type: "stdout", data: `Pushing ${spawnPushScopes.length} scope(s) via fr-config-push: ${spawnPushScopes.join(", ")}${directControl ? " (X-Configuration-Type: mutable)" : ""}...\n`, ts: Date.now() });
           const { stream: pushStream } = spawnFrConfig({
             command: "fr-config-push",
             environment: targetEnvironment,
@@ -1220,8 +1267,7 @@ export async function POST(req: NextRequest) {
             emit({ type: "stdout", data: `Push staged in direct-control session. Pull-target deferred until after apply.\n`, ts: Date.now() });
             emit({ type: "exit", code: 0, ts: Date.now() });
           }
-          controller.close();
-          return;
+          return;  // outer `finally` closes the controller
         }
 
         // Step 4: Pull target to sync local files (only if push succeeded)
@@ -1633,7 +1679,11 @@ export async function POST(req: NextRequest) {
         try {
           if (fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true });
         } catch { /* ignore */ }
-        controller.close();
+        // Defensive close: any other path that already closed the
+        // controller would otherwise crash this finally with
+        // ERR_INVALID_STATE, which Next.js surfaces as a 500 and the
+        // browser sees as ERR_INCOMPLETE_CHUNKED_ENCODING.
+        try { controller.close(); } catch { /* already closed */ }
       }
     },
   });
@@ -1641,8 +1691,12 @@ export async function POST(req: NextRequest) {
   return new Response(stream as unknown as ReadableStream<Uint8Array>, {
     headers: {
       "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
+      // no-transform tells intermediaries (incl. some Next.js dev layers)
+      // to skip gzip compression that buffers tiny chunks until a flush
+      // threshold. X-Accel-Buffering disables nginx-style proxy buffering.
+      "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
     },
   });
 }
