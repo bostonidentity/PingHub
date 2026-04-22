@@ -102,7 +102,6 @@ export function EnvironmentsManager({
   const { confirm } = useDialog();
   const [environments, setEnvironments] = useState(initialEnvironments);
   const [editing, setEditing] = useState<Environment | null>(null);
-  const [editorBusy, setEditorBusy] = useState(false);
   const [editorSave, setEditorSave] = useState<EnvSaveState>({ saving: false, saved: false, loading: false, error: "" });
   const [editorMeta, setEditorMeta] = useState<EnvMeta | null>(null);
   const editorRef = useRef<EnvEditorHandle>(null);
@@ -587,13 +586,10 @@ export function EnvironmentsManager({
       )}
 
       {/* Edit dialog */}
-      <Dialog.Root open={editing !== null} onOpenChange={(open) => { if (!open && !editorBusy) { openEditor(null); setEditorBusy(false); } }}>
+      <Dialog.Root open={editing !== null} onOpenChange={(open) => { if (!open) openEditor(null); }}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 data-[state=open]:animate-in data-[state=open]:fade-in" />
           <Dialog.Content
-            onPointerDownOutside={(e) => { if (editorBusy) e.preventDefault(); }}
-            onInteractOutside={(e) => { if (editorBusy) e.preventDefault(); }}
-            onEscapeKeyDown={(e) => { if (editorBusy) e.preventDefault(); }}
             className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[min(900px,calc(100vw-32px))] max-h-[calc(100vh-48px)] overflow-y-auto bg-white rounded-2xl shadow-2xl"
           >
             <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
@@ -626,22 +622,11 @@ export function EnvironmentsManager({
                     Delete
                   </button>
                 )}
-                {editorBusy ? (
-                  <button
-                    aria-label="Close"
-                    disabled
-                    title="Stop the polling status check before closing"
-                    className="text-slate-300 cursor-not-allowed p-1 rounded"
-                  >
+                <Dialog.Close asChild>
+                  <button aria-label="Close" className="text-slate-400 hover:text-slate-600 p-1 rounded">
                     <X className="w-4 h-4" />
                   </button>
-                ) : (
-                  <Dialog.Close asChild>
-                    <button aria-label="Close" className="text-slate-400 hover:text-slate-600 p-1 rounded">
-                      <X className="w-4 h-4" />
-                    </button>
-                  </Dialog.Close>
-                )}
+                </Dialog.Close>
               </div>
             </div>
             <Dialog.Description className="sr-only">
@@ -653,7 +638,6 @@ export function EnvironmentsManager({
                   ref={editorRef}
                   env={editing}
                   onUpdate={handleEnvUpdated}
-                  onBusyChange={setEditorBusy}
                   onSaveStateChange={handleSaveStateChange}
                   onMetaChange={handleMetaChange}
                 />
