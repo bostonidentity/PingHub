@@ -193,11 +193,15 @@ export function PullPanel({
 
   const onStart = async () => {
     setError(null);
-    const res = await start(env, [...selected]);
-    if (!res.ok) {
-      setError(res.status === 409
-        ? `A pull for ${env} is already running (${res.body.jobId}).`
-        : res.body.error ?? `Start failed (${res.status}).`);
+    try {
+      const res = await start(env, [...selected]);
+      if (!res.ok) {
+        setError(res.status === 409
+          ? `A pull for ${env} is already running (${res.body.jobId}).`
+          : res.body.error ?? `Start failed (${res.status}).`);
+      }
+    } catch (e) {
+      setError((e as Error).message || "Failed to start pull.");
     }
   };
 
