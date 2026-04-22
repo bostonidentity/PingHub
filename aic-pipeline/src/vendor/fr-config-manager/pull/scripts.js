@@ -55,9 +55,16 @@ function processScripts(scripts, exportDir, filters, emit) {
     if (script.language !== "JAVASCRIPT") continue;
     if (filters) {
       // Match against either the script name or the AM `_id` (UUID).
-      const matched = filters.find((f) => f === script.name || f === script._id);
-      if (!matched) continue;
-      unmatched.delete(matched);
+      const anyMatch = filters.some((f) => f === script.name || f === script._id);
+      if (!anyMatch) continue;
+      // Callers can pass duplicate forms for the same script (e.g. compare's
+      // addDepsToSelections pushes both `<uuid>.json` and `name:<n>`). Clear
+      // *every* filter that points to this script so a successful match
+      // doesn't leave the other form behind in `unmatched` and produce a
+      // false "Script not found".
+      for (const f of filters) {
+        if (f === script.name || f === script._id) unmatched.delete(f);
+      }
     }
     saveScriptToFile(script, exportDir);
     emit(`  ← ${script.name}\n`);
