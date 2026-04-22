@@ -36,16 +36,20 @@ const ENV_VARS = { TENANT_BASE_URL: "https://t.example", SERVICE_ACCOUNT_ID: "sa
 describe("runPull: happy path", () => {
   it("fetches paginated records and writes one JSON per record atomically", async () => {
     const fetchMock = mockFetchSequence([
-      { status: 200, body: {
-        result: [{ _id: "u1", userName: "a" }, { _id: "u2", userName: "b" }],
-        pagedResultsCookie: "c1",
-        totalPagedResults: 3,
-      }},
-      { status: 200, body: {
-        result: [{ _id: "u3", userName: "c" }],
-        pagedResultsCookie: null,
-        totalPagedResults: 3,
-      }},
+      {
+        status: 200, body: {
+          result: [{ _id: "u1", userName: "a" }, { _id: "u2", userName: "b" }],
+          pagedResultsCookie: "c1",
+          totalPagedResults: 3,
+        }
+      },
+      {
+        status: 200, body: {
+          result: [{ _id: "u3", userName: "c" }],
+          pagedResultsCookie: null,
+          totalPagedResults: 3,
+        }
+      },
     ]);
 
     const job = registry.startJob("uat", ["alpha_user"]);
@@ -62,7 +66,7 @@ describe("runPull: happy path", () => {
 
     const typeDir = path.join(tmpDir, "uat", "managed-data", "alpha_user");
     expect(fs.readdirSync(typeDir).sort()).toEqual([
-      "_manifest.json", "u1.json", "u2.json", "u3.json",
+      "_index.json", "_manifest.json", "u1.json", "u2.json", "u3.json",
     ]);
     const manifest = JSON.parse(fs.readFileSync(path.join(typeDir, "_manifest.json"), "utf-8"));
     expect(manifest.count).toBe(3);
@@ -175,10 +179,12 @@ describe("runPull: preserves previous snapshot on failure", () => {
 describe("runPull: preflight count", () => {
   it("seeds progress.total from preflightCount before paginating", async () => {
     const fetchMock = mockFetchSequence([
-      { status: 200, body: {
-        result: [{ _id: "u1" }, { _id: "u2" }],
-        pagedResultsCookie: null,
-      }},
+      {
+        status: 200, body: {
+          result: [{ _id: "u1" }, { _id: "u2" }],
+          pagedResultsCookie: null,
+        }
+      },
     ]);
 
     const job = registry.startJob("uat", ["alpha_user"]);
@@ -201,10 +207,12 @@ describe("runPull: preflight count", () => {
 
   it("leaves total null when preflight returns null", async () => {
     const fetchMock = mockFetchSequence([
-      { status: 200, body: {
-        result: [{ _id: "u1" }],
-        pagedResultsCookie: null,
-      }},
+      {
+        status: 200, body: {
+          result: [{ _id: "u1" }],
+          pagedResultsCookie: null,
+        }
+      },
     ]);
     const job = registry.startJob("uat", ["alpha_user"]);
     await runPull({

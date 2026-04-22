@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { listSnapshotTypes, readRecord, listRecords } from "./snapshot-fs";
+import { listSnapshotTypes, readRecord, listRecords, evictCache } from "./snapshot-fs";
 
 let tmpDir: string;
 const ENV = "test-env";
@@ -27,6 +27,13 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Evict all cached entries so tests don't leak state.
+  const managedDir = path.join(tmpDir, ENV, "managed-data");
+  if (fs.existsSync(managedDir)) {
+    for (const d of fs.readdirSync(managedDir)) {
+      evictCache(path.join(managedDir, d));
+    }
+  }
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -70,8 +77,8 @@ describe("readRecord", () => {
 describe("listRecords", () => {
   beforeEach(() => {
     writeManifest("alpha_user", 3);
-    writeRecord("alpha_user", "u1", { _id: "u1", name: "alice",   mail: "alice@x.co" });
-    writeRecord("alpha_user", "u2", { _id: "u2", name: "bob",     mail: "bob@x.co" });
+    writeRecord("alpha_user", "u1", { _id: "u1", name: "alice", mail: "alice@x.co" });
+    writeRecord("alpha_user", "u2", { _id: "u2", name: "bob", mail: "bob@x.co" });
     writeRecord("alpha_user", "u3", { _id: "u3", name: "charlie", mail: "alice@y.co" });
   });
 
@@ -141,5 +148,71 @@ describe("listRecords", () => {
       titleField: "name",
     });
     expect(page.records.find((r) => r.id === "u5")?.title).toBe("Overridden");
+  });
+});
+
+// ── Index-accelerated path ─────────────────────────────────────────────────
+
+function writeIndex(type: string, entries: { id: string; f: Record<string, string> }[]) {
+  const dir = path.join(tmpDir, ENV, "managed-data", type);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "_index.json"), JSON.stringify(entries));
+}
+
+describe("listRecords with _index.json", () => {
+  beforeEach(() => {
+    writeManifest("alpha_user", 3);
+    writeRecord("alpha_user", "u1", { _id: "u1", name: "alice", mail: "alice@x.co" });
+    writeRecord("alpha_user", "u2", { _id: "u2", name: "bob", mail: "bob@x.co" });
+    writeRecord("alpha_user", "u3", { _id: "u3", name: "charlie", mail: "alice@y.co" });
+    writeIndex("alpha_user", [
+      { id: "u1", f: { _id: "u1", name: "alice", mail: "alice@x.co" } },
+      { id: "u2", f: { _id: "u2", name: "bob", mail: "bob@x.co" } },
+      { id: "u3", f: { _id: "u3", name: "charlie", mail: "alice@y.co" } },
+    ]);
+  });
+
+  it("uses the index for no-query browsing without reading individual files", () => {
+    const page = listRecords(tmpDir, ENV, "alpha_user", {
+      q: "", page: 1, limit: 10,
+      display: { title: "name", searchFields: [] },
+    });
+    expect(page.total).toBe(3);
+    expect(page.records).toEqual([
+      { id: "u1", title: "alice" },
+      { id: "u2", title: "bob" },
+      { id: "u3", title: "charlie" },
+    ]);
+    expect(page.fields.length).toBeGreaterThan(0);
+  });
+
+  it("searches indexed fields without file I/O", () => {
+    const page = listRecords(tmpDir, ENV, "alpha_user", {
+      q: "alice", page: 1, limit: 10,
+      display: { title: "name", searchFields: [] },
+    });
+    expect(page.total).toBe(2);
+    expect(page.records.map((r) => r.id).sort()).toEqual(["u1", "u3"]);
+  });
+
+  it("paginates correctly from the index", () => {
+    const first = listRecords(tmpDir, ENV, "alpha_user", {
+      q: "", page: 1, limit: 2,
+      display: { title: "name", searchFields: [] },
+    });
+    expect(first.records.map((r) => r.id)).toEqual(["u1", "u2"]);
+    const second = listRecords(tmpDir, ENV, "alpha_user", {
+      q: "", page: 2, limit: 2,
+      display: { title: "name", searchFields: [] },
+    });
+    expect(second.records.map((r) => r.id)).toEqual(["u3"]);
+  });
+
+  it("falls back to id when title field is not in the index", () => {
+    const page = listRecords(tmpDir, ENV, "alpha_user", {
+      q: "", page: 1, limit: 10,
+      display: { title: "nonexistent", searchFields: [] },
+    });
+    expect(page.records[0].title).toBe("u1");
   });
 });

@@ -6,8 +6,20 @@ import type { Registry } from "./job-registry";
 const MAX_RETRIES = 2;
 const DEFAULT_RETRY_DELAY_MS = 3000;
 const PAGE_SIZE = 1000;
+const INDEX_FIELD_MAX_LEN = 200;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Extract short scalar fields from a record for the browse index. */
+function pickIndexFields(record: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(record)) {
+    if (k.startsWith("_") && k !== "_id") continue;
+    if (typeof v === "string" && v.length <= INDEX_FIELD_MAX_LEN) out[k] = v;
+    else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+  }
+  return out;
+}
 
 /**
  * Rename with retry for transient Windows locks.
@@ -125,6 +137,8 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
     const typePullingDir = path.join(pullingRoot, type);
     fs.mkdirSync(typePullingDir, { recursive: true });
 
+    const indexEntries: { id: string; f: Record<string, string> }[] = [];
+
     let cookie: string | null = null;
     let total: number | null = await preflightCount(type, token);
     let fetched = 0;
@@ -199,6 +213,7 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
                 ? item.id as string
                 : String(fetched + 1);
             fs.writeFileSync(path.join(typePullingDir, `${id}.json`), JSON.stringify(item, null, 2));
+            indexEntries.push({ id, f: pickIndexFields(item) });
             fetched++;
           }
           // Only accept a non-negative total. Default tenant behavior returns
@@ -256,9 +271,14 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
       const backupDir = path.join(envsRoot, job.env, "managed-data", `.prev-${job.id}-${type}`);
       if (fs.existsSync(currentDir)) await renameWithRetry(currentDir, backupDir);
       await renameWithRetry(typePullingDir, currentDir);
+      const pulledAt = Date.now();
       fs.writeFileSync(
         path.join(currentDir, "_manifest.json"),
-        JSON.stringify({ type, pulledAt: Date.now(), count: fetched, jobId: job.id }, null, 2),
+        JSON.stringify({ type, pulledAt, count: fetched, jobId: job.id }, null, 2),
+      );
+      fs.writeFileSync(
+        path.join(currentDir, "_index.json"),
+        JSON.stringify(indexEntries),
       );
       if (fs.existsSync(backupDir)) fs.rmSync(backupDir, { recursive: true, force: true });
 

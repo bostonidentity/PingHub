@@ -90,7 +90,7 @@ describe("data API lifecycle", () => {
 
     const typeDir = path.join(tmpDir, "environments", "test-env", "managed-data", "alpha_user");
     expect(fs.readdirSync(typeDir).sort()).toEqual([
-      "_manifest.json", "u1.json", "u2.json", "u3.json",
+      "_index.json", "_manifest.json", "u1.json", "u2.json", "u3.json",
     ]);
   });
 

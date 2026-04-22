@@ -6,6 +6,77 @@ function managedDataDir(envsRoot: string, env: string): string {
   return path.join(envsRoot, env, "managed-data");
 }
 
+// ── Index types ────────────────────────────────────────────────────────────
+
+/** One entry in the _index.json written at pull time. */
+interface IndexEntry {
+  id: string;
+  /** Short scalar fields extracted from the record. */
+  f: Record<string, string>;
+}
+
+// ── In-memory cache ────────────────────────────────────────────────────────
+// Keyed by `<dir>` and invalidated when the manifest `pulledAt` changes, so
+// new pulls automatically bust the cache.
+
+interface TypeCache {
+  pulledAt: number;
+  /** All record filenames (sorted, excluding _ prefixed). */
+  files: string[];
+  /** Union of top-level keys from the index or a sample. */
+  fields: string[];
+  /** Full index when _index.json is available, else null. */
+  index: IndexEntry[] | null;
+}
+
+const cache = new Map<string, TypeCache>();
+
+function getManifestPulledAt(dir: string): number {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(dir, "_manifest.json"), "utf-8"));
+    return typeof m.pulledAt === "number" ? m.pulledAt : 0;
+  } catch { return 0; }
+}
+
+function loadCache(dir: string): TypeCache {
+  const pulledAt = getManifestPulledAt(dir);
+  const existing = cache.get(dir);
+  if (existing && existing.pulledAt === pulledAt) return existing;
+
+  const files = fs.readdirSync(dir)
+    .filter((f) => f.endsWith(".json") && !f.startsWith("_"))
+    .sort();
+
+  // Try to load the index built at pull time.
+  let index: IndexEntry[] | null = null;
+  const indexPath = path.join(dir, "_index.json");
+  if (fs.existsSync(indexPath)) {
+    try {
+      index = JSON.parse(fs.readFileSync(indexPath, "utf-8")) as IndexEntry[];
+    } catch { /* fall back to file reads */ }
+  }
+
+  // Derive fields from the index (every scalar field seen). If no index,
+  // sample a few files like before.
+  const fieldSet = new Set<string>();
+  if (index) {
+    for (const entry of index.slice(0, FIELD_SAMPLE_SIZE)) {
+      for (const k of Object.keys(entry.f)) fieldSet.add(k);
+    }
+  } else {
+    for (const f of files.slice(0, FIELD_SAMPLE_SIZE)) {
+      try {
+        const record = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8")) as Record<string, unknown>;
+        for (const k of Object.keys(record)) fieldSet.add(k);
+      } catch { /* skip */ }
+    }
+  }
+
+  const entry: TypeCache = { pulledAt, files, fields: [...fieldSet].sort(), index };
+  cache.set(dir, entry);
+  return entry;
+}
+
 export function listSnapshotTypes(envsRoot: string, env: string): SnapshotType[] {
   const root = managedDataDir(envsRoot, env);
   if (!fs.existsSync(root)) return [];
@@ -70,45 +141,66 @@ export function listRecords(
   }
 
   const q = opts.q.trim().toLowerCase();
-  const files = fs.readdirSync(dir)
-    .filter((f) => f.endsWith(".json") && f !== "_manifest.json")
-    .sort();
-
-  // Field union: sample the first N records regardless of search so the
-  // display-attribute picker stays populated even when the query matches
-  // nothing.
-  const fieldSet = new Set<string>();
-  for (const f of files.slice(0, FIELD_SAMPLE_SIZE)) {
-    try {
-      const record = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8")) as Record<string, unknown>;
-      for (const k of Object.keys(record)) fieldSet.add(k);
-    } catch { /* skip */ }
-  }
-  const fields = [...fieldSet].sort();
-
+  const tc = loadCache(dir);
+  const { files, fields, index } = tc;
   const titleField = opts.titleField ?? opts.display.title;
   const start = (opts.page - 1) * opts.limit;
 
   if (!q) {
-    // No search — total is the file count; only read the page slice to
-    // extract titles, avoiding thousands of unnecessary file reads.
+    // No search — use the cached file list + index for O(1) pagination.
     const total = files.length;
     const pageFiles = files.slice(start, start + opts.limit);
+
+    if (index) {
+      // Fast path: look up titles from the in-memory index.
+      const byId = new Map<string, IndexEntry>();
+      for (const e of index) byId.set(e.id, e);
+      const records = pageFiles.map((f) => {
+        const id = f.replace(/\.json$/, "");
+        const entry = byId.get(id);
+        if (entry) {
+          const key = findKeyCI(entry.f, titleField);
+          const title = (key && entry.f[key]) || id;
+          return { id, title };
+        }
+        // Not in index — read file (shouldn't happen for index-era data).
+        return readTitleFromFile(dir, f, id, titleField);
+      });
+      return { total, page: opts.page, limit: opts.limit, fields, records };
+    }
+
+    // No index — read only the page slice files (legacy data).
     const records = pageFiles.map((f) => {
       const id = f.replace(/\.json$/, "");
-      try {
-        const record = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8")) as Record<string, unknown>;
-        const key = findKeyCI(record, titleField);
-        const title = (key && stringOrEmpty(record[key])) || id;
-        return { id, title };
-      } catch {
-        return { id, title: id };
-      }
+      return readTitleFromFile(dir, f, id, titleField);
     });
     return { total, page: opts.page, limit: opts.limit, fields, records };
   }
 
-  // Search: scan raw text for matches but only parse JSON for the page slice.
+  // Search path.
+  if (index) {
+    // Fast search: scan the in-memory index fields for matches, avoiding
+    // file I/O entirely for the common case where the query hits indexed fields.
+    const matchingEntries: IndexEntry[] = [];
+    for (const entry of index) {
+      for (const v of Object.values(entry.f)) {
+        if (v.toLowerCase().includes(q)) {
+          matchingEntries.push(entry);
+          break;
+        }
+      }
+    }
+    const total = matchingEntries.length;
+    const pageEntries = matchingEntries.slice(start, start + opts.limit);
+    const records = pageEntries.map((entry) => {
+      const key = findKeyCI(entry.f, titleField);
+      const title = (key && entry.f[key]) || entry.id;
+      return { id: entry.id, title };
+    });
+    return { total, page: opts.page, limit: opts.limit, fields, records };
+  }
+
+  // No index — fall back to scanning raw files.
   const matchingFiles: string[] = [];
   for (const f of files) {
     try {
@@ -123,14 +215,26 @@ export function listRecords(
   const pageFiles = matchingFiles.slice(start, start + opts.limit);
   const records = pageFiles.map((f) => {
     const id = f.replace(/\.json$/, "");
-    try {
-      const record = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8")) as Record<string, unknown>;
-      const key = findKeyCI(record, titleField);
-      const title = (key && stringOrEmpty(record[key])) || id;
-      return { id, title };
-    } catch {
-      return { id, title: id };
-    }
+    return readTitleFromFile(dir, f, id, titleField);
   });
   return { total, page: opts.page, limit: opts.limit, fields, records };
+}
+
+/** Read a single file to extract its title — fallback for legacy (pre-index) data. */
+function readTitleFromFile(
+  dir: string, filename: string, id: string, titleField: string,
+): { id: string; title: string } {
+  try {
+    const record = JSON.parse(fs.readFileSync(path.join(dir, filename), "utf-8")) as Record<string, unknown>;
+    const key = findKeyCI(record, titleField);
+    const title = (key && stringOrEmpty(record[key])) || id;
+    return { id, title };
+  } catch {
+    return { id, title: id };
+  }
+}
+
+/** Evict the cache for a specific type directory. Exposed for testing. */
+export function evictCache(dir: string): void {
+  cache.delete(dir);
 }
