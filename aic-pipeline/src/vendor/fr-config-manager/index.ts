@@ -75,7 +75,7 @@ const scriptsPull = require("./pull/scripts.js") as {
     token: string;
     realms?: string[];
     prefixes?: string[];
-    name?: string;
+    name?: string | string[];
     log?: (line: string) => void;
   }) => Promise<void>;
 };
@@ -83,6 +83,10 @@ const scriptsPull = require("./pull/scripts.js") as {
 /**
  * Pull AM scripts from all realms (filtered by prefixes / name) into
  * `exportDir/<realm>/scripts/{scripts-config,scripts-content}/`.
+ *
+ * `name` accepts a single value or an array — each filter matches against
+ * either `script.name` or `script._id` (UUID). When undefined or empty,
+ * all scripts in the prefix set are saved.
  */
 export async function pullScripts(opts: {
   exportDir: string;
@@ -90,7 +94,7 @@ export async function pullScripts(opts: {
   token: string;
   realms?: string[];
   prefixes?: string[];
-  name?: string;
+  name?: string | string[];
   log?: (line: string) => void;
 }): Promise<void> {
   await scriptsPull.exportScripts(opts);
