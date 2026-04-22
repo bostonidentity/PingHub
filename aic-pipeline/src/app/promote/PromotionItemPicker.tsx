@@ -89,8 +89,8 @@ function ScopeRow({
   const visible = sorted.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
   const needsPagination = sorted.length > PAGE_SIZE;
 
-
-  const headerIsToggle = !entry.selectable;
+  const checkState: "unchecked" | "indeterminate" | "checked" =
+    !included ? "unchecked" : selectedItems === null ? "checked" : "indeterminate";
 
   return (
     <div className="border-b border-slate-200 last:border-b-0">
@@ -105,22 +105,27 @@ function ScopeRow({
         )}
         onClick={entry.items.length > 0 ? () => setOpen((o) => !o) : undefined}
       >
-        {/* Non-selectable: check indicator — click toggles scope inclusion */}
-        {headerIsToggle && (
-          <span
-            className={cn(
-              "w-4 h-4 rounded border-2 shrink-0 flex items-center justify-center transition-colors",
-              included ? "bg-sky-600 border-sky-600" : "border-slate-400 bg-white",
-            )}
-            onClick={(e) => { e.stopPropagation(); onToggleScope(!included); }}
-          >
-            {included && (
-              <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-            )}
-          </span>
-        )}
+        {/* Scope-level tri-state checkbox — click toggles whole-scope inclusion.
+            Indeterminate appears only for selectable scopes with a subset of
+            items picked; the "Select all" link below handles partial→full. */}
+        <span
+          className={cn(
+            "w-4 h-4 rounded border-2 shrink-0 flex items-center justify-center transition-colors",
+            checkState !== "unchecked" ? "bg-sky-600 border-sky-600" : "border-slate-400 bg-white",
+          )}
+          onClick={(e) => { e.stopPropagation(); onToggleScope(!included); }}
+        >
+          {checkState === "checked" && (
+            <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          )}
+          {checkState === "indeterminate" && (
+            <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 12h12" />
+            </svg>
+          )}
+        </span>
 
         <span className={cn(
           "flex-1 text-xs font-semibold tracking-wide",
@@ -150,7 +155,7 @@ function ScopeRow({
         )}
 
         {/* Non-selectable: "all files" badge */}
-        {headerIsToggle && entry.items.length > 0 && (
+        {!entry.selectable && entry.items.length > 0 && (
           <span className="text-[10px] text-slate-500 bg-slate-200 px-1.5 py-0.5 rounded">all files</span>
         )}
 
