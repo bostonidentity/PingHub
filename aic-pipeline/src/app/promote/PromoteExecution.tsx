@@ -137,72 +137,23 @@ const VARIANT_BUTTON_STYLES = {
   danger:  "bg-red-600 hover:bg-red-700 text-white",
 };
 
-// ── ESV precheck panel (runs before Dry Run) ─────────────────────────────────
+// ── ESV precheck panel (renders the report's precheck result) ───────────────
+//
+// The server runs the precheck at the tail of the dry-run pipeline, after
+// journey dependency resolution has expanded scopeSelections, so references
+// in pulled-in scripts / sub-journeys are validated. This component is a
+// pure renderer for `report.esvPrecheck` — it no longer fetches.
 
-function EsvPrecheckPanel({ task, visible }: { task: PromotionTask; visible: boolean }) {
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<PromotePrecheckResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+function EsvPrecheckPanel({ task, result }: { task: PromotionTask; result: PromotePrecheckResult | null }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
-  // Run once on first visibility, and whenever the task changes.
-  const taskKey = `${task.id}|${task.source.environment}|${task.target.environment}|${task.items.map((i) => `${i.scope}:${(i.items ?? []).join(",")}`).join("|")}`;
-  useEffect(() => {
-    if (!visible) return;
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setResult(null);
-    fetch("/api/promote/esv-check", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sourceEnv: task.source.environment,
-        targetEnv: task.target.environment,
-        scopeSelections: task.items,
-      }),
-    })
-      .then(async (res) => {
-        const body = await res.json().catch(() => ({}));
-        if (cancelled) return;
-        if (!res.ok) { setError(body.error ?? `HTTP ${res.status}`); return; }
-        setResult(body as PromotePrecheckResult);
-      })
-      .catch((e) => { if (!cancelled) setError((e as Error).message); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, taskKey]);
-
-  if (!visible) return null;
+  if (!result) return null;
 
   const toggle = (name: string) => setExpanded((prev) => {
     const next = new Set(prev);
     if (next.has(name)) next.delete(name); else next.add(name);
     return next;
   });
-
-  if (loading) {
-    return (
-      <div className="rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2 text-xs text-slate-500 flex items-center gap-2">
-        <svg className="w-3 h-3 animate-spin text-sky-600 shrink-0" fill="none" viewBox="0 0 24 24">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-        </svg>
-        Running ESV precheck on {task.items.length} scope{task.items.length === 1 ? "" : "s"}…
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
-        ESV precheck failed: {error}
-      </div>
-    );
-  }
-
-  if (!result) return null;
 
   if (result.missing.length === 0) {
     return (
@@ -478,11 +429,6 @@ function DryRunPhase({
           Simulate what will change on the target (<span className="font-mono">{task.target.environment}</span>) if the source (<span className="font-mono">{task.source.environment}</span>) is promoted to it. Review the diff carefully before proceeding.
         </p>
 
-        <EsvPrecheckPanel
-          task={task}
-          visible={visible}
-        />
-
         <div className="flex flex-wrap items-center gap-3">
           <button
             onClick={compare}
@@ -580,6 +526,13 @@ function DryRunPhase({
               </div>
             </div>
           </div>
+        )}
+
+        {/* ESV precheck — computed server-side after journey-dep resolution,
+            so scripts/sub-journeys pulled in as dependencies are included
+            in the scan. */}
+        {report && !running && (
+          <EsvPrecheckPanel task={task} result={report.esvPrecheck ?? null} />
         )}
 
         {/* Diff report */}

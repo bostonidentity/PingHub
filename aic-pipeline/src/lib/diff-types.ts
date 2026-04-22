@@ -1,4 +1,5 @@
 import type { EqualityReason } from "./semantic-compare/types";
+import type { PromotePrecheckResult } from "./analyze/promote-precheck";
 export type { EqualityReason } from "./semantic-compare/types";
 
 export interface SemanticJourneyReport {
@@ -85,4 +86,11 @@ export interface CompareReport {
   missingDeps?: MissingDepsWarning;
   /** Per-journey semantic equality report (undefined when journeys aren't in scope). */
   semanticJourneys?: SemanticJourneyReport[];
+  /**
+   * ESV precheck result — set only for dry-run mode, after journey
+   * dependency resolution has expanded `scopeSelections`. The check runs
+   * against the expanded set so ESVs referenced by deps (e.g. scripts
+   * pulled in by a journey) are validated before promote.
+   */
+  esvPrecheck?: PromotePrecheckResult;
 }
