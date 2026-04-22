@@ -196,8 +196,8 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
             const id = typeof item._id === "string"
               ? item._id
               : typeof item.id === "string"
-              ? item.id as string
-              : String(fetched + 1);
+                ? item.id as string
+                : String(fetched + 1);
             fs.writeFileSync(path.join(typePullingDir, `${id}.json`), JSON.stringify(item, null, 2));
             fetched++;
           }
@@ -249,17 +249,28 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
     // Atomic swap: prev → .prev-<job>-<type>, new → current, delete prev.
     // Uses renameWithRetry so transient Windows file-handle locks don't
     // fail the pull after we've already fetched every record.
-    const currentDir = path.join(envsRoot, job.env, "managed-data", type);
-    const backupDir = path.join(envsRoot, job.env, "managed-data", `.prev-${job.id}-${type}`);
-    if (fs.existsSync(currentDir)) await renameWithRetry(currentDir, backupDir);
-    await renameWithRetry(typePullingDir, currentDir);
-    fs.writeFileSync(
-      path.join(currentDir, "_manifest.json"),
-      JSON.stringify({ type, pulledAt: Date.now(), count: fetched, jobId: job.id }, null, 2),
-    );
-    if (fs.existsSync(backupDir)) fs.rmSync(backupDir, { recursive: true, force: true });
+    // Wrapped in try/catch so a persistent lock doesn't leave the job
+    // stuck as "running" forever (which would block all future pulls).
+    try {
+      const currentDir = path.join(envsRoot, job.env, "managed-data", type);
+      const backupDir = path.join(envsRoot, job.env, "managed-data", `.prev-${job.id}-${type}`);
+      if (fs.existsSync(currentDir)) await renameWithRetry(currentDir, backupDir);
+      await renameWithRetry(typePullingDir, currentDir);
+      fs.writeFileSync(
+        path.join(currentDir, "_manifest.json"),
+        JSON.stringify({ type, pulledAt: Date.now(), count: fetched, jobId: job.id }, null, 2),
+      );
+      if (fs.existsSync(backupDir)) fs.rmSync(backupDir, { recursive: true, force: true });
 
-    registry.updateProgress(job.id, type, { status: "done", fetched, total });
+      registry.updateProgress(job.id, type, { status: "done", fetched, total });
+    } catch (swapErr) {
+      anyFailed = true;
+      registry.updateProgress(job.id, type, {
+        status: "failed",
+        error: (swapErr as Error).message,
+      });
+      fs.rmSync(typePullingDir, { recursive: true, force: true });
+    }
   }
 
   // Cleanup any lingering pulling dir (aborted or failed).

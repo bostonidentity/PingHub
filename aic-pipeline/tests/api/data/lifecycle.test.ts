@@ -13,14 +13,18 @@ vi.mock("@/lib/iga-api", () => ({
 const pages = [
   // Preflight (_countPolicy=EXACT&_pageSize=1): returns just the count.
   { status: 200, body: { result: [], pagedResultsCookie: null, totalPagedResults: 3 } },
-  { status: 200, body: {
-    result: [{ _id: "u1", userName: "alice" }, { _id: "u2", userName: "bob" }],
-    pagedResultsCookie: "c1", totalPagedResults: 3,
-  }},
-  { status: 200, body: {
-    result: [{ _id: "u3", userName: "charlie" }],
-    pagedResultsCookie: null, totalPagedResults: 3,
-  }},
+  {
+    status: 200, body: {
+      result: [{ _id: "u1", userName: "alice" }, { _id: "u2", userName: "bob" }],
+      pagedResultsCookie: "c1", totalPagedResults: 3,
+    }
+  },
+  {
+    status: 200, body: {
+      result: [{ _id: "u3", userName: "charlie" }],
+      pagedResultsCookie: null, totalPagedResults: 3,
+    }
+  },
 ];
 let fetchCall = 0;
 const origFetch = globalThis.fetch;
@@ -49,6 +53,8 @@ afterEach(() => {
   process.chdir(origCwd);
   globalThis.fetch = origFetch;
   fs.rmSync(tmpDir, { recursive: true, force: true });
+  // Clear the globalThis registry singleton so it doesn't leak between tests.
+  delete (globalThis as Record<string, unknown>).__dataJobRegistry;
   vi.resetModules();
 });
 
@@ -91,7 +97,7 @@ describe("data API lifecycle", () => {
   it("POST /pull returns 409 when an active job exists for the env", async () => {
     vi.resetModules();
     // Fetch that never completes the first page so the job stays running.
-    globalThis.fetch = vi.fn(async () => new Promise(() => {})) as typeof fetch;
+    globalThis.fetch = vi.fn(async () => new Promise(() => { })) as typeof fetch;
     const { POST } = await import("@/app/api/data/pull/route");
 
     const req1 = new NextRequest("http://localhost/api/data/pull", {
