@@ -8,6 +8,7 @@ import type { CompareEndpoint } from "@/lib/diff-types";
 import { appendOpLog } from "@/lib/op-history";
 import { resolveJourneyDeps } from "@/lib/resolve-journey-deps";
 import { getRealmRoots } from "@/lib/realm-paths";
+import { runPromotePrecheck } from "@/lib/analyze/promote-precheck";
 import type { ScopeSelection } from "@/lib/fr-config-types";
 
 /** Add resolved journey deps (sub-journeys + scripts) to scope selections. */
@@ -353,6 +354,24 @@ export async function POST(req: NextRequest) {
           report.journeyTree = flipTree(report.journeyTree);
         }
         } // end of dry-run flip block
+
+        // ESV precheck — run after journey dependency resolution has expanded
+        // scopeSelections, so references in pulled-in scripts / sub-journeys
+        // are validated against the target's defined ESVs. Dry-run only: the
+        // precheck has nothing to tell a plain compare and would add cost.
+        if (diffMode === "dry-run" && scopeSelections && scopeSelections.length > 0) {
+          try {
+            report.esvPrecheck = await runPromotePrecheck(
+              source.environment,
+              target.environment,
+              scopeSelections,
+            );
+          } catch {
+            // Non-fatal — the dry-run itself succeeded. If the precheck
+            // can't run (e.g. source config missing locally), just omit
+            // it from the report instead of failing the dry-run.
+          }
+        }
 
         enqueue({ type: "report", data: JSON.stringify(report), ts: Date.now() });
         enqueue({ type: "exit", code: 0, ts: Date.now() });
