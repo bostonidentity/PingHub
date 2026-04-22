@@ -432,13 +432,11 @@ function FrConfigControls({
   environmentName,
   envType,
   isDev,
-  onBusyChange,
 }: {
   liveValues: Record<string, string>;
   environmentName: string;
   envType: EnvironmentType;
   isDev: boolean;
-  onBusyChange?: (busy: boolean) => void;
 }) {
   // Test connection state
   const [testRunning, setTestRunning] = useState(false);
@@ -462,8 +460,7 @@ function FrConfigControls({
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [terminal]);
 
-  // Notify parent (modal wrapper) so it can block dismissal during long ops.
-  useEffect(() => { onBusyChange?.(polling); }, [polling, onBusyChange]);
+  // On unmount (e.g. modal closed mid-poll), break the polling loop cleanly.
   useEffect(() => () => { pollingRef.current = false; }, []);
 
   // ── Terminal helpers ─────────────────────────────────────────────────────
@@ -839,7 +836,6 @@ export interface EnvMeta {
 export interface EnvEditorProps {
   env: Environment;
   onUpdate?: (updated: Environment) => void;
-  onBusyChange?: (busy: boolean) => void;
   onSaveStateChange?: (state: EnvSaveState) => void;
   onMetaChange?: (meta: EnvMeta) => void;
 }
@@ -847,7 +843,6 @@ export interface EnvEditorProps {
 export const EnvEditor = forwardRef<EnvEditorHandle, EnvEditorProps>(function EnvEditor({
   env,
   onUpdate,
-  onBusyChange,
   onSaveStateChange,
   onMetaChange,
 }, ref) {
@@ -1046,7 +1041,6 @@ export const EnvEditor = forwardRef<EnvEditorHandle, EnvEditorProps>(function En
                   environmentName={env.name}
                   envType={envType}
                   isDev={devEnvironment}
-                  onBusyChange={onBusyChange}
                 />
               </div>
 
