@@ -61,6 +61,11 @@ function escapeHtml(s: string): string {
 
 const FILE_SELECTABLE_PATH_SCOPES = new Set(["scripts", "custom-nodes", "endpoints", "schedules"]);
 const NAME_FLAG_PATH_SCOPES = new Set(["journeys", "managed-objects", "iga-workflows"]);
+// DIR-based scopes whose backend pushers accept a `name` filter (templateName /
+// mappingName). Paths look like `email-templates/<template>/…` or
+// `sync/mappings/<mapping>/…` — the first path segment after the scope dir
+// identifies the item.
+const DIR_BASED_PATH_SCOPES = new Set(["email-templates", "connector-mappings"]);
 
 /** True when the given relative path belongs to the task's items array. */
 function fileInTask(relativePath: string, task: PromotionTask): boolean {
@@ -121,6 +126,13 @@ function pathToTaskScopeAndItem(relativePath: string): { scope: string; itemId: 
     let itemIdx = scopeIdx + 1;
     if (scope === "custom-nodes" && parts[itemIdx] === "nodes") itemIdx++;
     return { scope, itemId: parts[itemIdx] ?? null };
+  }
+  if (DIR_BASED_PATH_SCOPES.has(scope)) {
+    // Derive the per-item directory name via the shared scope-path parser.
+    // `email-templates/welcome/welcome.md` → "welcome".
+    // `sync/mappings/systemAd_managedUser/...` → "systemAd_managedUser".
+    const parsed = pathToScopeItem(relativePath);
+    return { scope, itemId: parsed?.item || null };
   }
   return { scope, itemId: null };
 }
