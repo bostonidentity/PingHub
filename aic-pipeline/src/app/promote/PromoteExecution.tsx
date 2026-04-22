@@ -601,6 +601,13 @@ const PROMOTE_PHASES = [
   { scope: "verify",            label: "Verify" },
 ];
 
+// How often to GET /environment/direct-configuration/session/state during
+// the open-session and apply-session phases of a controlled-env promote.
+// Each call is one cheap GET — short interval keeps the UI responsive
+// (state transitions through INITIALISING → INITIALISED in seconds; apply
+// fires several intermediate states inside ~30s on temp-dcc).
+const DCC_POLL_INTERVAL_MS = 2000;
+
 function PromoteProgress({ logs, running, extraPhases }: { logs: LogEntry[]; running: boolean; extraPhases?: { scope: string; status: "running" | "done" | "failed" }[] }) {
   const { phases, currentPhase, lineCountsByPhase } = useMemo(() => {
     const completed = new Set<string>();
@@ -917,7 +924,7 @@ function FrConfigSection({
         let last = "";
         let lastHeartbeat = start;
         while (Date.now() - start < timeoutMs) {
-          await new Promise((r) => setTimeout(r, 5000));
+          await new Promise((r) => setTimeout(r, DCC_POLL_INTERVAL_MS));
           if (abortRequestedRef.current) return null;
           const s = await fetchState();
           const elapsed = Math.round((Date.now() - start) / 1000);
@@ -1056,7 +1063,7 @@ function FrConfigSection({
       let lastLoggedStatus = "";
       let applied = false;
       while (Date.now() - pollStart < 360_000) {
-        await new Promise((r) => setTimeout(r, 5000));
+        await new Promise((r) => setTimeout(r, DCC_POLL_INTERVAL_MS));
         if (abortRequestedRef.current) break;
         const pollRes = await callDcc("direct-control-state");
         let pollState: { status?: string } = {};
