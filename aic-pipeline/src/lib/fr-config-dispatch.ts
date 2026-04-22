@@ -130,7 +130,10 @@ export async function dispatchFrConfig(input: DispatchInput): Promise<DispatchRe
   // it issues carries `X-Configuration-Type: mutable` and AIC routes the
   // write through the open direct-configuration session. Reset in finally.
   const directControl = extraArgs.includes("--direct-control");
-  if (directControl) vendor.setDirectControlMode(true);
+  if (directControl) {
+    vendor.setDirectControlMode(true);
+    emit(`[dispatch] ${scope}: X-Configuration-Type: mutable enabled (DCC session)\n`, "stderr");
+  }
 
   try {
     const t = await getToken();

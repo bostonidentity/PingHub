@@ -874,68 +874,110 @@ function FrConfigSection({
       abortRequestedRef.current = false;
       setDccBusy(true);
       dccScopeStart("open-session");
-      pushDccLog("Checking direct-control session state…");
-      // DCC Step 1: Check state
-      const stateRes = await callDcc("direct-control-state");
-      let stateJson: { status?: string } = {};
-      try { stateJson = JSON.parse(stateRes.stdout.trim()); } catch { /* ignore */ }
-      setDccState(stateJson.status ?? null);
-      pushDccLog(`State: ${stateJson.status ?? "unknown"}`);
 
-      if (stateJson.status && stateJson.status !== "NO_SESSION" && stateJson.status !== "SESSION_APPLIED") {
-        // Session already active — skip init, go straight to push
-        pushDccLog("Session already active — skipping init.");
-      } else {
-        // DCC Step 2: Init session
+      // Only SESSION_INITIALISED lets us push directly. CLEAN_STATES are safe
+      // to init from. INIT_PENDING_STATES just need waiting. Anything else
+      // (ABORT_REQUESTED, ABORTING, APPLY_REQUESTED, APPLYING, ERROR, …) is
+      // a stale session that must be torn down before a fresh init — pushing
+      // into it returns 403 because the tenant has no usable session.
+      const READY_STATE = "SESSION_INITIALISED";
+      const CLEAN_STATES = new Set(["", "NO_SESSION", "SESSION_APPLIED", "SESSION_ABORTED"]);
+      const INIT_PENDING_STATES = new Set(["SESSION_INITIALISE_REQUESTED", "SESSION_INITIALISING"]);
+
+      const fail = (msg: string) => {
+        pushDccLog(msg, "stderr");
+        dccScopeEnd("open-session", 1);
+        setDccBusy(false);
+        onTaskStatusChange("failed");
+      };
+
+      const fetchState = async (): Promise<string> => {
+        const r = await callDcc("direct-control-state");
+        let p: { status?: string } = {};
+        try { p = JSON.parse(r.stdout.trim()); } catch { /* ignore */ }
+        const s = p.status ?? "";
+        if (p.status) setDccState(p.status);
+        return s;
+      };
+
+      // Poll until `predicate(status)` is true, ERROR, abort, or timeout.
+      // Returns the final status, or null on timeout/abort/ERROR.
+      const pollUntil = async (
+        predicate: (status: string) => boolean,
+        timeoutMs: number,
+      ): Promise<string | null> => {
+        const start = Date.now();
+        let last = "";
+        while (Date.now() - start < timeoutMs) {
+          await new Promise((r) => setTimeout(r, 5000));
+          if (abortRequestedRef.current) return null;
+          const s = await fetchState();
+          if (s !== last) {
+            const elapsed = Math.round((Date.now() - start) / 1000);
+            pushDccLog(`${s || "(no status)"} (${elapsed}s)`);
+            last = s;
+          }
+          if (s === "ERROR") return null;
+          if (predicate(s)) return s;
+        }
+        return null;
+      };
+
+      const initSession = async (): Promise<boolean> => {
         pushDccLog("Initialising direct-control session…");
         const initRes = await callDcc("direct-control-init");
         if (initRes.exitCode !== 0) {
-          pushDccLog(`Init failed: ${initRes.stderr || initRes.stdout}`, "stderr");
-          dccScopeEnd("open-session", 1);
-          setDccBusy(false);
-          onTaskStatusChange("failed");
-          return;
+          fail(`Init failed: ${initRes.stderr || initRes.stdout}`);
+          return false;
         }
         setDccState("SESSION_INITIALISE_REQUESTED");
         pushDccLog("Init requested. Waiting for SESSION_INITIALISED…");
-
-        // Poll until SESSION_INITIALISED. Session provisioning on a cold
-        // controlled tenant takes ~130s in the field, so keep a generous
-        // budget to avoid spurious aborts.
-        const pollStart = Date.now();
-        let reached = false;
-        let lastLoggedStatus = "";
-        while (Date.now() - pollStart < 240_000) {
-          await new Promise((r) => setTimeout(r, 5000));
-          if (abortRequestedRef.current) { dccScopeEnd("open-session", 1); setDccBusy(false); return; }
-          const pollRes = await callDcc("direct-control-state");
-          let pollState: { status?: string } = {};
-          try { pollState = JSON.parse(pollRes.stdout.trim()); } catch { /* ignore */ }
-          if (pollState.status) setDccState(pollState.status);
-          if (pollState.status && pollState.status !== lastLoggedStatus) {
-            const elapsed = Math.round((Date.now() - pollStart) / 1000);
-            pushDccLog(`${pollState.status} (${elapsed}s)`);
-            lastLoggedStatus = pollState.status;
-          }
-          if (pollState.status === "SESSION_INITIALISED") { reached = true; break; }
-          if (pollState.status === "ERROR") {
-            pushDccLog("Session entered ERROR state — aborting.", "stderr");
-            await callDcc("direct-control-abort");
-            dccScopeEnd("open-session", 1);
-            setDccBusy(false);
-            onTaskStatusChange("failed");
-            return;
-          }
-        }
-        if (!reached) {
-          pushDccLog("Timed out waiting for SESSION_INITIALISED — aborting.", "stderr");
+        // Cold tenant init takes ~130s in the field; allow 4 min.
+        const reached = await pollUntil((s) => s === READY_STATE, 240_000);
+        if (reached !== READY_STATE) {
           await callDcc("direct-control-abort");
-          dccScopeEnd("open-session", 1);
-          setDccBusy(false);
-          onTaskStatusChange("failed");
+          fail(reached === null ? "Aborted or ERROR while waiting for SESSION_INITIALISED."
+                                : "Timed out waiting for SESSION_INITIALISED — aborting.");
+          return false;
+        }
+        return true;
+      };
+
+      pushDccLog("Checking direct-control session state…");
+      const status = await fetchState();
+      pushDccLog(`State: ${status || "unknown"}`);
+
+      if (status === READY_STATE) {
+        pushDccLog("Session already initialised — skipping init.");
+      } else if (CLEAN_STATES.has(status)) {
+        if (!(await initSession())) return;
+      } else if (INIT_PENDING_STATES.has(status)) {
+        pushDccLog(`Session is ${status} — waiting for SESSION_INITIALISED…`);
+        const reached = await pollUntil((s) => s === READY_STATE, 240_000);
+        if (reached !== READY_STATE) {
+          await callDcc("direct-control-abort");
+          fail("Aborted or timed out while waiting for in-progress init.");
           return;
         }
+      } else {
+        // Stale or transitional session (SESSION_ABORT_REQUESTED, ABORTING,
+        // APPLY_REQUESTED, APPLYING, ERROR, …). Abort to clear it, then
+        // init from scratch.
+        pushDccLog(`Session is in ${status} — aborting before re-initialising…`, "stderr");
+        const abortRes = await callDcc("direct-control-abort");
+        if (abortRes.exitCode !== 0) {
+          // Abort itself failed — still try to wait for a clean state in case
+          // the tenant resolves on its own.
+          pushDccLog(`Abort returned exit ${abortRes.exitCode}: ${abortRes.stderr || abortRes.stdout}`, "stderr");
+        }
+        const cleared = await pollUntil((s) => CLEAN_STATES.has(s), 120_000);
+        if (cleared === null || !CLEAN_STATES.has(cleared)) {
+          fail("Timed out (or ERROR) waiting for stale session to clear.");
+          return;
+        }
+        if (!(await initSession())) return;
       }
+
       pushDccLog("Session ready. Starting push with --direct-control…");
       dccScopeEnd("open-session", 0);
       setDccBusy(false);
