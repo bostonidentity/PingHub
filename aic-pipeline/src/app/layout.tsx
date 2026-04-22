@@ -4,6 +4,7 @@ import "./globals.css";
 import { BusyProvider } from "@/hooks/useBusyState";
 import { NavBar } from "@/components/NavBar";
 import { DialogProvider } from "@/components/ConfirmDialog";
+import { GlobalJobBanner } from "@/components/GlobalJobBanner";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -36,6 +37,7 @@ export default function RootLayout({
         <BusyProvider>
           <DialogProvider>
           <NavBar />
+          <GlobalJobBanner />
           <main className="flex-1 px-6 sm:px-10 lg:px-16 py-10 w-full max-w-[1600px] mx-auto">
             {children}
           </main>

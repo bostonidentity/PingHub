@@ -175,12 +175,41 @@ export function spawnFrConfig(options: RunOptions & { envOverrides?: Record<stri
 
   let currentProc: ReturnType<typeof spawn> | null = null;
   let aborted = false;
+  // Hoisted so `cancel()` can clear the heartbeat too. Set once `start`
+  // runs and the controller is in scope.
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
 
   const stream = new ReadableStream<string>({
     async start(controller) {
       const encode = (data: string, type: "stdout" | "stderr") => {
         controller.enqueue(JSON.stringify({ type, data, ts: Date.now() }) + "\n");
       };
+
+      // Browser fetch readers drop the streaming response if no bytes flow
+      // for too long (Chrome's "TypeError: network error" — usually within
+      // ~30s of silence). When a single AIC PUT inside the dispatcher
+      // hangs, no log line is emitted between "  PUT <url>" and the
+      // restClient timeout firing 60s later, so the browser bails before
+      // we ever get the ECONNABORTED that would tell us which URL stalled.
+      // Tick a tiny `heartbeat` event every 10s to keep the connection
+      // open. Client filters these out of the visible log.
+      // ~1KB padding ensures each heartbeat chunk is big enough to defeat
+      // small-chunk buffering thresholds (gzip / dev-server / proxies)
+      // that won't flush a 50-byte payload. Padded into an unused `pad`
+      // field so the JSON parser still picks up the type. Client filters
+      // these out of the visible log.
+      const HEARTBEAT_PAD = " ".repeat(1024);
+      heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(JSON.stringify({
+            type: "heartbeat",
+            ts: Date.now(),
+            pad: HEARTBEAT_PAD,
+          }) + "\n");
+        } catch {
+          // Stream already closed — let the cleanup below handle it.
+        }
+      }, 10_000);
 
       let anyFailed = false;
 
@@ -194,7 +223,10 @@ export function spawnFrConfig(options: RunOptions & { envOverrides?: Record<stri
         try {
           sharedToken = await getAccessToken(
             baseEnv as Record<string, string>,
-            (msg) => encode(`[token] ${msg}\n`, "stderr"),
+            // Informational token progress — real errors go via the catch
+            // branch below. Keeping these on stdout prevents them showing
+            // up under the promote UI's "Error logs" section.
+            (msg) => encode(`[token] ${msg}\n`, "stdout"),
           );
         } catch (err) {
           encode(`token acquisition failed: ${err instanceof Error ? err.message : String(err)}\n`, "stderr");
@@ -322,6 +354,7 @@ export function spawnFrConfig(options: RunOptions & { envOverrides?: Record<stri
         }
       }
 
+      if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
       controller.enqueue(
         JSON.stringify({ type: "exit", code: aborted ? 130 : (anyFailed ? 1 : 0), ts: Date.now() }) + "\n"
       );
@@ -329,6 +362,7 @@ export function spawnFrConfig(options: RunOptions & { envOverrides?: Record<stri
     },
     cancel() {
       aborted = true;
+      if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
       currentProc?.kill("SIGTERM");
     },
   });

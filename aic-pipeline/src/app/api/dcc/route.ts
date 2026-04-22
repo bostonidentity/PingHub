@@ -1,9 +1,13 @@
 import { NextRequest } from "next/server";
-import { spawn } from "child_process";
-import path from "path";
+import {
+  getDirectControlState,
+  initDirectControl,
+  applyDirectControl,
+  abortDirectControl,
+} from "@/lib/tenant-control";
 
 export async function POST(req: NextRequest) {
-  const { environment, subcommand, args = [] } = await req.json() as {
+  const { environment, subcommand } = await req.json() as {
     environment: string;
     subcommand: string;
     args?: string[];
@@ -13,17 +17,20 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "Missing environment or subcommand" }, { status: 400 });
   }
 
-  const cwd = path.join(process.cwd(), "environments", environment);
-
-  const result = await new Promise<{ stdout: string; stderr: string; exitCode: number | null }>((resolve) => {
-    let stdout = "";
-    let stderr = "";
-    const proc = spawn("fr-config-push", [subcommand, ...args], { shell: true, cwd });
-    proc.stdout.on("data", (c: Buffer) => { stdout += c.toString(); });
-    proc.stderr.on("data", (c: Buffer) => { stderr += c.toString(); });
-    proc.on("close", (code) => resolve({ stdout, stderr, exitCode: code }));
-    proc.on("error", (err) => resolve({ stdout, stderr: stderr + err.message, exitCode: 1 }));
-  });
-
-  return Response.json(result);
+  switch (subcommand) {
+    case "direct-control-state":
+      return Response.json(await getDirectControlState(environment));
+    case "direct-control-init":
+      return Response.json(await initDirectControl(environment));
+    case "direct-control-apply":
+      return Response.json(await applyDirectControl(environment));
+    case "direct-control-abort":
+      return Response.json(await abortDirectControl(environment));
+    default:
+      return Response.json({
+        stdout: "",
+        stderr: `Unsupported dcc subcommand: ${subcommand}`,
+        exitCode: 1,
+      });
+  }
 }

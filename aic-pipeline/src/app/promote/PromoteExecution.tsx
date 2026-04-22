@@ -601,6 +601,13 @@ const PROMOTE_PHASES = [
   { scope: "verify",            label: "Verify" },
 ];
 
+// How often to GET /environment/direct-configuration/session/state during
+// the open-session and apply-session phases of a controlled-env promote.
+// Each call is one cheap GET — short interval keeps the UI responsive
+// (state transitions through INITIALISING → INITIALISED in seconds; apply
+// fires several intermediate states inside ~30s on temp-dcc).
+const DCC_POLL_INTERVAL_MS = 2000;
+
 function PromoteProgress({ logs, running, extraPhases }: { logs: LogEntry[]; running: boolean; extraPhases?: { scope: string; status: "running" | "done" | "failed" }[] }) {
   const { phases, currentPhase, lineCountsByPhase } = useMemo(() => {
     const completed = new Set<string>();
@@ -724,9 +731,19 @@ function FrConfigSection({
 
   // Synthetic log entries for DCC transitions. Merged with the streaming
   // push logs so the user sees one unified timeline in the existing log viewer.
+  // ScopedLogViewer only renders entries that fall inside a scope-start /
+  // scope-end pair, so wrap each DCC phase (open / apply / verify-pull /
+  // abort) with dccScopeStart + dccScopeEnd — otherwise the lines are
+  // silently dropped from the viewer.
   const [dccLogs, setDccLogs] = useState<LogEntry[]>([]);
   const pushDccLog = (data: string, type: "stdout" | "stderr" = "stdout") => {
     setDccLogs((prev) => [...prev, { type, data: `[dcc] ${data}\n`, ts: Date.now() }]);
+  };
+  const dccScopeStart = (scope: string) => {
+    setDccLogs((prev) => [...prev, { type: "scope-start", scope, ts: Date.now() }]);
+  };
+  const dccScopeEnd = (scope: string, code: number) => {
+    setDccLogs((prev) => [...prev, { type: "scope-end", scope, code, ts: Date.now() }]);
   };
   const onCompleteRef = useRef(onComplete);
   const onTaskStatusRef = useRef(onTaskStatusChange);
@@ -834,10 +851,12 @@ function FrConfigSection({
   const handleAbort = async () => {
     abortRequestedRef.current = true;
     if (targetIsControlled) {
+      dccScopeStart("abort-session");
       pushDccLog("User aborted — calling direct-control-abort.", "stderr");
       try { await callDcc("direct-control-abort"); } catch { /* best-effort */ }
       setDccState("SESSION_ABORT_REQUESTED");
       setDccBusy(false);
+      dccScopeEnd("abort-session", 0);
     }
     abort();
   };
@@ -861,66 +880,140 @@ function FrConfigSection({
       setDccLogs([]);
       abortRequestedRef.current = false;
       setDccBusy(true);
-      pushDccLog("Checking direct-control session state…");
-      // DCC Step 1: Check state
-      const stateRes = await callDcc("direct-control-state");
-      let stateJson: { status?: string } = {};
-      try { stateJson = JSON.parse(stateRes.stdout.trim()); } catch { /* ignore */ }
-      setDccState(stateJson.status ?? null);
-      pushDccLog(`State: ${stateJson.status ?? "unknown"}`);
+      dccScopeStart("open-session");
 
-      if (stateJson.status && stateJson.status !== "NO_SESSION" && stateJson.status !== "SESSION_APPLIED") {
-        // Session already active — skip init, go straight to push
-        pushDccLog("Session already active — skipping init.");
-      } else {
-        // DCC Step 2: Init session
+      // Only SESSION_INITIALISED lets us push directly. CLEAN_STATES are safe
+      // to init from. *_PENDING_STATES just need waiting (no abort/init
+      // needed). Anything else (ERROR, unknown) is a stale session that must
+      // be torn down before a fresh init — pushing into it returns 403
+      // because the tenant has no usable session.
+      const READY_STATE = "SESSION_INITIALISED";
+      const CLEAN_STATES = new Set(["", "NO_SESSION", "SESSION_APPLIED", "SESSION_ABORTED"]);
+      const INIT_PENDING_STATES = new Set(["SESSION_INITIALISE_REQUESTED", "SESSION_INITIALISING"]);
+      // Abort already in flight on the tenant — calling abort again returns
+      // 409 ("session cannot be aborted from its current state"). Just wait.
+      const ABORT_PENDING_STATES = new Set(["SESSION_ABORT_REQUESTED", "SESSION_ABORTING"]);
+      // Apply in flight — wait for SESSION_APPLIED, then init from clean.
+      const APPLY_PENDING_STATES = new Set(["SESSION_APPLY_REQUESTED", "SESSION_APPLYING"]);
+
+      const fail = (msg: string) => {
+        pushDccLog(msg, "stderr");
+        dccScopeEnd("open-session", 1);
+        setDccBusy(false);
+        onTaskStatusChange("failed");
+      };
+
+      const fetchState = async (): Promise<string> => {
+        const r = await callDcc("direct-control-state");
+        let p: { status?: string } = {};
+        try { p = JSON.parse(r.stdout.trim()); } catch { /* ignore */ }
+        const s = p.status ?? "";
+        if (p.status) setDccState(p.status);
+        return s;
+      };
+
+      // Poll until `predicate(status)` is true, ERROR, abort, or timeout.
+      // Returns the final status, or null on timeout/abort/ERROR. Emits a
+      // heartbeat every ~30s when the state hasn't changed, so a long wait
+      // doesn't look frozen.
+      const pollUntil = async (
+        predicate: (status: string) => boolean,
+        timeoutMs: number,
+      ): Promise<string | null> => {
+        const start = Date.now();
+        let last = "";
+        let lastHeartbeat = start;
+        while (Date.now() - start < timeoutMs) {
+          await new Promise((r) => setTimeout(r, DCC_POLL_INTERVAL_MS));
+          if (abortRequestedRef.current) return null;
+          const s = await fetchState();
+          const elapsed = Math.round((Date.now() - start) / 1000);
+          if (s !== last) {
+            pushDccLog(`${s || "(no status)"} (${elapsed}s)`);
+            last = s;
+            lastHeartbeat = Date.now();
+          } else if (Date.now() - lastHeartbeat >= 30_000) {
+            pushDccLog(`still ${s || "(no status)"} — ${elapsed}s elapsed, waiting…`);
+            lastHeartbeat = Date.now();
+          }
+          if (s === "ERROR") return null;
+          if (predicate(s)) return s;
+        }
+        return null;
+      };
+
+      const initSession = async (): Promise<boolean> => {
         pushDccLog("Initialising direct-control session…");
         const initRes = await callDcc("direct-control-init");
         if (initRes.exitCode !== 0) {
-          pushDccLog(`Init failed: ${initRes.stderr || initRes.stdout}`, "stderr");
-          setDccBusy(false);
-          onTaskStatusChange("failed");
-          return;
+          fail(`Init failed: ${initRes.stderr || initRes.stdout}`);
+          return false;
         }
         setDccState("SESSION_INITIALISE_REQUESTED");
         pushDccLog("Init requested. Waiting for SESSION_INITIALISED…");
-
-        // Poll until SESSION_INITIALISED. Session provisioning on a cold
-        // controlled tenant takes ~130s in the field, so keep a generous
-        // budget to avoid spurious aborts.
-        const pollStart = Date.now();
-        let reached = false;
-        let lastLoggedStatus = "";
-        while (Date.now() - pollStart < 240_000) {
-          await new Promise((r) => setTimeout(r, 5000));
-          if (abortRequestedRef.current) { setDccBusy(false); return; }
-          const pollRes = await callDcc("direct-control-state");
-          let pollState: { status?: string } = {};
-          try { pollState = JSON.parse(pollRes.stdout.trim()); } catch { /* ignore */ }
-          if (pollState.status) setDccState(pollState.status);
-          if (pollState.status && pollState.status !== lastLoggedStatus) {
-            const elapsed = Math.round((Date.now() - pollStart) / 1000);
-            pushDccLog(`${pollState.status} (${elapsed}s)`);
-            lastLoggedStatus = pollState.status;
-          }
-          if (pollState.status === "SESSION_INITIALISED") { reached = true; break; }
-          if (pollState.status === "ERROR") {
-            pushDccLog("Session entered ERROR state — aborting.", "stderr");
-            await callDcc("direct-control-abort");
-            setDccBusy(false);
-            onTaskStatusChange("failed");
-            return;
-          }
-        }
-        if (!reached) {
-          pushDccLog("Timed out waiting for SESSION_INITIALISED — aborting.", "stderr");
+        // Cold tenant init takes ~130s in the field; allow 4 min.
+        const reached = await pollUntil((s) => s === READY_STATE, 240_000);
+        if (reached !== READY_STATE) {
           await callDcc("direct-control-abort");
-          setDccBusy(false);
-          onTaskStatusChange("failed");
+          fail(reached === null ? "Aborted or ERROR while waiting for SESSION_INITIALISED."
+                                : "Timed out waiting for SESSION_INITIALISED — aborting.");
+          return false;
+        }
+        return true;
+      };
+
+      pushDccLog("Checking direct-control session state…");
+      const status = await fetchState();
+      pushDccLog(`State: ${status || "unknown"}`);
+
+      if (status === READY_STATE) {
+        pushDccLog("Session already initialised — skipping init.");
+      } else if (CLEAN_STATES.has(status)) {
+        if (!(await initSession())) return;
+      } else if (INIT_PENDING_STATES.has(status)) {
+        pushDccLog(`Session is ${status} — waiting for SESSION_INITIALISED…`);
+        const reached = await pollUntil((s) => s === READY_STATE, 240_000);
+        if (reached !== READY_STATE) {
+          await callDcc("direct-control-abort");
+          fail("Aborted or timed out while waiting for in-progress init.");
           return;
         }
+      } else if (ABORT_PENDING_STATES.has(status)) {
+        // Abort already in flight on the tenant — calling abort again would
+        // 409. Just wait for it to settle, then init from clean.
+        pushDccLog(`Session is ${status} — abort already in flight, waiting for it to clear…`);
+        const cleared = await pollUntil((s) => CLEAN_STATES.has(s), 240_000);
+        if (cleared === null || !CLEAN_STATES.has(cleared)) {
+          fail("Timed out (or ERROR) waiting for in-flight abort to clear.");
+          return;
+        }
+        if (!(await initSession())) return;
+      } else if (APPLY_PENDING_STATES.has(status)) {
+        // Apply in flight — wait for SESSION_APPLIED, then init from clean.
+        pushDccLog(`Session is ${status} — apply in flight, waiting for SESSION_APPLIED before re-initialising…`);
+        const applied = await pollUntil((s) => s === "SESSION_APPLIED" || CLEAN_STATES.has(s), 360_000);
+        if (applied === null) {
+          fail("Timed out (or ERROR) waiting for in-flight apply to settle.");
+          return;
+        }
+        if (!(await initSession())) return;
+      } else {
+        // Truly stale (ERROR or unknown). Abort to clear, then init.
+        pushDccLog(`Session is in ${status} — aborting before re-initialising…`, "stderr");
+        const abortRes = await callDcc("direct-control-abort");
+        if (abortRes.exitCode !== 0) {
+          pushDccLog(`Abort returned exit ${abortRes.exitCode}: ${abortRes.stderr || abortRes.stdout}`, "stderr");
+        }
+        const cleared = await pollUntil((s) => CLEAN_STATES.has(s), 240_000);
+        if (cleared === null || !CLEAN_STATES.has(cleared)) {
+          fail("Timed out (or ERROR) waiting for stale session to clear.");
+          return;
+        }
+        if (!(await initSession())) return;
       }
+
       pushDccLog("Session ready. Starting push with --direct-control…");
+      dccScopeEnd("open-session", 0);
       setDccBusy(false);
     }
 
@@ -942,12 +1035,15 @@ function FrConfigSection({
 
     (async () => {
       if (exitCode !== 0) {
+        dccScopeStart("abort-session");
         pushDccLog(`Push failed (exit ${exitCode}) — aborting session.`, "stderr");
         setDccState("SESSION_ABORT_REQUESTED");
         await callDcc("direct-control-abort");
+        dccScopeEnd("abort-session", 0);
         return;
       }
 
+      dccScopeStart("apply-session");
       pushDccLog("Push complete. Applying session…");
       setDccState("SESSION_APPLYING");
       setDccBusy(true);
@@ -956,17 +1052,25 @@ function FrConfigSection({
         pushDccLog(`Apply request failed: ${applyRes.stderr || applyRes.stdout}`, "stderr");
         setDccState("SESSION_ABORT_REQUESTED");
         await callDcc("direct-control-abort");
+        dccScopeEnd("apply-session", 1);
         setDccBusy(false);
         return;
       }
 
       // Poll until SESSION_APPLIED (or error). Apply typically takes 2-3 min
-      // on temp-dcc; allow up to 6 min for safety.
+      // on temp-dcc, but it can transition into a tenant-restart state
+      // (`MUTABLE_RESTART_REQUESTED` / `MUTABLE_RESTARTING`) when the
+      // staged config requires AM/IDM to bounce. Restart-during-apply
+      // routinely takes 5-15 min on a cold tenant; allow up to 20 min so
+      // we don't spuriously abort the session mid-restart. Upstream
+      // `fr-config-push direct-control-apply --wait` polls indefinitely;
+      // we keep a ceiling so a wedged tenant eventually surfaces a clear
+      // failure instead of the page just hanging.
       const pollStart = Date.now();
       let lastLoggedStatus = "";
       let applied = false;
-      while (Date.now() - pollStart < 360_000) {
-        await new Promise((r) => setTimeout(r, 5000));
+      while (Date.now() - pollStart < 1_200_000) {
+        await new Promise((r) => setTimeout(r, DCC_POLL_INTERVAL_MS));
         if (abortRequestedRef.current) break;
         const pollRes = await callDcc("direct-control-state");
         let pollState: { status?: string } = {};
@@ -981,22 +1085,27 @@ function FrConfigSection({
         if (pollState.status === "ERROR") {
           pushDccLog("Session entered ERROR state during apply — aborting.", "stderr");
           await callDcc("direct-control-abort");
+          dccScopeEnd("apply-session", 1);
           setDccBusy(false);
           return;
         }
       }
       if (!applied) {
         pushDccLog("Timed out waiting for SESSION_APPLIED.", "stderr");
+        dccScopeEnd("apply-session", 1);
         setDccBusy(false);
         onCompleteRef.current("failed");
         onTaskStatusRef.current("failed");
         return;
       }
       pushDccLog("Session applied successfully.");
+      dccScopeEnd("apply-session", 0);
 
       // Pull target now that the tenant holds the committed changes, then verify.
+      dccScopeStart("verify-pull");
       pushDccLog("Pulling target to sync local files for verify…");
       const pullScopes = Array.from(new Set(task.items.map((i) => i.scope)));
+      let pullSucceeded = true;
       try {
         const pullRes = await fetch("/api/pull", {
           method: "POST",
@@ -1019,12 +1128,15 @@ function FrConfigSection({
         }
         if (pullExit !== 0) {
           pushDccLog(`Pull-target exited with code ${pullExit}.`, "stderr");
+          pullSucceeded = false;
         } else {
           pushDccLog("Pull-target completed.");
         }
       } catch (err) {
         pushDccLog(`Pull-target failed: ${err instanceof Error ? err.message : String(err)}`, "stderr");
+        pullSucceeded = false;
       } finally {
+        dccScopeEnd("verify-pull", pullSucceeded ? 0 : 1);
         setDccBusy(false);
       }
       await runVerify();
@@ -1100,7 +1212,19 @@ function FrConfigSection({
             extraPhases={verifyRunning ? [{ scope: "verify", status: "running" }] : verifyDone ? [{ scope: "verify", status: "done" }] : undefined}
           />
           <div className="rounded-lg border border-slate-200 overflow-hidden">
-            <ScopedLogViewer logs={mergedLogs} running={running || dccBusy} exitCode={exitCode} onClear={() => { clear(); setDccLogs([]); }} />
+            <ScopedLogViewer
+              logs={mergedLogs}
+              // Stay in "running" while ANY phase is still in flight:
+              //   - `running`: the /api/promote-items POST is streaming
+              //   - `dccBusy`: DCC session apply / verify-pull is happening
+              //   - `verifyRunning`: the post-apply compare diff is running
+              // Otherwise the viewer flashes "All scopes completed" the
+              // moment push exits, which is wrong for controlled-env
+              // promotes where apply + verify still need to finish.
+              running={running || dccBusy || verifyRunning}
+              exitCode={exitCode}
+              onClear={() => { clear(); setDccLogs([]); }}
+            />
           </div>
         </div>
       )}

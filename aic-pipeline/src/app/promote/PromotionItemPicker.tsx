@@ -24,6 +24,13 @@ function scopeLabel(s: string) {
   return CONFIG_SCOPES.find((c) => c.value === s)?.label ?? s;
 }
 
+function scopeGroup(s: string): string {
+  return CONFIG_SCOPES.find((c) => c.value === s)?.group ?? "Other";
+}
+
+// Insertion-order-preserving unique groups as they appear in CONFIG_SCOPES.
+const SCOPE_GROUPS = Array.from(new Set(CONFIG_SCOPES.map((c) => c.group)));
+
 function toSelections(items: ScopeSelection[]): Selections {
   const rec: Selections = {};
   for (const { scope, items: si } of items) rec[scope] = si ?? null;
@@ -82,8 +89,8 @@ function ScopeRow({
   const visible = sorted.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
   const needsPagination = sorted.length > PAGE_SIZE;
 
-
-  const headerIsToggle = !entry.selectable;
+  const checkState: "unchecked" | "indeterminate" | "checked" =
+    !included ? "unchecked" : selectedItems === null ? "checked" : "indeterminate";
 
   return (
     <div className="border-b border-slate-200 last:border-b-0">
@@ -98,22 +105,27 @@ function ScopeRow({
         )}
         onClick={entry.items.length > 0 ? () => setOpen((o) => !o) : undefined}
       >
-        {/* Non-selectable: check indicator — click toggles scope inclusion */}
-        {headerIsToggle && (
-          <span
-            className={cn(
-              "w-4 h-4 rounded border-2 shrink-0 flex items-center justify-center transition-colors",
-              included ? "bg-sky-600 border-sky-600" : "border-slate-400 bg-white",
-            )}
-            onClick={(e) => { e.stopPropagation(); onToggleScope(!included); }}
-          >
-            {included && (
-              <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-            )}
-          </span>
-        )}
+        {/* Scope-level tri-state checkbox — click toggles whole-scope inclusion.
+            Indeterminate appears only for selectable scopes with a subset of
+            items picked; the "Select all" link below handles partial→full. */}
+        <span
+          className={cn(
+            "w-4 h-4 rounded border-2 shrink-0 flex items-center justify-center transition-colors",
+            checkState !== "unchecked" ? "bg-sky-600 border-sky-600" : "border-slate-400 bg-white",
+          )}
+          onClick={(e) => { e.stopPropagation(); onToggleScope(!included); }}
+        >
+          {checkState === "checked" && (
+            <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          )}
+          {checkState === "indeterminate" && (
+            <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 12h12" />
+            </svg>
+          )}
+        </span>
 
         <span className={cn(
           "flex-1 text-xs font-semibold tracking-wide",
@@ -143,7 +155,7 @@ function ScopeRow({
         )}
 
         {/* Non-selectable: "all files" badge */}
-        {headerIsToggle && entry.items.length > 0 && (
+        {!entry.selectable && entry.items.length > 0 && (
           <span className="text-[10px] text-slate-500 bg-slate-200 px-1.5 py-0.5 rounded">all files</span>
         )}
 
@@ -186,36 +198,46 @@ function ScopeRow({
 
       {/* Items */}
       {open && entry.items.length > 0 && (
-        <div className="px-3 pb-2 pt-0.5 space-y-0.5 bg-slate-50/60">
+        <div className="px-3 pb-2 pt-0.5 bg-slate-50/60">
           {visible.length === 0 ? (
             <p className="text-[11px] text-slate-400 py-2 text-center">No matches</p>
-          ) : visible.map((item) => {
-            const checked = allSelected || selectedSet.has(item.id);
-            return (
-              <div key={item.id} className="flex items-center gap-2 py-0.5">
-                {entry.selectable ? (
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={(e) => onToggleItem(item.id, e.target.checked)}
-                    className="w-3 h-3 accent-sky-600 shrink-0 cursor-pointer"
-                  />
-                ) : (
-                  <span className="w-3 h-3 shrink-0" />
-                )}
-                <button
-                  type="button"
-                  onClick={() => onViewItem(item)}
-                  className={cn(
-                    "text-[11px] truncate text-left hover:underline hover:text-sky-600 transition-colors",
-                    checked ? "text-slate-600" : "text-slate-400",
-                  )}
-                >
-                  {item.label}
-                </button>
-              </div>
-            );
-          })}
+          ) : (
+            // Multi-column responsive grid so wide item lists use the
+            // horizontal space instead of scrolling vertically. Pagination
+            // below is unchanged — sorted.slice(page * PAGE_SIZE, …) still
+            // caps at PAGE_SIZE items per page.
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-0.5">
+              {visible.map((item) => {
+                const checked = allSelected || selectedSet.has(item.id);
+                return (
+                  <div key={item.id} className="flex items-center gap-2 py-0.5 min-w-0">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => {
+                        if (entry.selectable) onToggleItem(item.id, e.target.checked);
+                        // Non-selectable scopes ship all-or-nothing: any item
+                        // checkbox toggles the whole scope's inclusion.
+                        else onToggleScope(e.target.checked);
+                      }}
+                      title={entry.selectable ? undefined : "This scope is all-or-nothing — any item toggles the whole scope"}
+                      className="w-3 h-3 accent-sky-600 shrink-0 cursor-pointer"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => onViewItem(item)}
+                      className={cn(
+                        "text-[11px] truncate text-left hover:underline hover:text-sky-600 transition-colors min-w-0",
+                        checked ? "text-slate-600" : "text-slate-400",
+                      )}
+                    >
+                      {item.label}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {/* Pagination */}
           {needsPagination && (
@@ -301,6 +323,22 @@ export function PromotionItemPicker({
   const contentRef = useRef<HTMLDivElement>(null);
   const scopeRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
+  // ── Resize / fullscreen (mirrors logs view affordances) ─────────────────────
+  const [pickerHeight, setPickerHeight] = useState(() => {
+    try { const v = localStorage.getItem("promote-picker-height"); return v ? parseInt(v, 10) : 460; } catch { return 460; }
+  });
+  const [fullscreen, setFullscreen] = useState(false);
+  const saveHeight = (h: number) => { try { localStorage.setItem("promote-picker-height", String(h)); } catch { /* ignore */ } };
+  const grow   = () => setPickerHeight((h) => { const n = Math.min(window.innerHeight - 100, h + 60); saveHeight(n); return n; });
+  const shrink = () => setPickerHeight((h) => { const n = Math.max(240, h - 60); saveHeight(n); return n; });
+
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setFullscreen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
+
   // Sync browseEnv if the source environment prop changes
   useEffect(() => { setBrowseEnv(environment); }, [environment]);
 
@@ -378,12 +416,17 @@ export function PromotionItemPicker({
     onChange(fromSelections({ ...selections, [scope]: allNowSelected ? null : [...currentSet] }));
   };
 
-  // Selected scopes float to the top; order within each group preserved
+  // Order matches CONFIG_SCOPES (i.e. groups appear in their defined order, and
+  // scopes within each group keep their natural order). The left-nav group
+  // headers and the right-content scope rows use this same ordering, so
+  // clicking a nav entry always scrolls to a predictable position.
   const sortedAuditData = auditData
     ? [...auditData].sort((a, b) => {
-        const aHas = Object.prototype.hasOwnProperty.call(selections, a.scope) ? 0 : 1;
-        const bHas = Object.prototype.hasOwnProperty.call(selections, b.scope) ? 0 : 1;
-        return aHas - bHas;
+        const orderOf = (s: string) => {
+          const i = CONFIG_SCOPES.findIndex((c) => c.value === s);
+          return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+        };
+        return orderOf(a.scope) - orderOf(b.scope);
       })
     : null;
 
@@ -399,7 +442,13 @@ export function PromotionItemPicker({
     : 0;
 
   return (
-    <>
+    <div className={cn(
+      "rounded-md border border-slate-200 overflow-hidden flex flex-col bg-white",
+      fullscreen && "fixed inset-0 z-[60] rounded-none"
+    )}>
+      {/* ItemViewer is nested inside the wrapper so that, when the wrapper
+          enters its fullscreen stacking context, the viewer still paints
+          above the picker content (its z-50 stacks within z-[60]). */}
       {viewerItem && (
         <ItemViewer
           environment={environment}
@@ -408,8 +457,6 @@ export function PromotionItemPicker({
           onClose={() => setViewerItem(null)}
         />
       )}
-
-      <div className="rounded-md border border-slate-200 overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between gap-2 px-3 py-2 bg-slate-50 border-b border-slate-200">
           <span className="text-xs font-medium text-slate-700 shrink-0">Items to Promote</span>
@@ -446,13 +493,46 @@ export function PromotionItemPicker({
             {!loading && auditData && includedCount === 0 && (
               <span className="text-xs text-slate-400 shrink-0">No scopes selected</span>
             )}
+            {!fullscreen && (
+              <div className="flex items-center gap-0.5 shrink-0">
+                <button type="button" onClick={shrink} title="Shrink" className="text-slate-400 hover:text-slate-600 transition-colors p-0.5">
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14" />
+                  </svg>
+                </button>
+                <button type="button" onClick={grow} title="Grow" className="text-slate-400 hover:text-slate-600 transition-colors p-0.5">
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14m-7-7h14" />
+                  </svg>
+                </button>
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => setFullscreen((f) => !f)}
+              title={fullscreen ? "Exit fullscreen (Esc)" : "Fullscreen"}
+              className="text-slate-400 hover:text-slate-600 transition-colors shrink-0 p-0.5"
+            >
+              {fullscreen ? (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                </svg>
+              )}
+            </button>
           </div>
         </div>
 
         {/* Body */}
-        <div className="flex overflow-hidden" style={{ maxHeight: 460 }}>
+        <div
+          className={cn("flex overflow-hidden", fullscreen && "flex-1")}
+          style={fullscreen ? undefined : { height: pickerHeight }}
+        >
           {/* Left nav */}
-          <div className="w-32 shrink-0 border-r border-slate-200 flex flex-col bg-slate-50">
+          <div className="w-52 shrink-0 border-r border-slate-200 flex flex-col bg-slate-50">
             <div className="px-2 py-1.5 border-b border-slate-200">
               <input
                 type="text"
@@ -463,39 +543,61 @@ export function PromotionItemPicker({
               />
             </div>
             <div className="overflow-y-auto flex-1">
-              {loading
-                ? Array.from({ length: 8 }).map((_, i) => (
-                    <div key={i} className="h-7 mx-2 my-1 rounded bg-slate-200 animate-pulse" />
-                  ))
-                : (sortedAuditData ?? [])
-                    .filter((entry) => {
-                      if (!searchQuery.trim()) return true;
-                      const q = searchQuery.toLowerCase();
-                      // Match scope label or any item label/id
-                      if (scopeLabel(entry.scope).toLowerCase().includes(q)) return true;
-                      return entry.items.some((i) => i.label.toLowerCase().includes(q) || i.id.toLowerCase().includes(q));
-                    })
-                    .map((entry) => {
-                      const included = Object.prototype.hasOwnProperty.call(selections, entry.scope);
-                      return (
-                        <button
-                          key={entry.scope}
-                          type="button"
-                          onClick={() => scrollToScope(entry.scope)}
-                          className={cn(
-                            "w-full text-left px-2.5 py-1.5 text-[11px] leading-tight transition-colors border-l-2",
-                            activeScope === entry.scope
-                              ? "border-sky-500 bg-sky-50 text-sky-700 font-medium"
-                              : included
-                                ? "border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-700"
-                                : "border-transparent text-slate-400 hover:bg-slate-100 hover:text-slate-500"
-                          )}
-                        >
-                          {scopeLabel(entry.scope)}
-                        </button>
-                      );
-                    })
-              }
+              {loading ? (
+                Array.from({ length: 8 }).map((_, i) => (
+                  <div key={i} className="h-7 mx-2 my-1 rounded bg-slate-200 animate-pulse" />
+                ))
+              ) : (() => {
+                // Filter the audit entries by the active search query, then
+                // bucket by CONFIG_SCOPES group so the nav mirrors the Browse
+                // tab's grouped layout (small uppercase heading per group,
+                // scope buttons underneath).
+                const q = searchQuery.trim().toLowerCase();
+                const visible = (sortedAuditData ?? []).filter((entry) => {
+                  if (!q) return true;
+                  if (scopeLabel(entry.scope).toLowerCase().includes(q)) return true;
+                  return entry.items.some((i) => i.label.toLowerCase().includes(q) || i.id.toLowerCase().includes(q));
+                });
+                const byGroup = new Map<string, AuditEntry[]>();
+                for (const entry of visible) {
+                  const g = scopeGroup(entry.scope);
+                  if (!byGroup.has(g)) byGroup.set(g, []);
+                  byGroup.get(g)!.push(entry);
+                }
+                return SCOPE_GROUPS.filter((g) => byGroup.has(g)).map((group) => {
+                  const entries = byGroup.get(group)!;
+                  return (
+                    <div key={group}>
+                      <p className="px-2 pt-2 pb-0.5 text-[9px] font-semibold text-slate-400 uppercase tracking-wider">
+                        {group}
+                      </p>
+                      {entries.map((entry) => {
+                        const included = Object.prototype.hasOwnProperty.call(selections, entry.scope);
+                        return (
+                          <button
+                            key={entry.scope}
+                            type="button"
+                            onClick={() => scrollToScope(entry.scope)}
+                            className={cn(
+                              "w-full text-left px-2.5 py-1.5 text-[11px] leading-tight transition-colors border-l-2 flex items-center justify-between gap-1.5",
+                              activeScope === entry.scope
+                                ? "border-sky-500 bg-sky-50 text-sky-700 font-medium"
+                                : included
+                                  ? "border-transparent text-slate-700 hover:bg-slate-100"
+                                  : "border-transparent text-slate-400 hover:bg-slate-100 hover:text-slate-500"
+                            )}
+                          >
+                            <span className="truncate">{scopeLabel(entry.scope)}</span>
+                            {included && (
+                              <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-indigo-500" title="Included in this task" />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                });
+              })()}
             </div>
           </div>
 
@@ -534,7 +636,6 @@ export function PromotionItemPicker({
             }
           </div>
         </div>
-      </div>
-    </>
+    </div>
   );
 }

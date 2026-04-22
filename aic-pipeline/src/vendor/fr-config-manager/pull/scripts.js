@@ -44,18 +44,35 @@ function saveScriptToFile(script, exportDir) {
   saveJsonToFile(script, path.join(scriptConfigPath, `${script._id}.json`));
 }
 
-function processScripts(scripts, exportDir, name, emit) {
+function processScripts(scripts, exportDir, filters, emit) {
   if (!fs.existsSync(exportDir)) fs.mkdirSync(exportDir, { recursive: true });
 
-  let scriptNotFound = true;
+  // Track which filters have not yet matched anything (so we can emit a
+  // "Script not found" line for each, instead of one for the whole batch).
+  const unmatched = filters ? new Set(filters) : null;
+
   for (const script of scripts) {
     if (script.language !== "JAVASCRIPT") continue;
-    if (name && name !== script.name) continue;
-    scriptNotFound = false;
+    if (filters) {
+      // Match against either the script name or the AM `_id` (UUID).
+      const anyMatch = filters.some((f) => f === script.name || f === script._id);
+      if (!anyMatch) continue;
+      // Callers can pass duplicate forms for the same script (e.g. compare's
+      // addDepsToSelections pushes both `<uuid>.json` and `name:<n>`). Clear
+      // *every* filter that points to this script so a successful match
+      // doesn't leave the other form behind in `unmatched` and produce a
+      // false "Script not found".
+      for (const f of filters) {
+        if (f === script.name || f === script._id) unmatched.delete(f);
+      }
+    }
     saveScriptToFile(script, exportDir);
     emit(`  ← ${script.name}\n`);
   }
-  if (name && scriptNotFound) emit(`Script not found: ${name}\n`);
+
+  if (unmatched && unmatched.size > 0) {
+    for (const u of unmatched) emit(`Script not found: ${u}\n`);
+  }
 }
 
 async function exportScripts({ exportDir, tenantUrl, realms, prefixes, name, token, log }) {
@@ -65,6 +82,13 @@ async function exportScripts({ exportDir, tenantUrl, realms, prefixes, name, tok
   const realmList = Array.isArray(realms) && realms.length > 0 ? realms : ["alpha"];
   const prefixList = Array.isArray(prefixes) ? prefixes : [""];
   const emit = typeof log === "function" ? log : () => {};
+
+  // Normalize `name` (string | string[] | undefined) into a filter list.
+  // Empty list (no filtering) is represented as null so processScripts
+  // saves everything; a non-empty list filters by name OR _id.
+  const filters = name == null ? null
+    : Array.isArray(name) ? (name.length > 0 ? name : null)
+    : [name];
 
   let queryFilter;
   if (prefixList.length === 0 || (prefixList.length === 1 && prefixList[0] === "")) {
@@ -78,8 +102,11 @@ async function exportScripts({ exportDir, tenantUrl, realms, prefixes, name, tok
     const response = await restGet(amEndpoint, null, token);
     const scripts = response.data.result;
     const fileDir = path.join(exportDir, realm, SCRIPT_SUB_DIR);
-    emit(`Pulling ${scripts.length} script(s) from ${realm}${name ? ` (filter: ${name})` : ""}\n`);
-    processScripts(scripts, fileDir, name, emit);
+    const filterDesc = filters
+      ? ` filtering for ${filters.length === 1 ? `"${filters[0]}"` : `${filters.length} item(s)`}`
+      : "";
+    emit(`Fetched ${scripts.length} script(s) from ${realm}${filterDesc}\n`);
+    processScripts(scripts, fileDir, filters, emit);
   }
 }
 

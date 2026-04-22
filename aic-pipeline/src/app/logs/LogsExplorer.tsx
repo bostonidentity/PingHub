@@ -486,6 +486,11 @@ function TailTerminal({
   const [scrollTop, setScrollTop] = useState(0);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
+  // Timestamp of the most recent programmatic scroll (auto-tail, match-nav).
+  // handleScroll skips its at-bottom flip for ~400ms after that so the
+  // programmatic scroll's cascade of scroll events doesn't flip auto-tail
+  // back on and yank the user off a match they're inspecting.
+  const lastProgrammaticScrollRef = useRef(0);
 
   // Track container height for virtual list calculations
   useEffect(() => {
@@ -510,6 +515,7 @@ function TailTerminal({
   // Auto-scroll to bottom when new entries arrive
   useEffect(() => {
     if (!atBottomRef.current) return;
+    lastProgrammaticScrollRef.current = Date.now();
     if (wrapLines) {
       if (entries.length > 0) wrapVirtualizer.scrollToIndex(entries.length - 1, { align: "end" });
     } else if (outerRef.current) {
@@ -521,6 +527,7 @@ function TailTerminal({
   // Scroll to match index
   useEffect(() => {
     if (scrollToIndex === null || scrollToIndex < 0) return;
+    lastProgrammaticScrollRef.current = Date.now();
     if (wrapLines) {
       wrapVirtualizer.scrollToIndex(scrollToIndex, { align: "center" });
     } else if (outerRef.current) {
@@ -533,8 +540,12 @@ function TailTerminal({
 
   function handleScroll(e: React.UIEvent<HTMLDivElement>) {
     const el = e.currentTarget;
-    const atBot = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
     setScrollTop(el.scrollTop);
+    // Within ~400ms of a programmatic scroll, skip the at-bottom flip so
+    // the cascade of scroll events from that programmatic scroll can't
+    // re-enable auto-tail and drag the user off a match they're inspecting.
+    if (Date.now() - lastProgrammaticScrollRef.current < 400) return;
+    const atBot = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
     if (atBot !== atBottomRef.current) {
       atBottomRef.current = atBot;
       setAtBottom(atBot);
@@ -1159,6 +1170,14 @@ export function LogsExplorer({
   const firstMatchJumpedRef = useRef(false);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  // Tail auto-scroll only kicks in when the user is already pinned to the
+  // bottom. If they've scrolled up (e.g. to inspect a highlighted keyword)
+  // we leave the viewport alone so new entries don't yank it.
+  const scrollAtBottomRef = useRef(true);
+  // Ignore the onScroll events that fire as a consequence of our own
+  // programmatic scrolls (auto-scroll-to-bottom, scrollIntoView to a match)
+  // so they can't flip scrollAtBottomRef the wrong way.
+  const lastProgrammaticScrollAtRef = useRef(0);
 
   // ── Resize ──
   const [tableHeight, setTableHeight] = useState(() => {
@@ -1246,6 +1265,9 @@ export function LogsExplorer({
         if (msg.append) {
           setTailTotalReceived((n) => n + msg.entries.length);
         }
+        // A successful batch means whatever fetch error was showing is stale.
+        if (errorTimerRef.current) { clearTimeout(errorTimerRef.current); errorTimerRef.current = null; }
+        setError("");
         startTransition(() => {
           setEntries((prev) => {
             const combined = msg.append ? [...prev, ...msg.entries] : msg.entries;
@@ -1372,9 +1394,12 @@ export function LogsExplorer({
 
   // ── Auto-scroll when tailing ──
   useEffect(() => {
-    if (tailing && entries.length > 0 && isActive) {
+    if (tailing && entries.length > 0 && isActive && scrollAtBottomRef.current) {
       const el = scrollContainerRef.current;
-      if (el) el.scrollTop = el.scrollHeight;
+      if (el) {
+        lastProgrammaticScrollAtRef.current = Date.now();
+        el.scrollTop = el.scrollHeight;
+      }
     }
   }, [entries, tailing, isActive]);
 
@@ -1600,7 +1625,13 @@ export function LogsExplorer({
   useEffect(() => {
     if (viewMode !== "table" || highlightedTableIdx === null) return;
     const el = scrollContainerRef.current?.querySelector(`[data-row-idx="${highlightedTableIdx}"]`);
-    if (el) el.scrollIntoView({ block: "center" });
+    if (el) {
+      lastProgrammaticScrollAtRef.current = Date.now();
+      el.scrollIntoView({ block: "center" });
+      // Landing on a match means we're no longer tailing from the bottom —
+      // suppress the next round of auto-scroll so the user stays on the match.
+      scrollAtBottomRef.current = false;
+    }
   }, [viewMode, highlightedTableIdx]);
 
   return (
@@ -2133,6 +2164,14 @@ export function LogsExplorer({
           {/* Scrollable log window — CSS resize handle at bottom-right corner */}
           <div
             ref={scrollContainerRef}
+            onScroll={(e) => {
+              // Within ~400ms of a programmatic scroll, skip the at-bottom
+              // update so the cascade of scroll events from that scroll can't
+              // flip the flag the wrong way.
+              if (Date.now() - lastProgrammaticScrollAtRef.current < 400) return;
+              const el = e.currentTarget;
+              scrollAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+            }}
             onMouseUp={() => {
               if (fullscreen) return;
               const el = scrollContainerRef.current;

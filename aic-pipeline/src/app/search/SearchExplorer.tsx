@@ -54,35 +54,56 @@ function loadPersisted(): Partial<PersistedState> {
 
 export function SearchExplorer({ environments }: Props) {
   const [workingEnv] = useWorkingEnv();
-  const persistedRef = useRef<Partial<PersistedState>>(loadPersisted());
-  const persisted = persistedRef.current;
 
-  const [env, setEnv] = useState<string>(
-    persisted.env || workingEnv || environments[0]?.name || ""
-  );
-  useEffect(() => {
-    if (workingEnv && workingEnv !== env && !persistedRef.current.env) setEnv(workingEnv);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workingEnv]);
-
-  const [query, setQuery] = useState(persisted.query ?? "");
-  const [regex, setRegex] = useState(persisted.regex ?? false);
-  const [matchCase, setMatchCase] = useState(persisted.matchCase ?? false);
-  const [wholeWord, setWholeWord] = useState(persisted.wholeWord ?? false);
-  const [glob, setGlob] = useState(persisted.glob ?? DEFAULT_GLOB);
+  // Initial state must match SSR (localStorage is client-only). We rehydrate
+  // from localStorage in a post-mount effect below — before that fires, the
+  // first client render matches the server so React can hydrate cleanly.
+  const [env, setEnv] = useState<string>(environments[0]?.name || "");
+  const [query, setQuery] = useState("");
+  const [regex, setRegex] = useState(false);
+  const [matchCase, setMatchCase] = useState(false);
+  const [wholeWord, setWholeWord] = useState(false);
+  const [glob, setGlob] = useState(DEFAULT_GLOB);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [data, setData] = useState<SearchResponse | null>(persisted.data ?? null);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set(persisted.expanded ?? []));
-  const [selected, setSelected] = useState<{ path: string; line: number } | null>(persisted.selected ?? null);
+  const [data, setData] = useState<SearchResponse | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<{ path: string; line: number } | null>(null);
   const [fileContent, setFileContent] = useState<string>("");
   const [fileLoading, setFileLoading] = useState(false);
   const [previewFullscreen, setPreviewFullscreen] = useState(false);
   const [copyFlash, setCopyFlash] = useState(false);
 
-  // Persist whenever any non-ephemeral state changes.
+  const [hydrated, setHydrated] = useState(false);
+  const hadPersistedEnvRef = useRef(false);
+
   useEffect(() => {
+    const p = loadPersisted();
+    if (p.env) { setEnv(p.env); hadPersistedEnvRef.current = true; }
+    if (p.query != null) setQuery(p.query);
+    if (p.regex != null) setRegex(p.regex);
+    if (p.matchCase != null) setMatchCase(p.matchCase);
+    if (p.wholeWord != null) setWholeWord(p.wholeWord);
+    if (p.glob) setGlob(p.glob);
+    if (p.data != null) setData(p.data);
+    if (p.expanded) setExpanded(new Set(p.expanded));
+    if (p.selected != null) setSelected(p.selected);
+    setHydrated(true);
+  }, []);
+
+  // Fall through to workingEnv only when nothing was persisted for this view.
+  useEffect(() => {
+    if (!hydrated) return;
+    if (workingEnv && workingEnv !== env && !hadPersistedEnvRef.current) setEnv(workingEnv);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, workingEnv]);
+
+  // Persist whenever any non-ephemeral state changes — but not until after
+  // rehydration, or we'd overwrite localStorage with empty defaults on first
+  // render.
+  useEffect(() => {
+    if (!hydrated) return;
     try {
       const payload: PersistedState = {
         env, query, regex, matchCase, wholeWord, glob,
@@ -90,7 +111,7 @@ export function SearchExplorer({ environments }: Props) {
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch { /* ignore quota errors */ }
-  }, [env, query, regex, matchCase, wholeWord, glob, data, expanded, selected]);
+  }, [hydrated, env, query, regex, matchCase, wholeWord, glob, data, expanded, selected]);
 
 
   useEffect(() => {

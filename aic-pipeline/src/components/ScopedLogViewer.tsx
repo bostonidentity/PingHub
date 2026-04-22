@@ -251,13 +251,19 @@ export function ScopedLogViewer({
   const failedSections = sections.filter((s) => s.status === "failed");
   const runningSection = sections.find((s) => s.status === "running");
 
+  // `running` takes priority over `exitCode` — for promotes to controlled
+  // environments the push-step exitCode arrives BEFORE the DCC apply +
+  // verify-pull + verify-compare phases finish (the parent flips
+  // `running` based on dccBusy / verifyRunning to keep the viewer in
+  // the running state). Without this priority we'd flash a misleading
+  // "All scopes completed" while a session is still being applied.
   const overallStatus: "idle" | "running" | "success" | "failed" =
-    exitCode !== null
+    running
+      ? "running"
+      : exitCode !== null
       ? exitCode === 0
         ? "success"
         : "failed"
-      : running
-      ? "running"
       : "idle";
 
   const statusDotClass = {

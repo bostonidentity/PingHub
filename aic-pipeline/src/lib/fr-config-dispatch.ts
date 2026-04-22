@@ -116,7 +116,10 @@ export async function dispatchFrConfig(input: DispatchInput): Promise<DispatchRe
     try {
       token = await getAccessToken(
         envVars as Record<string, string>,
-        (msg) => emit(`[token] ${msg}\n`, "stderr"),
+        // Progress messages from the token helper are informational; only
+        // the catch branch below is a real error. Emit as stdout so they
+        // don't pollute the promote "Error logs" panel.
+        (msg) => emit(`[token] ${msg}\n`, "stdout"),
       );
       return token;
     } catch (err) {
@@ -124,6 +127,16 @@ export async function dispatchFrConfig(input: DispatchInput): Promise<DispatchRe
       throw err;
     }
   };
+
+  // When the caller passed --direct-control (controlled-env DCC promote),
+  // flip the vendored restClient into mutable mode so every PUT/POST/DELETE
+  // it issues carries `X-Configuration-Type: mutable` and AIC routes the
+  // write through the open direct-configuration session. Reset in finally.
+  const directControl = extraArgs.includes("--direct-control");
+  if (directControl) {
+    vendor.setDirectControlMode(true);
+    emit(`[dispatch] ${scope}: X-Configuration-Type: mutable enabled (DCC session)\n`, "stderr");
+  }
 
   try {
     const t = await getToken();
@@ -140,11 +153,30 @@ export async function dispatchFrConfig(input: DispatchInput): Promise<DispatchRe
             await vendor.pullManagedObjects({ exportDir, tenantUrl, token: t, name: n, log });
           }
           return { handled: true, code: 0 };
-        case "scripts":
-          for (const n of (filterItems ?? (name ? [name] : [undefined as string | undefined]))) {
-            await vendor.pullScripts({ exportDir, tenantUrl, token: t, realms, prefixes: prefixesOf(envVars), name: n, log });
-          }
+        case "scripts": {
+          // Items may arrive as bare names, `<uuid>.json` filenames, or
+          // `name:<n>` tags (the original task-item form that survives when
+          // promote-items Step 0 can't resolve the name to a UUID). Strip
+          // both decorations so the vendored pull matches by name OR _id.
+          const rawItems = filterItems ?? (name ? [name] : null);
+          const cleaned = rawItems?.map((it) =>
+            it.startsWith("name:") ? it.slice(5)
+            : it.endsWith(".json") ? it.slice(0, -5)
+            : it
+          );
+          // Single call regardless of item count — vendor.pullScripts now
+          // batches them into one fetch + in-memory filter (was N fetches).
+          await vendor.pullScripts({
+            exportDir,
+            tenantUrl,
+            token: t,
+            realms,
+            prefixes: prefixesOf(envVars),
+            name: cleaned ?? undefined,
+            log,
+          });
           return { handled: true, code: 0 };
+        }
         case "journeys":
           for (const n of (filterItems ?? (name ? [name] : [undefined as string | undefined]))) {
             await vendor.pullJourneys({ exportDir, tenantUrl, token: t, realms, name: n, pullDependencies: false, log });
@@ -261,11 +293,37 @@ export async function dispatchFrConfig(input: DispatchInput): Promise<DispatchRe
       return { handled: true, code: 0 };
     }
     switch (scope) {
-      case "managed-objects":
-        for (const n of (filterItems ?? (name ? [name] : [undefined as string | undefined]))) {
+      case "managed-objects": {
+        // The vendored push has two modes:
+        //   - With `name`: GET → splice → PUT (merges the named object into
+        //     target's existing managed config).
+        //   - Without `name`: PUT `{objects:[everything in configDir/managed-objects]}`
+        //     which REPLACES target's full managed config.
+        // For promote (especially DCC) the configDir is a staging temp that
+        // only contains the SELECTED object(s), so the no-name branch wipes
+        // out every other managed object and IDM crashes server-side
+        // (`TypeError: Cannot read property "schema" from undefined`).
+        // Always push per-item so the merge flow runs. If no items were
+        // passed, discover them from the temp dir.
+        let items: string[] = filterItems ?? (name ? [name] : []);
+        if (items.length === 0) {
+          const moDir = path.join(configDir, "managed-objects");
+          if (fs.existsSync(moDir)) {
+            items = fs
+              .readdirSync(moDir, { withFileTypes: true })
+              .filter((d) => d.isDirectory())
+              .map((d) => d.name);
+          }
+        }
+        if (items.length === 0) {
+          emit("No managed-objects to push.\n", "stdout");
+          return { handled: true, code: 0 };
+        }
+        for (const n of items) {
           await vendor.pushManagedObjects({ configDir, tenantUrl, token: t, name: n, log });
         }
         return { handled: true, code: 0 };
+      }
       case "scripts":
         for (const n of (filterItems ?? (name ? [name] : [undefined as string | undefined]))) {
           await vendor.pushScripts({ configDir, tenantUrl, token: t, realms, name: n, log });
@@ -381,6 +439,8 @@ export async function dispatchFrConfig(input: DispatchInput): Promise<DispatchRe
   } catch (err) {
     emit(`${err instanceof Error ? err.message : String(err)}\n`, "stderr");
     return { handled: true, code: 1 };
+  } finally {
+    if (directControl) vendor.setDirectControlMode(false);
   }
 }
 

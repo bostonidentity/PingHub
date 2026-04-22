@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-22
+
+### Added
+
+- **Data tab**: browse managed-object snapshots and run on-demand data pulls. Per-type record tables, detail pane, display-field inference, JSON export, shared env pill, last-pulled age, ETA, idle banner, and a persistent `GlobalJobBanner` that surfaces in-flight background jobs across navigation.
+- **Direct-control (DCC) promote flow**: controlled environments now promote in-process through a Direct Configuration Change session — lock → dry-run → push (with `X-Configuration-Type: mutable`) → apply → pull-target → verify — with DCC phases surfaced as their own log sections. Stale sessions are detected and closed before push; apply polling defaults to 2-second intervals with a 20-minute timeout for tenant restarts.
+- **Item-level checkboxes on every scope** in the promote task editor, including DIR-based scopes (email-templates, connector-mappings). Scope headers show a tri-state indicator (unchecked / indeterminate / checked), and the picker gained +/- resize plus fullscreen controls, mirroring the logs view.
+- **Token-acquisition progress** narrated per request (`[token] → POST …`, `✓ token acquired …` with TTL and granted scopes), routed to stdout so clean runs don't surface it as errors.
+- **restClient retries** network errors with decorated messages; a 60-second timeout is applied to AIC requests and browser stream drops are labeled.
+- **Environments manager**: in-process tenant restart and DCC, consolidated edit-modal header, unified test/poll/restart terminal with Stop repositioned, close allowed while polling.
+
+### Changed
+
+- **Analyze tab simplified**: the journey dependency tree, force-directed journey/script map, and managed-object schema graph were explored, then removed. The tab now hosts only **ESV orphan references**, dropping the `react-force-graph-2d` dependency and ~1800 lines of dead code.
+- **Promote task creation**: adding an email-template or connector-mapping file from a compare result now scopes the task to that single item instead of the whole scope.
+- **Scripts pull** batches by item and matches by `name` OR `_id`, with duplicate filter forms no longer producing false "not found" reports.
+- **Logs tail** no longer yanks the viewport when new entries arrive while the user is inspecting a highlighted keyword; a successful batch clears any stale fetch-error banner beside the entry count.
+- **DCC push order**: scripts go before journeys so journey nodes can resolve their script references on first apply.
+- **Managed-objects push** always runs per-name to preserve the GET → splice → PUT merge flow.
+- **vendor/iga-workflows** treats an empty workflow list as success instead of an error.
+- **vendor/auth-trees** logs the PUT URL per node + tree for clearer push diagnostics.
+
+### Fixed
+
+- **Promote scope remapping**: dir-based scopes (email-templates, connector-mappings) now key the `_id` remap by directory name instead of `json.name`, so a copy that inherits the original's `name` field no longer collides onto the original on the target tenant.
+- **Streaming responses**: double-close crash removed, dev-server response buffering defeated with periodic heartbeats, and aborts are no longer re-issued while one is already in flight.
+- **Tenant restart**: `_action` is passed as a query parameter for compatibility.
+- **Search tab**: hydration mismatch resolved by deferring the `localStorage` rehydrate to post-mount.
+- **Pull prune**: recognizes both realm on-disk layouts (`realms/<realm>/<subdir>/` and `<realm>/<subdir>/`) so remote deletions propagate locally.
+
 ## [0.1.0] - 2026-04-20
 
 First public release of PingHub under the Apache License 2.0.
@@ -24,5 +54,6 @@ First public release of PingHub under the Apache License 2.0.
 - Vendored subset of [`fr-config-manager`](https://github.com/ForgeRock/fr-config-manager) under `src/vendor/` (MIT licensed — see `NOTICE`).
 - Apache 2.0 license, project metadata, `SECURITY.md`, `CODE_OF_CONDUCT.md`.
 
-[Unreleased]: https://github.com/bostonidentity/PingHub/compare/aic-pipeline/v0.1.0...HEAD
+[Unreleased]: https://github.com/bostonidentity/PingHub/compare/aic-pipeline/v0.2.0...HEAD
+[0.2.0]: https://github.com/bostonidentity/PingHub/compare/aic-pipeline/v0.1.0...aic-pipeline/v0.2.0
 [0.1.0]: https://github.com/bostonidentity/PingHub/releases/tag/aic-pipeline/v0.1.0
