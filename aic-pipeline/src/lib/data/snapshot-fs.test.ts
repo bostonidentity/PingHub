@@ -38,39 +38,39 @@ afterEach(() => {
 });
 
 describe("listSnapshotTypes", () => {
-  it("returns empty list when no snapshot directory exists", () => {
-    expect(listSnapshotTypes(tmpDir, ENV)).toEqual([]);
+  it("returns empty list when no snapshot directory exists", async () => {
+    expect(await listSnapshotTypes(tmpDir, ENV)).toEqual([]);
   });
 
-  it("lists types that have a manifest", () => {
+  it("lists types that have a manifest", async () => {
     writeManifest("alpha_user", 3, 1700000000000);
     writeManifest("alpha_role", 2, 1700000001000);
-    const out = listSnapshotTypes(tmpDir, ENV);
+    const out = await listSnapshotTypes(tmpDir, ENV);
     expect(out).toEqual([
       { name: "alpha_role", count: 2, pulledAt: 1700000001000 },
       { name: "alpha_user", count: 3, pulledAt: 1700000000000 },
     ].sort((a, b) => a.name.localeCompare(b.name)));
   });
 
-  it("skips directories without a manifest", () => {
+  it("skips directories without a manifest", async () => {
     writeManifest("alpha_user", 1);
     fs.mkdirSync(path.join(tmpDir, ENV, "managed-data", "half_pulled"), { recursive: true });
-    const out = listSnapshotTypes(tmpDir, ENV);
+    const out = await listSnapshotTypes(tmpDir, ENV);
     expect(out.map((t) => t.name)).toEqual(["alpha_user"]);
   });
 });
 
 describe("readRecord", () => {
-  it("reads a single record by id", () => {
+  it("reads a single record by id", async () => {
     writeRecord("alpha_user", "u1", { _id: "u1", userName: "alice" });
-    expect(readRecord(tmpDir, ENV, "alpha_user", "u1")).toEqual({
+    expect(await readRecord(tmpDir, ENV, "alpha_user", "u1")).toEqual({
       _id: "u1",
       userName: "alice",
     });
   });
 
-  it("returns null for missing record", () => {
-    expect(readRecord(tmpDir, ENV, "alpha_user", "missing")).toBeNull();
+  it("returns null for missing record", async () => {
+    expect(await readRecord(tmpDir, ENV, "alpha_user", "missing")).toBeNull();
   });
 });
 
@@ -82,8 +82,8 @@ describe("listRecords", () => {
     writeRecord("alpha_user", "u3", { _id: "u3", name: "charlie", mail: "alice@y.co" });
   });
 
-  it("returns all records paginated by id order", () => {
-    const page = listRecords(tmpDir, ENV, "alpha_user", {
+  it("returns all records paginated by id order", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
       q: "",
       page: 1,
       limit: 10,
@@ -94,8 +94,8 @@ describe("listRecords", () => {
     expect(page.records[0]).toEqual({ id: "u1", title: "alice" });
   });
 
-  it("full-JSON search matches any key or value in the record", () => {
-    const page = listRecords(tmpDir, ENV, "alpha_user", {
+  it("full-JSON search matches any key or value in the record", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
       q: "alice",
       page: 1,
       limit: 10,
@@ -106,9 +106,9 @@ describe("listRecords", () => {
     expect(page.records.map((r) => r.id).sort()).toEqual(["u1", "u3"]);
   });
 
-  it("full-JSON search matches on keys too", () => {
+  it("full-JSON search matches on keys too", async () => {
     // "mail" is a key in every record.
-    const page = listRecords(tmpDir, ENV, "alpha_user", {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
       q: "mail",
       page: 1,
       limit: 10,
@@ -117,32 +117,32 @@ describe("listRecords", () => {
     expect(page.total).toBe(3);
   });
 
-  it("paginates with limit and page", () => {
-    const first = listRecords(tmpDir, ENV, "alpha_user", {
+  it("paginates with limit and page", async () => {
+    const first = await listRecords(tmpDir, ENV, "alpha_user", {
       q: "", page: 1, limit: 2,
       display: { title: "name", searchFields: [] },
     });
     expect(first.records.map((r) => r.id)).toEqual(["u1", "u2"]);
-    const second = listRecords(tmpDir, ENV, "alpha_user", {
+    const second = await listRecords(tmpDir, ENV, "alpha_user", {
       q: "", page: 2, limit: 2,
       display: { title: "name", searchFields: [] },
     });
     expect(second.records.map((r) => r.id)).toEqual(["u3"]);
   });
 
-  it("falls back to id when the title field is missing", () => {
+  it("falls back to id when the title field is missing", async () => {
     writeRecord("alpha_user", "u4", { _id: "u4" });
-    const page = listRecords(tmpDir, ENV, "alpha_user", {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
       q: "", page: 1, limit: 10,
       display: { title: "name", searchFields: [] },
     });
     expect(page.records.find((r) => r.id === "u4")?.title).toBe("u4");
   });
 
-  it("honors titleField override and matches case-insensitively", () => {
+  it("honors titleField override and matches case-insensitively", async () => {
     // Record uses capital-N Name; override asks for lower-case "name".
     writeRecord("alpha_user", "u5", { _id: "u5", Name: "Overridden" });
-    const page = listRecords(tmpDir, ENV, "alpha_user", {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
       q: "", page: 1, limit: 10,
       display: { title: "_id", searchFields: [] },
       titleField: "name",
@@ -172,8 +172,8 @@ describe("listRecords with _index.json", () => {
     ]);
   });
 
-  it("uses the index for no-query browsing without reading individual files", () => {
-    const page = listRecords(tmpDir, ENV, "alpha_user", {
+  it("uses the index for no-query browsing without reading individual files", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
       q: "", page: 1, limit: 10,
       display: { title: "name", searchFields: [] },
     });
@@ -186,8 +186,8 @@ describe("listRecords with _index.json", () => {
     expect(page.fields.length).toBeGreaterThan(0);
   });
 
-  it("searches indexed fields without file I/O", () => {
-    const page = listRecords(tmpDir, ENV, "alpha_user", {
+  it("searches indexed fields without file I/O", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
       q: "alice", page: 1, limit: 10,
       display: { title: "name", searchFields: [] },
     });
@@ -195,21 +195,21 @@ describe("listRecords with _index.json", () => {
     expect(page.records.map((r) => r.id).sort()).toEqual(["u1", "u3"]);
   });
 
-  it("paginates correctly from the index", () => {
-    const first = listRecords(tmpDir, ENV, "alpha_user", {
+  it("paginates correctly from the index", async () => {
+    const first = await listRecords(tmpDir, ENV, "alpha_user", {
       q: "", page: 1, limit: 2,
       display: { title: "name", searchFields: [] },
     });
     expect(first.records.map((r) => r.id)).toEqual(["u1", "u2"]);
-    const second = listRecords(tmpDir, ENV, "alpha_user", {
+    const second = await listRecords(tmpDir, ENV, "alpha_user", {
       q: "", page: 2, limit: 2,
       display: { title: "name", searchFields: [] },
     });
     expect(second.records.map((r) => r.id)).toEqual(["u3"]);
   });
 
-  it("falls back to id when title field is not in the index", () => {
-    const page = listRecords(tmpDir, ENV, "alpha_user", {
+  it("falls back to id when title field is not in the index", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
       q: "", page: 1, limit: 10,
       display: { title: "nonexistent", searchFields: [] },
     });

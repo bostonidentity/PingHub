@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import path from "path";
-import fs from "fs";
+import { existsSync } from "fs";
+import fsp from "fs/promises";
 import { getConfigDir } from "@/lib/fr-config";
 
 export async function GET(
@@ -20,10 +21,14 @@ export async function GET(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  if (!fs.existsSync(resolved) || fs.statSync(resolved).isDirectory()) {
+  if (!existsSync(resolved)) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  const stat = await fsp.stat(resolved);
+  if (stat.isDirectory()) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const content = fs.readFileSync(resolved, "utf-8");
+  const content = await fsp.readFile(resolved, "utf-8");
   return NextResponse.json({ content });
 }

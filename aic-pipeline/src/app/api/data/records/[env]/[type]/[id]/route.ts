@@ -10,7 +10,7 @@ export async function GET(
   { params }: { params: Promise<{ env: string; type: string; id: string }> },
 ) {
   const { env, type, id } = await params;
-  const record = readRecord(path.join(cwd(), "environments"), env, type, id);
+  const record = await readRecord(path.join(cwd(), "environments"), env, type, id);
   if (!record) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json({ id, record });
 }

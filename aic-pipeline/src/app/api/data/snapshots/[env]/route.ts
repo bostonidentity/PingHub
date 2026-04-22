@@ -10,6 +10,6 @@ export async function GET(
   { params }: { params: Promise<{ env: string }> },
 ) {
   const { env } = await params;
-  const types = listSnapshotTypes(path.join(cwd(), "environments"), env);
+  const types = await listSnapshotTypes(path.join(cwd(), "environments"), env);
   return NextResponse.json({ types });
 }
