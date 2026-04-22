@@ -36,17 +36,29 @@ async function httpRequest(config, token) {
     } catch (err) {
       lastErr = err;
       const status = err?.response?.status;
-      if (status == null || status < 500 || status > 599) break;
+      // Retry on:
+      //   - 5xx HTTP responses (transient server-side)
+      //   - network-level errors (no HTTP response received: ECONNRESET,
+      //     ETIMEDOUT, ENOTFOUND, EAI_AGAIN, etc.)
+      // Bail immediately on 4xx and any other non-retryable shape.
+      const isNetworkError = status == null;
+      const isRetryable5xx = status != null && status >= 500 && status <= 599;
+      if (!isNetworkError && !isRetryable5xx) break;
       if (attempt < MAX_RETRIES) {
+        const reason = isNetworkError
+          ? `network error${err?.code ? ` (${err.code})` : ""}`
+          : `HTTP ${status}`;
         // eslint-disable-next-line no-console
-        console.error(`Retry ${attempt + 1}/${MAX_RETRIES} for ${config.url}...`);
+        console.error(`Retry ${attempt + 1}/${MAX_RETRIES} for ${config.url} — ${reason}...`);
       }
     }
   }
-  // Surface the tenant's response body in the thrown message so the caller's
-  // log shows e.g. "Request failed with status code 400: <reason from AIC>"
-  // instead of just axios's status-code-only default. Body can be a string
-  // or a JSON object {code,reason,message,…}.
+  // Decorate the thrown error so the caller's log gets actionable detail
+  // instead of axios's terse default. Two cases:
+  //   - HTTP error: append the tenant's response body (truncated at 500
+  //     chars). Body shape is usually {code,reason,message,…}.
+  //   - Network error: append err.code (and err.cause if present) so the
+  //     reader can tell ECONNRESET from ETIMEDOUT from DNS failure etc.
   if (lastErr?.response) {
     const body = lastErr.response.data;
     let snippet = "";
@@ -55,10 +67,23 @@ async function httpRequest(config, token) {
       catch { snippet = String(body); }
     }
     if (snippet) {
-      // Cap the snippet so one giant body doesn't drown the log line.
       if (snippet.length > 500) snippet = snippet.slice(0, 500) + "…(truncated)";
       const baseMsg = lastErr.message || "Request failed";
       lastErr.message = `${baseMsg}: ${snippet}`;
+    }
+  } else if (lastErr) {
+    const parts = [];
+    if (lastErr.code) parts.push(lastErr.code);
+    const causeCode = lastErr.cause && lastErr.cause.code;
+    const causeMsg = lastErr.cause && lastErr.cause.message;
+    if (causeCode && causeCode !== lastErr.code) parts.push(causeCode);
+    if (causeMsg && !parts.includes(causeMsg)) parts.push(causeMsg);
+    if (parts.length > 0) {
+      const baseMsg = lastErr.message || "Request failed";
+      lastErr.message = `${baseMsg} [${parts.join(" / ")}] — ${(config.method || "GET").toUpperCase()} ${config.url}`;
+    } else {
+      const baseMsg = lastErr.message || "Request failed";
+      lastErr.message = `${baseMsg} — ${(config.method || "GET").toUpperCase()} ${config.url}`;
     }
   }
   throw lastErr;
