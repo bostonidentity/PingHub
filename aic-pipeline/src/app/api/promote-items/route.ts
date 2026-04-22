@@ -167,33 +167,52 @@ function remapIds(tempDirs: string[], scope: string, sourceNameToId: Map<string,
     // Journeys match by directory name — no _id remapping needed
     logs.push("Journeys matched by directory name — no ID remapping needed");
   } else {
-    // Generic: remap _id in JSON files
+    // Generic: remap _id in JSON files. Mirror buildNameToIdMap's key logic so
+    // dir-based scopes (email-templates, connector-mappings) key on directory
+    // name — the stable identity that matches `_id`'s suffix. Using
+    // `json.name` would miscollide when a copy inherits the original's name
+    // field (e.g. kyidEmailOtpCopy has json.name "kyidEmailOtp", same as the
+    // original template — so the old code remapped the copy onto the original
+    // and overwrote it on the target).
     for (const dir of tempDirs) {
-      const processDir = (d: string) => {
-        if (!fs.existsSync(d)) return;
-        for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
-          if (entry.isDirectory()) {
-            processDir(path.join(d, entry.name));
-          } else if (entry.name.endsWith(".json")) {
-            const fp = path.join(d, entry.name);
-            try {
-              const json = JSON.parse(fs.readFileSync(fp, "utf-8"));
-              if (!json._id) continue;
-              const name = json.name ?? path.basename(entry.name, ".json");
-              const targetId = targetNameToId.get(name);
-              if (targetId && targetId !== json._id) {
-                const oldId = json._id;
-                json._id = targetId;
-                fs.writeFileSync(fp, JSON.stringify(json, null, 2));
-                logs.push(`Remapped "${name}": ${oldId} → ${targetId}`);
-              } else if (!targetId) {
-                logs.push(`"${name}" not found on target — will be created`);
-              }
-            } catch { /* skip */ }
-          }
+      if (!fs.existsSync(dir)) continue;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          // Dir-based entry: <dir>/<name>/<name>.json
+          const inner = path.join(dir, entry.name, `${entry.name}.json`);
+          if (!fs.existsSync(inner)) continue;
+          try {
+            const json = JSON.parse(fs.readFileSync(inner, "utf-8"));
+            if (!json._id) continue;
+            const targetId = targetNameToId.get(entry.name);
+            if (targetId && targetId !== json._id) {
+              const oldId = json._id;
+              json._id = targetId;
+              fs.writeFileSync(inner, JSON.stringify(json, null, 2));
+              logs.push(`Remapped "${entry.name}": ${oldId} → ${targetId}`);
+            } else if (!targetId) {
+              logs.push(`"${entry.name}" not found on target — will be created`);
+            }
+          } catch { /* skip */ }
+        } else if (entry.name.endsWith(".json")) {
+          // Flat entry: <dir>/<name>.json
+          const fp = path.join(dir, entry.name);
+          try {
+            const json = JSON.parse(fs.readFileSync(fp, "utf-8"));
+            if (!json._id) continue;
+            const name = json.name ?? path.basename(entry.name, ".json");
+            const targetId = targetNameToId.get(name);
+            if (targetId && targetId !== json._id) {
+              const oldId = json._id;
+              json._id = targetId;
+              fs.writeFileSync(fp, JSON.stringify(json, null, 2));
+              logs.push(`Remapped "${name}": ${oldId} → ${targetId}`);
+            } else if (!targetId) {
+              logs.push(`"${name}" not found on target — will be created`);
+            }
+          } catch { /* skip */ }
         }
-      };
-      processDir(dir);
+      }
     }
   }
 }
