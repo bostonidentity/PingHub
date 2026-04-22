@@ -711,26 +711,6 @@ function FrConfigControls({
   return (
     <div className="space-y-2 w-full">
       <div className="flex items-center gap-2 flex-wrap">
-        <button
-          type="button"
-          onClick={runTest}
-          disabled={isBusy}
-          className="px-3 py-1.5 text-xs font-medium rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-40 transition-colors"
-        >
-          {testRunning ? "Testing..." : "Test Connection"}
-        </button>
-        <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={testDebug}
-            onChange={(e) => setTestDebug(e.target.checked)}
-            disabled={testRunning}
-            className="accent-sky-600"
-          />
-          Debug
-        </label>
-        {testPill}
-
         {polling ? (
           <button
             type="button"
@@ -762,6 +742,26 @@ function FrConfigControls({
             Poll --direct-control state
           </label>
         )}
+
+        <button
+          type="button"
+          onClick={runTest}
+          disabled={isBusy}
+          className="px-3 py-1.5 text-xs font-medium rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-40 transition-colors"
+        >
+          {testRunning ? "Testing..." : "Test Connection"}
+        </button>
+        <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={testDebug}
+            onChange={(e) => setTestDebug(e.target.checked)}
+            disabled={testRunning}
+            className="accent-sky-600"
+          />
+          Debug
+        </label>
+        {testPill}
 
         <div className="ml-auto flex items-center gap-2">
           {terminal && !isBusy && (
