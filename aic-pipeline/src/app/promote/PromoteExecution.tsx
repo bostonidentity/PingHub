@@ -724,9 +724,19 @@ function FrConfigSection({
 
   // Synthetic log entries for DCC transitions. Merged with the streaming
   // push logs so the user sees one unified timeline in the existing log viewer.
+  // ScopedLogViewer only renders entries that fall inside a scope-start /
+  // scope-end pair, so wrap each DCC phase (open / apply / verify-pull /
+  // abort) with dccScopeStart + dccScopeEnd — otherwise the lines are
+  // silently dropped from the viewer.
   const [dccLogs, setDccLogs] = useState<LogEntry[]>([]);
   const pushDccLog = (data: string, type: "stdout" | "stderr" = "stdout") => {
     setDccLogs((prev) => [...prev, { type, data: `[dcc] ${data}\n`, ts: Date.now() }]);
+  };
+  const dccScopeStart = (scope: string) => {
+    setDccLogs((prev) => [...prev, { type: "scope-start", scope, ts: Date.now() }]);
+  };
+  const dccScopeEnd = (scope: string, code: number) => {
+    setDccLogs((prev) => [...prev, { type: "scope-end", scope, code, ts: Date.now() }]);
   };
   const onCompleteRef = useRef(onComplete);
   const onTaskStatusRef = useRef(onTaskStatusChange);
@@ -834,10 +844,12 @@ function FrConfigSection({
   const handleAbort = async () => {
     abortRequestedRef.current = true;
     if (targetIsControlled) {
+      dccScopeStart("abort-session");
       pushDccLog("User aborted — calling direct-control-abort.", "stderr");
       try { await callDcc("direct-control-abort"); } catch { /* best-effort */ }
       setDccState("SESSION_ABORT_REQUESTED");
       setDccBusy(false);
+      dccScopeEnd("abort-session", 0);
     }
     abort();
   };
@@ -861,6 +873,7 @@ function FrConfigSection({
       setDccLogs([]);
       abortRequestedRef.current = false;
       setDccBusy(true);
+      dccScopeStart("open-session");
       pushDccLog("Checking direct-control session state…");
       // DCC Step 1: Check state
       const stateRes = await callDcc("direct-control-state");
@@ -878,6 +891,7 @@ function FrConfigSection({
         const initRes = await callDcc("direct-control-init");
         if (initRes.exitCode !== 0) {
           pushDccLog(`Init failed: ${initRes.stderr || initRes.stdout}`, "stderr");
+          dccScopeEnd("open-session", 1);
           setDccBusy(false);
           onTaskStatusChange("failed");
           return;
@@ -893,7 +907,7 @@ function FrConfigSection({
         let lastLoggedStatus = "";
         while (Date.now() - pollStart < 240_000) {
           await new Promise((r) => setTimeout(r, 5000));
-          if (abortRequestedRef.current) { setDccBusy(false); return; }
+          if (abortRequestedRef.current) { dccScopeEnd("open-session", 1); setDccBusy(false); return; }
           const pollRes = await callDcc("direct-control-state");
           let pollState: { status?: string } = {};
           try { pollState = JSON.parse(pollRes.stdout.trim()); } catch { /* ignore */ }
@@ -907,6 +921,7 @@ function FrConfigSection({
           if (pollState.status === "ERROR") {
             pushDccLog("Session entered ERROR state — aborting.", "stderr");
             await callDcc("direct-control-abort");
+            dccScopeEnd("open-session", 1);
             setDccBusy(false);
             onTaskStatusChange("failed");
             return;
@@ -915,12 +930,14 @@ function FrConfigSection({
         if (!reached) {
           pushDccLog("Timed out waiting for SESSION_INITIALISED — aborting.", "stderr");
           await callDcc("direct-control-abort");
+          dccScopeEnd("open-session", 1);
           setDccBusy(false);
           onTaskStatusChange("failed");
           return;
         }
       }
       pushDccLog("Session ready. Starting push with --direct-control…");
+      dccScopeEnd("open-session", 0);
       setDccBusy(false);
     }
 
@@ -942,12 +959,15 @@ function FrConfigSection({
 
     (async () => {
       if (exitCode !== 0) {
+        dccScopeStart("abort-session");
         pushDccLog(`Push failed (exit ${exitCode}) — aborting session.`, "stderr");
         setDccState("SESSION_ABORT_REQUESTED");
         await callDcc("direct-control-abort");
+        dccScopeEnd("abort-session", 0);
         return;
       }
 
+      dccScopeStart("apply-session");
       pushDccLog("Push complete. Applying session…");
       setDccState("SESSION_APPLYING");
       setDccBusy(true);
@@ -956,6 +976,7 @@ function FrConfigSection({
         pushDccLog(`Apply request failed: ${applyRes.stderr || applyRes.stdout}`, "stderr");
         setDccState("SESSION_ABORT_REQUESTED");
         await callDcc("direct-control-abort");
+        dccScopeEnd("apply-session", 1);
         setDccBusy(false);
         return;
       }
@@ -981,22 +1002,27 @@ function FrConfigSection({
         if (pollState.status === "ERROR") {
           pushDccLog("Session entered ERROR state during apply — aborting.", "stderr");
           await callDcc("direct-control-abort");
+          dccScopeEnd("apply-session", 1);
           setDccBusy(false);
           return;
         }
       }
       if (!applied) {
         pushDccLog("Timed out waiting for SESSION_APPLIED.", "stderr");
+        dccScopeEnd("apply-session", 1);
         setDccBusy(false);
         onCompleteRef.current("failed");
         onTaskStatusRef.current("failed");
         return;
       }
       pushDccLog("Session applied successfully.");
+      dccScopeEnd("apply-session", 0);
 
       // Pull target now that the tenant holds the committed changes, then verify.
+      dccScopeStart("verify-pull");
       pushDccLog("Pulling target to sync local files for verify…");
       const pullScopes = Array.from(new Set(task.items.map((i) => i.scope)));
+      let pullSucceeded = true;
       try {
         const pullRes = await fetch("/api/pull", {
           method: "POST",
@@ -1019,12 +1045,15 @@ function FrConfigSection({
         }
         if (pullExit !== 0) {
           pushDccLog(`Pull-target exited with code ${pullExit}.`, "stderr");
+          pullSucceeded = false;
         } else {
           pushDccLog("Pull-target completed.");
         }
       } catch (err) {
         pushDccLog(`Pull-target failed: ${err instanceof Error ? err.message : String(err)}`, "stderr");
+        pullSucceeded = false;
       } finally {
+        dccScopeEnd("verify-pull", pullSucceeded ? 0 : 1);
         setDccBusy(false);
       }
       await runVerify();
