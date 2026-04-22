@@ -564,8 +564,7 @@ export async function POST(req: NextRequest) {
         if (pushScopes.length === 0) {
           emit({ type: "stdout", data: "No items to push — temp directory is empty.\n", ts: Date.now() });
           emit({ type: "exit", code: 0, ts: Date.now() });
-          controller.close();
-          return;
+          return;  // outer `finally` closes the controller
         }
 
         // ── Push ──────────────────────────────────────────────────────────
@@ -1249,8 +1248,7 @@ export async function POST(req: NextRequest) {
             emit({ type: "stdout", data: `Push staged in direct-control session. Pull-target deferred until after apply.\n`, ts: Date.now() });
             emit({ type: "exit", code: 0, ts: Date.now() });
           }
-          controller.close();
-          return;
+          return;  // outer `finally` closes the controller
         }
 
         // Step 4: Pull target to sync local files (only if push succeeded)
@@ -1662,7 +1660,11 @@ export async function POST(req: NextRequest) {
         try {
           if (fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true });
         } catch { /* ignore */ }
-        controller.close();
+        // Defensive close: any other path that already closed the
+        // controller would otherwise crash this finally with
+        // ERR_INVALID_STATE, which Next.js surfaces as a 500 and the
+        // browser sees as ERR_INCOMPLETE_CHUNKED_ENCODING.
+        try { controller.close(); } catch { /* already closed */ }
       }
     },
   });

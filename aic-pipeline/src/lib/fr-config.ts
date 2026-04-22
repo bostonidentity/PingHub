@@ -193,29 +193,18 @@ export function spawnFrConfig(options: RunOptions & { envOverrides?: Record<stri
       // we ever get the ECONNABORTED that would tell us which URL stalled.
       // Tick a tiny `heartbeat` event every 10s to keep the connection
       // open. Client filters these out of the visible log.
-      let heartbeatTick = 0;
-      // ~1KB padding ensures the chunk is large enough to defeat
-      // small-chunk buffering thresholds (gzip, dev-server, proxies)
-      // that won't flush a 50-byte heartbeat. Padded into the unused
-      // `pad` field so the JSON parser still picks up the type.
+      // ~1KB padding ensures each heartbeat chunk is big enough to defeat
+      // small-chunk buffering thresholds (gzip / dev-server / proxies)
+      // that won't flush a 50-byte payload. Padded into an unused `pad`
+      // field so the JSON parser still picks up the type. Client filters
+      // these out of the visible log.
       const HEARTBEAT_PAD = " ".repeat(1024);
       heartbeat = setInterval(() => {
-        heartbeatTick++;
-        // eslint-disable-next-line no-console
-        console.log(`[fr-config heartbeat #${heartbeatTick} @ ${new Date().toISOString()}]`);
         try {
           controller.enqueue(JSON.stringify({
             type: "heartbeat",
-            tick: heartbeatTick,
             ts: Date.now(),
             pad: HEARTBEAT_PAD,
-          }) + "\n");
-          // Visible diagnostic line so the operator can SEE the keepalive
-          // firing if a request appears to hang. Drop once verified.
-          controller.enqueue(JSON.stringify({
-            type: "stderr",
-            data: `[heartbeat #${heartbeatTick}] still in flight…\n`,
-            ts: Date.now(),
           }) + "\n");
         } catch {
           // Stream already closed — let the cleanup below handle it.
