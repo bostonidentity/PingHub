@@ -3,6 +3,13 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { spawnFrConfig, getConfigDir, getEnvFileContent } from "@/lib/fr-config";
+
+// Long-running streaming response. Force the Node.js runtime, opt out of
+// route-level caching, and bump the per-request max duration to 10 min so
+// neither Next.js nor a downstream optimization layer truncates the stream.
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 600;
 import { dispatchFrConfig } from "@/lib/fr-config-dispatch";
 import { parseEnvFile } from "@/lib/env-parser";
 import type { ScopeSelection } from "@/lib/fr-config-types";
@@ -1663,8 +1670,12 @@ export async function POST(req: NextRequest) {
   return new Response(stream as unknown as ReadableStream<Uint8Array>, {
     headers: {
       "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
+      // no-transform tells intermediaries (incl. some Next.js dev layers)
+      // to skip gzip compression that buffers tiny chunks until a flush
+      // threshold. X-Accel-Buffering disables nginx-style proxy buffering.
+      "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
     },
   });
 }
