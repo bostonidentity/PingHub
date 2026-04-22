@@ -78,7 +78,12 @@
 
 - **saml** — 170-line pull + 325-line push with XML + signing keys. Intentionally deferred: needs human review.
 - **Frodo scopes** (`am-agents`, `oidc-providers`, `variables`) — require adopting `@rockcarver/frodo-lib` as an npm dependency with its own connection-state model. Intentionally deferred.
-- **Direct-control / DCC staging** — production-critical path. The vendor route keeps the `spawnFrConfig` path for `directControl: true` cases (`directControl` flag forces fall-through to spawn).
+- **Direct-control / DCC staging** — handled in-process via the
+  `setDirectControlMode(true)` toggle on `restClient` (see local patch
+  #12). Vendored push functions can now run inside an open DCC session;
+  no spawn is needed. The session lifecycle itself
+  (`init` / `apply` / `abort` / `state`) is implemented in
+  `src/lib/tenant-control.ts`.
 
 ## Local patches
 
@@ -106,6 +111,13 @@
     which upstream iterates blindly and throws "workflows is not iterable".
     We treat that as "no workflows" and return cleanly so the scope
     succeeds instead of triggering retries + a hard failure.
+12. **`common/restClient.js`** — adds module-level
+    `setDirectControlMode(on)` / `getDirectControlMode()` and injects
+    `X-Configuration-Type: mutable` on every request when on. Lets the
+    in-process dispatcher run vendored push functions inside an open AIC
+    DCC session (controlled-env promote) without spawning the upstream
+    CLI. `fr-config-dispatch.ts` toggles the flag from
+    `--direct-control` in `extraArgs`, in a try/finally.
 
 ## Security note
 

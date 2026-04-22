@@ -9,9 +9,20 @@ const axios = require("axios");
 
 const MAX_RETRIES = 2;
 
+// Direct-control / DCC staging mode. When true, every outbound request
+// also carries `X-Configuration-Type: mutable` so the AIC backend routes
+// it through the open direct-configuration session (matches upstream
+// restClient behavior under the `--direct-control` global flag). The
+// caller (typically fr-config-dispatch) flips this on before a vendored
+// push call and off again afterwards.
+let directControlMode = false;
+function setDirectControlMode(on) { directControlMode = !!on; }
+function getDirectControlMode() { return directControlMode; }
+
 async function httpRequest(config, token) {
   const headers = { ...(config.headers ?? {}) };
   if (token) headers.Authorization = `Bearer ${token}`;
+  if (directControlMode) headers["X-Configuration-Type"] = "mutable";
   const merged = {
     ...config,
     headers,
@@ -92,4 +103,7 @@ async function restDelete(url, token, apiVersion) {
   return httpRequest({ method: "DELETE", url, headers }, token);
 }
 
-module.exports = { restGet, restPut, restUpsert, restPost, restDelete };
+module.exports = {
+  restGet, restPut, restUpsert, restPost, restDelete,
+  setDirectControlMode, getDirectControlMode,
+};

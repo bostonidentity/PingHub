@@ -125,6 +125,13 @@ export async function dispatchFrConfig(input: DispatchInput): Promise<DispatchRe
     }
   };
 
+  // When the caller passed --direct-control (controlled-env DCC promote),
+  // flip the vendored restClient into mutable mode so every PUT/POST/DELETE
+  // it issues carries `X-Configuration-Type: mutable` and AIC routes the
+  // write through the open direct-configuration session. Reset in finally.
+  const directControl = extraArgs.includes("--direct-control");
+  if (directControl) vendor.setDirectControlMode(true);
+
   try {
     const t = await getToken();
 
@@ -381,6 +388,8 @@ export async function dispatchFrConfig(input: DispatchInput): Promise<DispatchRe
   } catch (err) {
     emit(`${err instanceof Error ? err.message : String(err)}\n`, "stderr");
     return { handled: true, code: 1 };
+  } finally {
+    if (directControl) vendor.setDirectControlMode(false);
   }
 }
 
