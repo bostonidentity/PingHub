@@ -101,6 +101,11 @@
 9. **`push/update-idm-schedules.js`** — awaits each restPut (upstream doesn't).
 10. **`push/update-secret-mappings.js`** — sequential awaited loop instead of
     concurrent Promise.all.
+11. **`pull/iga-workflows.js`** — guard against non-array `result`. Tenants
+    with no IGA workflows configured return a payload without `result`,
+    which upstream iterates blindly and throws "workflows is not iterable".
+    We treat that as "no workflows" and return cleanly so the scope
+    succeeds instead of triggering retries + a hard failure.
 
 ## Security note
 
