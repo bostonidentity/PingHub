@@ -23,6 +23,10 @@ const mkFile = (): RcsStatusFile => ({
       overall: "ok",
       okCount: 2,
       totalCount: 2,
+      members: [
+        { name: "rcs-ext-1", ok: true, latencyMs: 30 },
+        { name: "rcs-ext-2", ok: true, latencyMs: 45 },
+      ],
       connectors: [
         { name: "ad-hr", ok: true, latencyMs: 123 },
         { name: "oracle-hr", ok: true, latencyMs: 456 },

@@ -2,13 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { parseEnvFile } from "@/lib/env-parser";
 import { getConfigDir, getEnvFileContent } from "@/lib/fr-config";
 import { getAccessToken } from "@/lib/iga-api";
-import { aggregateCluster } from "@/lib/rcs/aggregate";
+import { aggregateFromMembers } from "@/lib/rcs/aggregate";
 import { buildClusters, loadConnectors, loadProvider } from "@/lib/rcs/cluster-map";
 import { writeStatus } from "@/lib/rcs/persistence";
-import { probeAll } from "@/lib/rcs/probe";
+import { probeAll, probeConnectorServers } from "@/lib/rcs/probe";
 import { acquireRunLock } from "@/lib/rcs/run-lock";
 import { filterConnectorsForProbe, readWatchlist } from "@/lib/rcs/watchlist";
-import type { ClusterStatus, ProbeResult, RcsStatusFile } from "@/lib/rcs/types";
+import type { ClusterStatus, MemberStatus, ProbeResult, RcsStatusFile } from "@/lib/rcs/types";
 
 const PROBE_TIMEOUT_MS = 5000;
 const PROBE_CONCURRENCY = 6;
@@ -91,6 +91,21 @@ function runCheck(env: string, release: () => void): ReadableStream<string> {
           return done(1);
         }
 
+        // ── Primary signal: RCS instance health (one call for the whole env) ──
+        emitLine("Probing RCS instances (testConnectorServers)…\n");
+        let rcsStatus: Record<string, MemberStatus>;
+        try {
+          rcsStatus = await probeConnectorServers({ tenantUrl, token, timeoutMs: PROBE_TIMEOUT_MS });
+        } catch (err) {
+          emitError(`testConnectorServers failed: ${err instanceof Error ? err.message : String(err)}\n`);
+          writeStatus(env, fatal(start, err instanceof Error ? err.message : String(err)));
+          return done(1);
+        }
+        for (const [name, m] of Object.entries(rcsStatus)) {
+          emitLine(`  ${m.ok ? "ok " : "err"}  ${name}${m.error ? `  ${m.error}` : ""}\n`);
+        }
+
+        // ── Secondary signal: per-IDM-connector _action=test (filtered by watchlist) ──
         const watchlist = readWatchlist(env);
         const perClusterFiltered = new Map<string, string[]>();
         for (const c of clusters) {
@@ -105,7 +120,7 @@ function runCheck(env: string, release: () => void): ReadableStream<string> {
           emitLine(`Watchlist active: probing ${allConnectorNames.length} of ${totalPossible} IDM connectors.\n`);
         }
 
-        emitLine(`Probing ${allConnectorNames.length} connector(s) with concurrency ${PROBE_CONCURRENCY}…\n`);
+        emitLine(`Probing ${allConnectorNames.length} IDM connector(s) with concurrency ${PROBE_CONCURRENCY}…\n`);
         const probeResults = await probeAll({
           tenantUrl,
           token,
@@ -120,18 +135,22 @@ function runCheck(env: string, release: () => void): ReadableStream<string> {
         });
 
         const byName = new Map(probeResults.map((r) => [r.name, r]));
+
+        // Resolve the member list for each matrix row and derive cluster overall from member OK.
         const clusterStatuses: ClusterStatus[] = clusters.map((c) => {
+          const members = resolveMembers(c.name, c.members, rcsStatus);
+          const agg = aggregateFromMembers(members);
           const filtered = perClusterFiltered.get(c.name) ?? c.connectors;
           const probes: ProbeResult[] = filtered
             .map((name) => byName.get(name))
             .filter((p): p is ProbeResult => Boolean(p));
-          const agg = aggregateCluster(probes);
           return {
             name: c.name,
             kind: c.kind,
             overall: agg.overall,
             okCount: agg.okCount,
             totalCount: agg.totalCount,
+            members,
             connectors: probes,
           };
         });
@@ -166,4 +185,26 @@ function fatal(start: number, msg: string): RcsStatusFile {
     fatalError: msg,
     clusters: [],
   };
+}
+
+/**
+ * Build the member list for a matrix row.
+ * - Cluster row: every name in the cluster's serversList, each with its
+ *   testConnectorServers result (or orphan=true if the instance isn't in
+ *   the provider JSON's remoteConnectorClients at all).
+ * - Instance row: a single-member list containing the instance itself.
+ */
+function resolveMembers(
+  rowName: string,
+  memberNames: string[],
+  rcsStatus: Record<string, MemberStatus>,
+): MemberStatus[] {
+  const names = memberNames.length > 0 ? memberNames : [rowName];
+  return names.map((name) => {
+    const live = rcsStatus[name];
+    if (!live) {
+      return { name, ok: false, latencyMs: 0, orphan: true, error: "not reported by testConnectorServers" };
+    }
+    return live;
+  });
 }
