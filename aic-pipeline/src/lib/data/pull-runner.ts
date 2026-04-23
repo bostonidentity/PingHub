@@ -6,8 +6,47 @@ import type { Registry } from "./job-registry";
 const MAX_RETRIES = 2;
 const DEFAULT_RETRY_DELAY_MS = 3000;
 const PAGE_SIZE = 1000;
+const INDEX_FIELD_MAX_LEN = 200;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Extract short scalar fields from a record for the browse index. */
+function pickIndexFields(record: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(record)) {
+    if (k.startsWith("_") && k !== "_id") continue;
+    if (typeof v === "string" && v.length <= INDEX_FIELD_MAX_LEN) out[k] = v;
+    else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+  }
+  return out;
+}
+
+/**
+ * Rename with retry for transient Windows locks.
+ *
+ * On Windows, fs.rename() can fail with EPERM / EACCES / EBUSY when a
+ * file watcher (Next.js/turbopack, VS Code, Windows Search Indexer) or
+ * antivirus briefly holds a handle on a file inside src or dst — very
+ * common right after we've written thousands of JSON records into the
+ * staging dir. POSIX doesn't hit this; we just retry with backoff so
+ * the locks clear. ENOTEMPTY covers the Windows variant "dst exists
+ * and is non-empty".
+ */
+async function renameWithRetry(src: string, dst: string, maxAttempts = 5): Promise<void> {
+  let lastErr: unknown = null;
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      fs.renameSync(src, dst);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY" && code !== "ENOTEMPTY") throw err;
+      lastErr = err;
+      await sleep(100 * Math.pow(2, i)); // 100, 200, 400, 800, 1600 ms
+    }
+  }
+  throw lastErr;
+}
 
 export interface RunPullOpts {
   job: DataPullJob;
@@ -98,6 +137,8 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
     const typePullingDir = path.join(pullingRoot, type);
     fs.mkdirSync(typePullingDir, { recursive: true });
 
+    const indexEntries: { id: string; f: Record<string, string> }[] = [];
+
     let cookie: string | null = null;
     let total: number | null = await preflightCount(type, token);
     let fetched = 0;
@@ -169,9 +210,10 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
             const id = typeof item._id === "string"
               ? item._id
               : typeof item.id === "string"
-              ? item.id as string
-              : String(fetched + 1);
+                ? item.id as string
+                : String(fetched + 1);
             fs.writeFileSync(path.join(typePullingDir, `${id}.json`), JSON.stringify(item, null, 2));
+            indexEntries.push({ id, f: pickIndexFields(item) });
             fetched++;
           }
           // Only accept a non-negative total. Default tenant behavior returns
@@ -220,17 +262,35 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
     }
 
     // Atomic swap: prev → .prev-<job>-<type>, new → current, delete prev.
-    const currentDir = path.join(envsRoot, job.env, "managed-data", type);
-    const backupDir = path.join(envsRoot, job.env, "managed-data", `.prev-${job.id}-${type}`);
-    if (fs.existsSync(currentDir)) fs.renameSync(currentDir, backupDir);
-    fs.renameSync(typePullingDir, currentDir);
-    fs.writeFileSync(
-      path.join(currentDir, "_manifest.json"),
-      JSON.stringify({ type, pulledAt: Date.now(), count: fetched, jobId: job.id }, null, 2),
-    );
-    if (fs.existsSync(backupDir)) fs.rmSync(backupDir, { recursive: true, force: true });
+    // Uses renameWithRetry so transient Windows file-handle locks don't
+    // fail the pull after we've already fetched every record.
+    // Wrapped in try/catch so a persistent lock doesn't leave the job
+    // stuck as "running" forever (which would block all future pulls).
+    try {
+      const currentDir = path.join(envsRoot, job.env, "managed-data", type);
+      const backupDir = path.join(envsRoot, job.env, "managed-data", `.prev-${job.id}-${type}`);
+      if (fs.existsSync(currentDir)) await renameWithRetry(currentDir, backupDir);
+      await renameWithRetry(typePullingDir, currentDir);
+      const pulledAt = Date.now();
+      fs.writeFileSync(
+        path.join(currentDir, "_manifest.json"),
+        JSON.stringify({ type, pulledAt, count: fetched, jobId: job.id }, null, 2),
+      );
+      fs.writeFileSync(
+        path.join(currentDir, "_index.json"),
+        JSON.stringify(indexEntries),
+      );
+      if (fs.existsSync(backupDir)) fs.rmSync(backupDir, { recursive: true, force: true });
 
-    registry.updateProgress(job.id, type, { status: "done", fetched, total });
+      registry.updateProgress(job.id, type, { status: "done", fetched, total });
+    } catch (swapErr) {
+      anyFailed = true;
+      registry.updateProgress(job.id, type, {
+        status: "failed",
+        error: (swapErr as Error).message,
+      });
+      fs.rmSync(typePullingDir, { recursive: true, force: true });
+    }
   }
 
   // Cleanup any lingering pulling dir (aborted or failed).

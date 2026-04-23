@@ -68,7 +68,7 @@ function* walk(dir: string, skipRoots: string[] = []): Generator<string> {
  * every `.` with `-`, and lowercasing, so references and definitions match
  * regardless of which separator style the source file uses.
  */
-function normalizeEsvName(raw: string): string {
+export function normalizeEsvName(raw: string): string {
   let n = raw.trim().toLowerCase();
   if (n.startsWith("esv-")) n = n.slice(4);
   else if (n.startsWith("esv.")) n = n.slice(4);
@@ -147,13 +147,21 @@ export function stripJsComments(src: string): string {
 
 const REF_RE_PLACEHOLDER      = /&\{esv\.([A-Za-z0-9._-]+)\}/g;
 const REF_RE_REALM            = /fr\.realm\.esv\.([A-Za-z0-9._-]+)/g;
-// Order matters: the specific getProperty(...) / [...] forms must be tried
-// before the bare `.name` form, otherwise the alternation engine will capture
-// `getProperty` (from `systemEnv.getProperty("foo")`) as the ESV name. The
-// negative lookahead on the bare `.name` form also guards against defensive
-// code like `if (systemEnv.getProperty)` where the method is referenced
-// without an immediate parenthesized call.
-const REF_RE_SYSTEMENV_PROP   = /systemEnv(?:\.getProperty\(\s*['"]([^'"]+)['"]|\[\s*['"]([^'"]+)['"]\s*\]|\.(?!getProperty\b|getSecret\b|getConfig\b)([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*))/g;
+// Covers both runtime accessors used in AIC scripts to look up ESVs:
+//   systemEnv.getProperty("esv-foo")      — AM script accessor
+//   identityServer.getProperty("esv-foo") — IDM script accessor
+// plus their bracket equivalents. The bare `.name` form (e.g. Groovy
+// `systemEnv.esv.foo.bar`) is also supported for systemEnv only.
+// Order matters: the specific getProperty(...) / [...] forms must be
+// tried before the bare `.name` form, otherwise the alternation engine
+// will capture `getProperty` (from `systemEnv.getProperty("foo")`) as
+// the name. The negative lookahead on the bare `.name` form also guards
+// against defensive code like `if (systemEnv.getProperty)` where the
+// method is referenced without an immediate parenthesized call.
+// Captures are later filtered to those starting with "esv-" / "esv."
+// so non-ESV platform properties (e.g. "openidm.idpconfig.*") aren't
+// mis-flagged as missing ESVs.
+const REF_RE_SYSTEMENV_PROP   = /(?:systemEnv|identityServer)\.getProperty\(\s*['"]([^'"]+)['"]|(?:systemEnv|identityServer)\[\s*['"]([^'"]+)['"]\s*\]|systemEnv\.(?!getProperty\b|getSecret\b|getConfig\b)([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)/g;
 
 function collectRefsFromContent(content: string, relPath: string): EsvReference[] {
   const refs: EsvReference[] = [];
@@ -193,16 +201,21 @@ export function extractNamedRefs(scanText: string, relPath: string, displayText?
     const displayLine = displayLines[i] ?? scanLine;
     const trimmed = displayLine.trim();
     const snippet = trimmed.length > 300 ? trimmed.slice(0, 300) + "…" : trimmed;
-    const pushAll = (re: RegExp, form: NamedRef["form"]) => {
+    const pushAll = (re: RegExp, form: NamedRef["form"], requireEsvPrefix = false) => {
       for (const m of scanLine.matchAll(re)) {
         const raw = m[1] ?? m[2] ?? m[3];
         if (!raw) continue;
+        // For accessor-style refs (systemEnv / identityServer getProperty,
+        // bracket, or bare prop), ignore anything that isn't an ESV name.
+        // The same method is used for non-ESV platform properties like
+        // "openidm.idpconfig.identityprovider.url" — those shouldn't count.
+        if (requireEsvPrefix && !raw.startsWith("esv-") && !raw.startsWith("esv.")) continue;
         refs.push({ name: normalizeEsvName(raw), line: i + 1, path: relPath, snippet, form });
       }
     };
     pushAll(REF_RE_PLACEHOLDER, "placeholder");
     pushAll(REF_RE_REALM, "realmPlaceholder");
-    pushAll(REF_RE_SYSTEMENV_PROP, "systemEnv");
+    pushAll(REF_RE_SYSTEMENV_PROP, "systemEnv", /* requireEsvPrefix */ true);
   }
   return refs;
 }

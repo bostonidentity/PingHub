@@ -39,10 +39,15 @@ export async function POST(req: NextRequest) {
   try {
     job = registry.startJob(env, types);
   } catch (e) {
-    if (e instanceof JobConflictError) {
-      const existing = registry.getJob(e.existingJobId);
+    // Check both instanceof and error name: when the registry singleton
+    // survives a module reload (globalThis in dev / vi.resetModules in
+    // tests), the thrown error may originate from a different module
+    // instance, causing instanceof to return false.
+    if (e instanceof JobConflictError || (e as Error).name === "JobConflictError") {
+      const existingId = (e as JobConflictError).existingJobId;
+      const existing = registry.getJob(existingId);
       return NextResponse.json(
-        { jobId: e.existingJobId, status: existing?.status ?? "running" },
+        { jobId: existingId, status: existing?.status ?? "running" },
         { status: 409 },
       );
     }
