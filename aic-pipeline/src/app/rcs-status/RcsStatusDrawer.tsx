@@ -118,6 +118,12 @@ export function RcsStatusDrawer({ open, onClose, env, cluster, status, checkedAt
               </div>
             )}
 
+            {status && !status.members && (
+              <div className="text-xs px-3 py-2 rounded bg-amber-50 border border-amber-200 text-amber-800">
+                This result is from an older version of the check. Click Refresh to re-run and populate per-instance status.
+              </div>
+            )}
+
             {cluster && isCluster(cluster.kind) && cluster.members.length > 0 && (
               <section>
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-2">
@@ -133,7 +139,7 @@ export function RcsStatusDrawer({ open, onClose, env, cluster, status, checkedAt
                   </thead>
                   <tbody>
                     {cluster.members.map((memberName) => {
-                      const m = status?.members.find((x) => x.name === memberName);
+                      const m = status?.members?.find((x) => x.name === memberName);
                       return (
                         <tr key={memberName} className="border-b border-slate-100 last:border-0">
                           <td className="py-2">
@@ -162,7 +168,7 @@ export function RcsStatusDrawer({ open, onClose, env, cluster, status, checkedAt
               </section>
             )}
 
-            {cluster && !isCluster(cluster.kind) && status && status.members[0] && (
+            {cluster && !isCluster(cluster.kind) && status?.members?.[0] && (
               <section>
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-2">
                   RCS instance status
