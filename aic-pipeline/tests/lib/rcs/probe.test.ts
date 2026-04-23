@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { probeConnector, probeAll, type Fetcher } from "@/lib/rcs/probe";
+import { probeConnector, probeAll, probeConnectorServers, type Fetcher } from "@/lib/rcs/probe";
 
 describe("probeConnector", () => {
   it("returns ok with httpStatus when fetcher responds 2xx", async () => {
@@ -90,5 +90,51 @@ describe("probeAll", () => {
       onResult: (r) => seen.push(r.name),
     });
     expect(seen.sort()).toEqual(["a", "b"]);
+  });
+});
+
+describe("probeConnectorServers", () => {
+  it("hits /openidm/system?_action=testConnectorServers and parses openicf[] into a name→MemberStatus map", async () => {
+    let captured = "";
+    const fetcher: Fetcher = async (url) => {
+      captured = url;
+      return {
+        status: 200,
+        ok: true,
+        body: {
+          openicf: [
+            { name: "rcs-ext-1", type: "remoteConnectorServer", ok: true },
+            { name: "rcs-ext-2", type: "remoteConnectorServer", ok: false, error: "Connection failed: WAITING_TO_CONNECT" },
+          ],
+        },
+      };
+    };
+    const result = await probeConnectorServers(
+      { tenantUrl: "https://t.example.com", token: "tok", timeoutMs: 5000 },
+      fetcher,
+    );
+    expect(captured).toBe("https://t.example.com/openidm/system?_action=testConnectorServers");
+    expect(result["rcs-ext-1"]).toEqual({ name: "rcs-ext-1", ok: true, latencyMs: expect.any(Number) });
+    expect(result["rcs-ext-2"].ok).toBe(false);
+    expect(result["rcs-ext-2"].error).toMatch(/WAITING_TO_CONNECT/);
+  });
+
+  it("returns an empty map when the response body is missing the openicf array", async () => {
+    const fetcher: Fetcher = async () => ({ status: 200, ok: true, body: {} });
+    const r = await probeConnectorServers(
+      { tenantUrl: "https://t.example.com", token: "tok", timeoutMs: 5000 },
+      fetcher,
+    );
+    expect(r).toEqual({});
+  });
+
+  it("throws a meaningful error when the HTTP request fails", async () => {
+    const fetcher: Fetcher = async () => ({ status: 403, ok: false });
+    await expect(
+      probeConnectorServers(
+        { tenantUrl: "https://t.example.com", token: "tok", timeoutMs: 5000 },
+        fetcher,
+      ),
+    ).rejects.toThrow(/HTTP 403/);
   });
 });

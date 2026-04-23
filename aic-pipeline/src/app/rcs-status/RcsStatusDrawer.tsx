@@ -29,6 +29,10 @@ function isCluster(kind: Cluster["kind"]): boolean {
   return kind === "clientGroup" || kind === "serverGroup";
 }
 
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+
 function formatAgo(iso?: string | null): string {
   if (!iso) return "never";
   const sec = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
@@ -104,7 +108,11 @@ export function RcsStatusDrawer({ open, onClose, env, cluster, status, checkedAt
                 <StatusDot overall={status.overall} />
                 <div className="text-sm font-medium text-slate-700 capitalize">{status.overall}</div>
                 <div className="text-sm text-slate-500">
-                  {status.okCount}/{status.totalCount} IDM Connector{status.totalCount === 1 ? "" : "s"} OK
+                  {isCluster(cluster?.kind ?? "client")
+                    ? `${status.okCount}/${status.totalCount} RCS instance${status.totalCount === 1 ? "" : "s"} up`
+                    : status.okCount > 0
+                    ? "RCS instance reachable"
+                    : "RCS instance not reachable"}
                 </div>
                 <div className="text-xs text-slate-400 ml-auto">probed {formatAgo(checkedAt)}</div>
               </div>
@@ -115,26 +123,65 @@ export function RcsStatusDrawer({ open, onClose, env, cluster, status, checkedAt
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-2">
                   Member RCS instances
                 </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {cluster.members.map((m) => (
-                    <span
-                      key={m}
-                      className="inline-block px-2 py-1 text-[11px] font-mono bg-slate-100 text-slate-700 rounded border border-slate-200"
-                    >
-                      {m}
-                    </span>
-                  ))}
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                      <th className="py-1.5 font-medium w-6"></th>
+                      <th className="py-1.5 font-medium">Instance</th>
+                      <th className="py-1.5 font-medium">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cluster.members.map((memberName) => {
+                      const m = status?.members.find((x) => x.name === memberName);
+                      return (
+                        <tr key={memberName} className="border-b border-slate-100 last:border-0">
+                          <td className="py-2">
+                            <StatusDot
+                              overall={!m ? "empty" : m.orphan ? "empty" : m.ok ? "ok" : "down"}
+                            />
+                          </td>
+                          <td className="py-2 font-mono text-[12px] text-slate-800">{memberName}</td>
+                          <td className="py-2 text-xs">
+                            {!m && <span className="text-slate-400">not probed</span>}
+                            {m && m.orphan && (
+                              <span className="text-amber-700">orphan — not in remoteConnectorClients</span>
+                            )}
+                            {m && !m.orphan && m.ok && <span className="text-emerald-600 font-medium">Connected</span>}
+                            {m && !m.orphan && !m.ok && (
+                              <span className="text-rose-600 font-medium" title={m.error}>
+                                {m.error ? truncate(m.error, 80) : "Not connected"}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </section>
+            )}
+
+            {cluster && !isCluster(cluster.kind) && status && status.members[0] && (
+              <section>
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-2">
+                  RCS instance status
                 </div>
-                <div className="text-[11px] text-slate-400 mt-2">
-                  Member health is inferred via the IDM Connectors below — AIC doesn&apos;t expose a direct per-instance ping.
+                <div className="text-sm">
+                  {status.members[0].ok && <span className="text-emerald-600 font-medium">Connected</span>}
+                  {!status.members[0].ok && (
+                    <span className="text-rose-600 font-medium">
+                      {status.members[0].error ?? "Not connected"}
+                    </span>
+                  )}
                 </div>
               </section>
             )}
 
             <section>
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center justify-between mb-1">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                  IDM Connectors routing through this {cluster && isCluster(cluster.kind) ? "cluster" : "instance"}
+                  IDM Connector integration probes
                   {cluster && cluster.connectors.length > 0 && (
                     <span className="text-slate-400 normal-case font-normal ml-2">
                       {hasWatchlist
@@ -162,6 +209,10 @@ export function RcsStatusDrawer({ open, onClose, env, cluster, status, checkedAt
                     </button>
                   </div>
                 )}
+              </div>
+              <div className="text-[11px] text-slate-400 mb-2">
+                Secondary signal — tests whether each IDM Connector&apos;s config can reach its external system through the RCS. Cluster / instance status above comes from{" "}
+                <code className="font-mono">testConnectorServers</code>.
               </div>
               {(!cluster || cluster.connectors.length === 0) && (
                 <div className="text-sm text-slate-400">No IDM Connectors route through this target.</div>

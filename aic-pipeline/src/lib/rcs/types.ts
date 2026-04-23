@@ -42,12 +42,22 @@ export interface ProbeResult {
   error?: string;
 }
 
+export interface MemberStatus {
+  name: string;
+  ok: boolean;
+  latencyMs: number;
+  error?: string;
+  orphan?: boolean;
+}
+
 export interface ClusterStatus {
   name: string;
   kind: ClusterKind;
   overall: Overall;
+  /** Member-instance-based aggregation: okCount = members with ok=true, totalCount = members. */
   okCount: number;
   totalCount: number;
+  members: MemberStatus[];
   connectors: ProbeResult[];
 }
 

@@ -26,6 +26,14 @@ interface DrawerState {
   clusterName: string;
 }
 
+function primaryLabel(kind: Cluster["kind"], okCount: number, totalCount: number): string {
+  const isCluster = kind === "clientGroup" || kind === "serverGroup";
+  if (isCluster) return `${okCount}/${totalCount} instance${totalCount === 1 ? "" : "s"} up`;
+  // Individual RCS instance rows: members[] has exactly one entry (the instance itself).
+  if (totalCount === 0) return "not reported";
+  return okCount > 0 ? "up" : "down";
+}
+
 function prettyKind(kind: Cluster["kind"]): string {
   switch (kind) {
     case "clientGroup": return "cluster · client mode";
@@ -350,7 +358,7 @@ export function RcsStatusMatrix() {
                         <StatusDot overall={(status?.overall ?? "empty") as Overall} />
                         <div className="min-w-0">
                           <div className="text-slate-800 text-xs">
-                            {status ? `${status.okCount}/${status.totalCount} ok` : "Never checked"}
+                            {status ? primaryLabel(row.rowKind, status.okCount, status.totalCount) : "Never checked"}
                           </div>
                           <div className="text-[11px] text-slate-400 flex items-center gap-1.5">
                             <span>
