@@ -68,7 +68,7 @@ function* walk(dir: string, skipRoots: string[] = []): Generator<string> {
  * every `.` with `-`, and lowercasing, so references and definitions match
  * regardless of which separator style the source file uses.
  */
-function normalizeEsvName(raw: string): string {
+export function normalizeEsvName(raw: string): string {
   let n = raw.trim().toLowerCase();
   if (n.startsWith("esv-")) n = n.slice(4);
   else if (n.startsWith("esv.")) n = n.slice(4);

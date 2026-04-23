@@ -2,13 +2,14 @@ import { NextRequest } from "next/server";
 import os from "os";
 import path from "path";
 import fs from "fs";
-import { spawnFrConfig, getConfigDir, ConfigScope } from "@/lib/fr-config";
+import { spawnFrConfig, getConfigDir, getEnvFileContent, ConfigScope } from "@/lib/fr-config";
+import { parseEnvFile } from "@/lib/env-parser";
 import { buildReport } from "@/lib/diff";
 import type { CompareEndpoint } from "@/lib/diff-types";
 import { appendOpLog } from "@/lib/op-history";
 import { resolveJourneyDeps } from "@/lib/resolve-journey-deps";
 import { getRealmRoots } from "@/lib/realm-paths";
-import { runPromotePrecheck } from "@/lib/analyze/promote-precheck";
+import { runEsvPrecheckOnReport } from "@/lib/analyze/promote-precheck";
 import type { ScopeSelection } from "@/lib/fr-config-types";
 
 /** Add resolved journey deps (sub-journeys + scripts) to scope selections. */
@@ -355,21 +356,31 @@ export async function POST(req: NextRequest) {
         }
         } // end of dry-run flip block
 
-        // ESV precheck — run after journey dependency resolution has expanded
-        // scopeSelections, so references in pulled-in scripts / sub-journeys
-        // are validated against the target's defined ESVs. Dry-run only: the
-        // precheck has nothing to tell a plain compare and would add cost.
-        if (diffMode === "dry-run" && scopeSelections && scopeSelections.length > 0) {
+        // ESV precheck — report-driven, runs after the dry-run flip.
+        //   (1) Deps are already in scopeSelections (addDepsToSelections).
+        //   (2) Scan only files the dry-run flagged "added" / "modified".
+        //   (3) For each referenced ESV name, check against target.
+        //       Remote target → live GET on /environment/{variables,secrets}.
+        //       Local target  → scan target's on-disk esvs/ dir.
+        //   (4) Missing names land on report.esvPrecheck for the UI.
+        // Non-fatal: any failure (missing env file, live API error, etc.)
+        // just omits the precheck field rather than failing the dry-run.
+        if (diffMode === "dry-run") {
           try {
-            report.esvPrecheck = await runPromotePrecheck(
-              source.environment,
-              target.environment,
-              scopeSelections,
-            );
+            const targetEnvVars = target.mode === "remote"
+              ? parseEnvFile(getEnvFileContent(target.environment))
+              : undefined;
+            report.esvPrecheck = await runEsvPrecheckOnReport({
+              report,
+              sourceEnv: source.environment,
+              targetEnv: target.environment,
+              sourceConfigDir,
+              target,
+              targetConfigDir,
+              targetEnvVars,
+            });
           } catch {
-            // Non-fatal — the dry-run itself succeeded. If the precheck
-            // can't run (e.g. source config missing locally), just omit
-            // it from the report instead of failing the dry-run.
+            // omit on failure
           }
         }
 
