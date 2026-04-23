@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2.1] - 2026-04-23
+
+### Added
+
+- **RCS Status** (`/rcs-status`): new matrix page showing RCS health per cluster and instance across every environment. Cluster/instance status is derived from `POST /openidm/system?_action=testConnectorServers` (one call per env, each RCS's `ok` drives the cluster aggregate: ok/degraded/down/empty). The drawer lists member instances with per-instance Connected/error and a secondary "IDM Connector integration probes" section that runs `_action=test` per connector and supports a per-cluster watchlist (real-time save, checkboxes). Environment columns can be skipped via a column-header checkbox persisted in `environments/rcs-env-skiplist.json`. Group-by-type and Hide-unused toggles.
+- **Release info per environment**: Dashboard and `/environments` env cards show the tenant's current AIC platform version, release channel (regular/rapid), and next scheduled upgrade, fetched from `GET <tenant>/environment/release`. The Dashboard also shows an "Upcoming AIC upgrades" banner (amber / rose) for envs whose upgrade is within 7 days or overdue. Refresh is automatic once per UTC day — kicked off in the background on any page render.
+
+### Changed
+
+- `connectorHostRef` is now correctly read from `connectorRef.connectorHostRef` (the real AIC shape). Direct-instance refs that are members of a cluster are correctly typed as `client` / `server` rather than `clientGroup`.
+
 ## [0.2.1] - 2026-04-22
 
 ### Fixed

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 import { Environment, EnvironmentType } from "@/lib/fr-config-types";
@@ -10,6 +10,8 @@ import { cn } from "@/lib/utils";
 import { ServiceAccountScopeSelector } from "@/components/ServiceAccountScopeSelector";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { useDialog } from "@/components/ConfirmDialog";
+import type { ReleaseCacheEntry } from "@/lib/release/types";
+import { classifyUpgrade, daysUntil } from "@/lib/release/urgency";
 
 const COLOR_OPTIONS: { value: Environment["color"]; label: string }[] = [
   { value: "green",  label: "Green" },
@@ -113,6 +115,22 @@ export function EnvironmentsManager({
   const [showKeyInput, setShowKeyInput] = useState(false);
   const dragIdx = useRef<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+
+  const [releases, setReleases] = useState<Record<string, ReleaseCacheEntry | null>>({});
+
+  useEffect(() => {
+    // Pulls the current cache and kicks the server-side auto-refresh for any
+    // env that hasn't been updated today. A page reload a few seconds later
+    // will reflect the newly-written values.
+    fetch("/api/release", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { envs: [] }))
+      .then((data: { envs: Array<{ env: string; info: ReleaseCacheEntry | null }> }) => {
+        const next: Record<string, ReleaseCacheEntry | null> = {};
+        for (const e of data.envs) next[e.env] = e.info;
+        setReleases(next);
+      })
+      .catch(() => {});
+  }, []);
 
   const setF = (key: keyof NewEnvForm, value: string | boolean) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -278,6 +296,7 @@ export function EnvironmentsManager({
                 </span>
               )}
             </div>
+            <ReleaseStrip release={releases[env.name]} />
           </div>
         ))}
 
@@ -646,6 +665,50 @@ export function EnvironmentsManager({
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
+    </div>
+  );
+}
+
+function ReleaseStrip({ release }: { release: ReleaseCacheEntry | null | undefined }) {
+  if (!release) {
+    return (
+      <div className="border-t border-slate-100 pt-2.5 mt-3 text-[11px] text-slate-400">
+        Version unknown — fetching…
+      </div>
+    );
+  }
+  if (release.error || !release.info) {
+    return (
+      <div
+        className="border-t border-slate-100 pt-2.5 mt-3 text-[11px] text-rose-600 truncate"
+        title={release.error ?? "unknown error"}
+      >
+        fetch failed: {release.error ?? "unknown error"}
+      </div>
+    );
+  }
+  const { channel, currentVersion, nextUpgrade } = release.info;
+  const urgency = classifyUpgrade(nextUpgrade);
+  const days = daysUntil(nextUpgrade);
+  const urgencyText =
+    urgency === "overdue" ? <span className="text-rose-600 font-medium">overdue</span>
+    : urgency === "soon" ? <span className="text-amber-700 font-medium">upgrade in {days}d</span>
+    : urgency === "later" ? <span className="text-slate-500">upgrade in {days}d</span>
+    : <span className="text-slate-400">no upgrade scheduled</span>;
+  return (
+    <div className="border-t border-slate-100 pt-2.5 mt-3 flex items-center gap-1.5 text-[11px] min-w-0">
+      <span className="font-mono text-slate-700 truncate" title={currentVersion}>v{currentVersion}</span>
+      <span
+        className={cn(
+          "inline-block px-1.5 py-0.5 rounded text-[10px] border shrink-0",
+          channel === "rapid"
+            ? "bg-indigo-50 text-indigo-700 border-indigo-200"
+            : "bg-emerald-50 text-emerald-700 border-emerald-200",
+        )}
+      >
+        {channel}
+      </span>
+      <span className="ml-auto shrink-0">{urgencyText}</span>
     </div>
   );
 }
