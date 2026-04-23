@@ -2,12 +2,15 @@ import { NextRequest } from "next/server";
 import os from "os";
 import path from "path";
 import fs from "fs";
-import { spawnFrConfig, getConfigDir, ConfigScope } from "@/lib/fr-config";
+import { spawnFrConfig, getConfigDir, getEnvFileContent, ConfigScope } from "@/lib/fr-config";
+import { parseEnvFile } from "@/lib/env-parser";
 import { buildReport } from "@/lib/diff";
 import type { CompareEndpoint } from "@/lib/diff-types";
 import { appendOpLog } from "@/lib/op-history";
 import { resolveJourneyDeps } from "@/lib/resolve-journey-deps";
 import { getRealmRoots } from "@/lib/realm-paths";
+import { runEsvPrecheckOnReport } from "@/lib/analyze/promote-precheck";
+import { pathToScopeItem } from "@/lib/scope-paths";
 import type { ScopeSelection } from "@/lib/fr-config-types";
 
 /** Add resolved journey deps (sub-journeys + scripts) to scope selections. */
@@ -206,33 +209,43 @@ export async function POST(req: NextRequest) {
 
         const report = buildReport(source, sourceConfigDir, target, targetConfigDir, effectiveScopes, diffOptions, forceIncludeJourneys);
 
-        // When scopeSelections has item-level filters, narrow the diff to only matching files
+        // When scopeSelections has item-level filters, narrow the diff to only matching files.
+        // Scope-aware: derive (scope, item) from each file's path via pathToScopeItem
+        // and match against the selection for that scope only. The previous regex-based
+        // filter created scope-agnostic patterns like `(^|/)le-test(/|\.|$)`, which
+        // leaked across scopes: an endpoint item named "le-test" would also match a
+        // journey file like `alpha/journeys/le-test/le-test.json` and falsely drag it
+        // into verify-compare diffs.
         if (scopeSelections?.some((s) => s.items && s.items.length > 0)) {
-          const itemPatterns: RegExp[] = [];
+          type FilterEntry = { whole: boolean; needles: string[] };
+          const scopeFilter = new Map<string, FilterEntry>();
           for (const sel of scopeSelections) {
-            if (!sel.items || sel.items.length === 0) continue; // all items — no filter
-            const isJourney = sel.scope === "journeys";
-            for (let item of sel.items) {
-              // Strip name: prefix used for script content files
-              if (item.startsWith("name:")) item = item.slice(5);
-              const escaped = item.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-              if (isJourney) {
-                // Match the journey directory (tree JSON + nodes)
-                itemPatterns.push(new RegExp(`(^|/)journeys/${escaped}/`, "i"));
-              } else {
-                // Match file paths containing the item name (directory name or filename stem)
-                itemPatterns.push(new RegExp(`(^|/)${escaped}(/|\\.|$)`, "i"));
-              }
+            if (!sel.items || sel.items.length === 0) {
+              scopeFilter.set(sel.scope, { whole: true, needles: [] });
+              continue;
             }
+            const needles = sel.items.map((raw) => {
+              let n = raw;
+              if (n.startsWith("name:")) n = n.slice(5);
+              if (n.endsWith(".json")) n = n.slice(0, -5);
+              return n.toLowerCase();
+            }).filter(Boolean);
+            scopeFilter.set(sel.scope, { whole: false, needles });
           }
-          if (itemPatterns.length > 0) {
-            report.files = report.files.filter(
-              (f) => itemPatterns.some((p) => p.test(f.relativePath))
-            );
-            // Recalculate summary
-            report.summary = { added: 0, removed: 0, modified: 0, unchanged: 0 };
-            for (const f of report.files) report.summary[f.status]++;
-          }
+
+          report.files = report.files.filter((f) => {
+            const parsed = pathToScopeItem(f.relativePath);
+            if (!parsed) return false;
+            const entry = scopeFilter.get(parsed.scope);
+            if (!entry) return false;
+            if (entry.whole) return true;
+            const rel = f.relativePath.toLowerCase();
+            const basename = rel.split("/").pop() ?? "";
+            return entry.needles.some((n) => rel.includes(n) || basename.includes(n));
+          });
+          // Recalculate summary
+          report.summary = { added: 0, removed: 0, modified: 0, unchanged: 0 };
+          for (const f of report.files) report.summary[f.status]++;
 
           // Filter journey tree: always include selected journeys AND their
           // resolved sub-journeys so the tree shows the full dependency chain.
@@ -353,6 +366,34 @@ export async function POST(req: NextRequest) {
           report.journeyTree = flipTree(report.journeyTree);
         }
         } // end of dry-run flip block
+
+        // ESV precheck — report-driven, runs after the dry-run flip.
+        //   (1) Deps are already in scopeSelections (addDepsToSelections).
+        //   (2) Scan only files the dry-run flagged "added" / "modified".
+        //   (3) For each referenced ESV name, check against target.
+        //       Remote target → live GET on /environment/{variables,secrets}.
+        //       Local target  → scan target's on-disk esvs/ dir.
+        //   (4) Missing names land on report.esvPrecheck for the UI.
+        // Non-fatal: any failure (missing env file, live API error, etc.)
+        // just omits the precheck field rather than failing the dry-run.
+        if (diffMode === "dry-run") {
+          try {
+            const targetEnvVars = target.mode === "remote"
+              ? parseEnvFile(getEnvFileContent(target.environment))
+              : undefined;
+            report.esvPrecheck = await runEsvPrecheckOnReport({
+              report,
+              sourceEnv: source.environment,
+              targetEnv: target.environment,
+              sourceConfigDir,
+              target,
+              targetConfigDir,
+              targetEnvVars,
+            });
+          } catch {
+            // omit on failure
+          }
+        }
 
         enqueue({ type: "report", data: JSON.stringify(report), ts: Date.now() });
         enqueue({ type: "exit", code: 0, ts: Date.now() });

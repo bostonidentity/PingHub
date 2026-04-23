@@ -114,9 +114,12 @@ export function createRegistry(envsRoot: string): Registry {
 
 // Module-level singleton used by API routes.
 // Points at the real environments/ root.
+// Stored on globalThis so it survives Next.js HMR in dev mode; a plain
+// module-level variable is reset on every hot-reload, which orphans
+// in-flight runPull promises and can leave jobs stuck as "running".
 import { cwd } from "process";
-let _singleton: Registry | null = null;
+const _global = globalThis as typeof globalThis & { __dataJobRegistry?: Registry };
 export function getRegistry(): Registry {
-  if (!_singleton) _singleton = createRegistry(path.join(cwd(), "environments"));
-  return _singleton;
+  if (!_global.__dataJobRegistry) _global.__dataJobRegistry = createRegistry(path.join(cwd(), "environments"));
+  return _global.__dataJobRegistry;
 }
