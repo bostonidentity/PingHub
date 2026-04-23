@@ -117,9 +117,11 @@ export function EnvironmentsManager({
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
 
   const [releases, setReleases] = useState<Record<string, ReleaseCacheEntry | null>>({});
-  const [refreshingReleases, setRefreshingReleases] = useState<Set<string>>(new Set());
 
   useEffect(() => {
+    // Pulls the current cache and kicks the server-side auto-refresh for any
+    // env that hasn't been updated today. A page reload a few seconds later
+    // will reflect the newly-written values.
     fetch("/api/release", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : { envs: [] }))
       .then((data: { envs: Array<{ env: string; info: ReleaseCacheEntry | null }> }) => {
@@ -129,41 +131,6 @@ export function EnvironmentsManager({
       })
       .catch(() => {});
   }, []);
-
-  const refreshRelease = useCallback(async (envName: string) => {
-    setRefreshingReleases((prev) => new Set(prev).add(envName));
-    try {
-      const res = await fetch("/api/release/refresh", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ env: envName }),
-      });
-      const entry = (await res.json()) as ReleaseCacheEntry;
-      setReleases((prev) => ({ ...prev, [envName]: entry }));
-    } finally {
-      setRefreshingReleases((prev) => {
-        const next = new Set(prev);
-        next.delete(envName);
-        return next;
-      });
-    }
-  }, []);
-
-  const refreshAllReleases = useCallback(async () => {
-    const names = environments.map((e) => e.name);
-    setRefreshingReleases(new Set(names));
-    try {
-      const res = await fetch("/api/release/refresh-all", { method: "POST" });
-      const data = (await res.json()) as { results: Array<{ env: string; entry: ReleaseCacheEntry }> };
-      setReleases((prev) => {
-        const next = { ...prev };
-        for (const { env, entry } of data.results) next[env] = entry;
-        return next;
-      });
-    } finally {
-      setRefreshingReleases(new Set());
-    }
-  }, [environments]);
 
   const setF = (key: keyof NewEnvForm, value: string | boolean) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -278,20 +245,8 @@ export function EnvironmentsManager({
 
   const stepIdx = STEPS.indexOf(addStep);
 
-  const anyRefreshing = refreshingReleases.size > 0;
-
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-end">
-        <button
-          type="button"
-          onClick={refreshAllReleases}
-          disabled={anyRefreshing || environments.length === 0}
-          className="text-xs px-3 py-1.5 rounded-md border border-slate-300 text-slate-600 hover:bg-slate-100 disabled:opacity-50"
-        >
-          {anyRefreshing ? "Refreshing…" : "Refresh release info (all)"}
-        </button>
-      </div>
       {/* Card grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {environments.map((env, idx) => (
@@ -341,14 +296,7 @@ export function EnvironmentsManager({
                 </span>
               )}
             </div>
-            <ReleaseStrip
-              release={releases[env.name]}
-              refreshing={refreshingReleases.has(env.name)}
-              onRefresh={(e) => {
-                e.stopPropagation();
-                refreshRelease(env.name);
-              }}
-            />
+            <ReleaseStrip release={releases[env.name]} />
           </div>
         ))}
 
@@ -721,41 +669,21 @@ export function EnvironmentsManager({
   );
 }
 
-function ReleaseStrip({
-  release,
-  refreshing,
-  onRefresh,
-}: {
-  release: ReleaseCacheEntry | null | undefined;
-  refreshing: boolean;
-  onRefresh: (e: React.MouseEvent) => void;
-}) {
-  const refreshBtn = (
-    <button
-      type="button"
-      onClick={onRefresh}
-      disabled={refreshing}
-      className="text-[10px] px-2 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 disabled:opacity-50 shrink-0"
-    >
-      {refreshing ? "…" : "Refresh"}
-    </button>
-  );
-
+function ReleaseStrip({ release }: { release: ReleaseCacheEntry | null | undefined }) {
   if (!release) {
     return (
-      <div className="border-t border-slate-100 pt-2.5 mt-3 flex items-center justify-between gap-2">
-        <span className="text-[11px] text-slate-400">Version unknown — click Refresh</span>
-        {refreshBtn}
+      <div className="border-t border-slate-100 pt-2.5 mt-3 text-[11px] text-slate-400">
+        Version unknown — fetching…
       </div>
     );
   }
   if (release.error || !release.info) {
     return (
-      <div className="border-t border-slate-100 pt-2.5 mt-3 flex items-center justify-between gap-2">
-        <span className="text-[11px] text-rose-600 truncate" title={release.error ?? "unknown error"}>
-          fetch failed: {release.error ?? "unknown error"}
-        </span>
-        {refreshBtn}
+      <div
+        className="border-t border-slate-100 pt-2.5 mt-3 text-[11px] text-rose-600 truncate"
+        title={release.error ?? "unknown error"}
+      >
+        fetch failed: {release.error ?? "unknown error"}
       </div>
     );
   }
@@ -768,22 +696,19 @@ function ReleaseStrip({
     : urgency === "later" ? <span className="text-slate-500">upgrade in {days}d</span>
     : <span className="text-slate-400">no upgrade scheduled</span>;
   return (
-    <div className="border-t border-slate-100 pt-2.5 mt-3 flex items-center justify-between gap-2">
-      <div className="flex items-center gap-1.5 min-w-0">
-        <span className="font-mono text-[11px] text-slate-700 truncate" title={currentVersion}>v{currentVersion}</span>
-        <span
-          className={cn(
-            "inline-block px-1.5 py-0.5 rounded text-[10px] border",
-            channel === "rapid"
-              ? "bg-indigo-50 text-indigo-700 border-indigo-200"
-              : "bg-emerald-50 text-emerald-700 border-emerald-200",
-          )}
-        >
-          {channel}
-        </span>
-        <span className="text-[11px]">{urgencyText}</span>
-      </div>
-      {refreshBtn}
+    <div className="border-t border-slate-100 pt-2.5 mt-3 flex items-center gap-1.5 text-[11px] min-w-0">
+      <span className="font-mono text-slate-700 truncate" title={currentVersion}>v{currentVersion}</span>
+      <span
+        className={cn(
+          "inline-block px-1.5 py-0.5 rounded text-[10px] border shrink-0",
+          channel === "rapid"
+            ? "bg-indigo-50 text-indigo-700 border-indigo-200"
+            : "bg-emerald-50 text-emerald-700 border-emerald-200",
+        )}
+      >
+        {channel}
+      </span>
+      <span className="ml-auto shrink-0">{urgencyText}</span>
     </div>
   );
 }
