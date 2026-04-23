@@ -4,6 +4,11 @@ import { readHistoryMerged } from "@/lib/op-history";
 import type { HistoryRecord } from "@/lib/op-history";
 import { EnvCard, type EnvHealth } from "@/components/EnvCard";
 import { ActivityRow } from "@/components/ActivityRow";
+import { readReleaseInfo } from "@/lib/release/persistence";
+import { classifyUpgrade, daysUntil } from "@/lib/release/urgency";
+import type { ReleaseCacheEntry } from "@/lib/release/types";
+
+const DASHBOARD_BANNER_SOON_DAYS = 7;
 
 function deriveHealth(
   lastPull: HistoryRecord | null,
@@ -31,7 +36,15 @@ export default function DashboardPage() {
       health: deriveHealth(lastPull, lastPush),
       lastPull: lastPull && { at: lastPull.completedAt, status: lastPull.status, scopes: lastPull.scopes },
       lastPush: lastPush && { at: lastPush.completedAt, status: lastPush.status, scopes: lastPush.scopes },
+      release: readReleaseInfo(env.name),
     };
+  });
+
+  const upcomingUpgrades: UpgradeItem[] = envCards.flatMap(({ env, release }) => {
+    const nextUpgrade = release?.info?.nextUpgrade ?? null;
+    const urgency = classifyUpgrade(nextUpgrade, undefined, { soonDays: DASHBOARD_BANNER_SOON_DAYS });
+    if (urgency !== "soon" && urgency !== "overdue") return [];
+    return [{ env, release, urgency, days: daysUntil(nextUpgrade) }];
   });
 
   const recent = history.slice(0, 8);
@@ -45,6 +58,8 @@ export default function DashboardPage() {
         </p>
       </header>
 
+      {upcomingUpgrades.length > 0 && <UpcomingUpgradesBanner items={upcomingUpgrades} />}
+
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="section-title">Environments</h2>
@@ -57,13 +72,14 @@ export default function DashboardPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {envCards.map(({ env, health, lastPull, lastPush }) => (
+            {envCards.map(({ env, health, lastPull, lastPush, release }) => (
               <EnvCard
                 key={env.name}
-                env={env as any}
+                env={env}
                 health={health}
                 lastPull={lastPull ?? null}
                 lastPush={lastPush ?? null}
+                release={release as ReleaseCacheEntry | null}
               />
             ))}
           </div>
@@ -83,6 +99,44 @@ export default function DashboardPage() {
           )}
         </div>
       </section>
+    </div>
+  );
+}
+
+interface UpgradeItem {
+  env: { name: string; label: string };
+  release: ReleaseCacheEntry | null;
+  urgency: "soon" | "overdue";
+  days: number | null;
+}
+
+function UpcomingUpgradesBanner({ items }: { items: UpgradeItem[] }) {
+  const hasOverdue = items.some((x) => x.urgency === "overdue");
+  const tone = hasOverdue
+    ? "bg-rose-50 border-rose-200 text-rose-800"
+    : "bg-amber-50 border-amber-200 text-amber-800";
+  return (
+    <div className={`border rounded-lg px-4 py-3 text-sm ${tone}`}>
+      <div className="font-semibold mb-1">Upcoming AIC upgrades</div>
+      <ul className="space-y-0.5">
+        {items.map((x) => (
+          <li key={x.env.name} className="flex items-baseline gap-2">
+            <span className="font-medium">{x.env.label}</span>
+            <span className="text-xs opacity-75">({x.env.name})</span>
+            <span className="text-xs">·</span>
+            <span className="text-xs">
+              {x.urgency === "overdue"
+                ? "overdue"
+                : x.days !== null
+                ? `in ${x.days}d`
+                : "soon"}
+            </span>
+            {x.release?.info?.currentVersion && (
+              <span className="text-xs font-mono opacity-75">v{x.release.info.currentVersion} → ?</span>
+            )}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
