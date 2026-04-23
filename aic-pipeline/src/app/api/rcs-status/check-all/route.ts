@@ -1,11 +1,13 @@
 import { getEnvironments } from "@/lib/fr-config";
+import { readSkiplist } from "@/lib/rcs/env-skiplist";
 import { pLimit } from "@/lib/rcs/p-limit";
 
 const ENV_CONCURRENCY = 2;
 
 export async function POST(req: Request) {
   const origin = new URL(req.url).origin;
-  const envs = getEnvironments();
+  const skipped = new Set(readSkiplist());
+  const envs = getEnvironments().filter((e) => !skipped.has(e.name));
 
   const stream = new ReadableStream<string>({
     async start(controller) {

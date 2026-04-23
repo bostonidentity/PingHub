@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getConfigDir, getEnvironments } from "@/lib/fr-config";
 import { buildClusters, loadConnectors, loadProvider } from "@/lib/rcs/cluster-map";
+import { readSkiplist } from "@/lib/rcs/env-skiplist";
 import { readStatus } from "@/lib/rcs/persistence";
 import { readWatchlist, type Watchlist } from "@/lib/rcs/watchlist";
 import type { Cluster, RcsStatusFile } from "@/lib/rcs/types";
@@ -46,5 +47,5 @@ export async function GET() {
       watchlist: readWatchlist(e.name),
     };
   });
-  return NextResponse.json({ envs: payload });
+  return NextResponse.json({ envs: payload, skippedEnvs: readSkiplist() });
 }
