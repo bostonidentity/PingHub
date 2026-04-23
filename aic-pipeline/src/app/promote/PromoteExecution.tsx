@@ -47,10 +47,13 @@ function Stepper({
   statuses,
   active,
   onClick,
+  esvMissing = false,
 }: {
   statuses: Record<PhaseId, PhaseStatus>;
   active: PhaseId;
   onClick: (id: PhaseId) => void;
+  /** When true, block advance to `promote` — ESV refs on source don't resolve on target. */
+  esvMissing?: boolean;
 }) {
   return (
     <div className="flex items-start overflow-x-auto pb-1">
@@ -76,6 +79,7 @@ function Stepper({
               onClick={() => {
                 if (isSkipped) return;
                 if (phase.id === "promote" && statuses["dry-run"] !== "done" && statuses["dry-run"] !== "skipped") return;
+                if (phase.id === "promote" && esvMissing) return;
                 if (phase.id === "summary" && statuses.promote !== "done" && statuses.promote !== "failed") return;
                 const summaryReached = statuses.summary === "done" || statuses.summary === "failed";
                 if (summaryReached && phase.id !== "summary") return;
@@ -84,8 +88,14 @@ function Stepper({
               disabled={
                 isSkipped ||
                 (phase.id === "promote" && statuses["dry-run"] !== "done" && statuses["dry-run"] !== "skipped") ||
+                (phase.id === "promote" && esvMissing) ||
                 (phase.id === "summary" && statuses.promote !== "done" && statuses.promote !== "failed") ||
                 ((statuses.summary === "done" || statuses.summary === "failed") && phase.id !== "summary")
+              }
+              title={
+                phase.id === "promote" && esvMissing
+                  ? "ESV references on source don't resolve on target — define the missing ESVs on the target before promoting"
+                  : undefined
               }
               className={cn(
                 "flex flex-col items-center gap-1 px-2 py-1 rounded transition-colors min-w-[64px]",
@@ -93,6 +103,8 @@ function Stepper({
                   : ((statuses.summary === "done" || statuses.summary === "failed") && phase.id !== "summary")
                   ? "opacity-40 cursor-not-allowed"
                   : (phase.id === "promote" && statuses["dry-run"] !== "done" && statuses["dry-run"] !== "skipped")
+                  ? "opacity-40 cursor-not-allowed"
+                  : (phase.id === "promote" && esvMissing)
                   ? "opacity-40 cursor-not-allowed"
                   : (phase.id === "summary" && statuses.promote !== "done" && statuses.promote !== "failed")
                   ? "opacity-40 cursor-not-allowed"
@@ -1973,15 +1985,26 @@ export function PromoteExecution({
         </button>
       )}
       {nextPhase && (() => {
-        const blocked =
-          (nextPhase.id === "promote" && phaseStatuses["dry-run"] !== "done" && phaseStatuses["dry-run"] !== "skipped") ||
-          (nextPhase.id === "summary" && phaseStatuses.promote !== "done" && phaseStatuses.promote !== "failed");
+        const esvMissing = (dryRunReport?.esvPrecheck?.missing?.length ?? 0) > 0;
+        const blockedByDryRun =
+          nextPhase.id === "promote" && phaseStatuses["dry-run"] !== "done" && phaseStatuses["dry-run"] !== "skipped";
+        const blockedByEsv = nextPhase.id === "promote" && esvMissing;
+        const blockedByPromote =
+          nextPhase.id === "summary" && phaseStatuses.promote !== "done" && phaseStatuses.promote !== "failed";
+        const blocked = blockedByDryRun || blockedByEsv || blockedByPromote;
+        const blockReason = blockedByEsv
+          ? `${dryRunReport?.esvPrecheck?.missing.length ?? 0} ESV${(dryRunReport?.esvPrecheck?.missing.length ?? 0) === 1 ? "" : "s"} referenced by source don't exist on target — define them before promoting`
+          : blockedByDryRun
+          ? "Run the dry-run comparison first"
+          : blockedByPromote
+          ? "Promote must complete first"
+          : undefined;
 
         return (
           <button
             type="button"
             disabled={blocked}
-            title={blocked ? "Run the dry-run comparison first" : undefined}
+            title={blockReason}
             onClick={async () => {
               if (blocked) return;
               if (
@@ -2019,7 +2042,12 @@ export function PromoteExecution({
     <div className="p-4 space-y-4">
       <div className="flex items-center gap-3">
         <div className="flex-1">
-          <Stepper statuses={phaseStatuses} active={activePhase} onClick={setActivePhase} />
+          <Stepper
+            statuses={phaseStatuses}
+            active={activePhase}
+            onClick={setActivePhase}
+            esvMissing={(dryRunReport?.esvPrecheck?.missing?.length ?? 0) > 0}
+          />
         </div>
         {(phaseStatuses.promote === "done" || phaseStatuses.promote === "failed") && (
           <button
