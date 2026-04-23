@@ -1,9 +1,8 @@
 import fs from "fs";
 import path from "path";
-import { getConfigDir } from "@/lib/fr-config";
-import { getScopePruneTargets } from "@/lib/git";
-import type { ScopeSelection } from "@/lib/fr-config-types";
-import { collectDefinedEsvs, extractNamedRefs, stripJsComments } from "./esv-orphans";
+import { getAccessToken } from "@/lib/iga-api";
+import type { CompareEndpoint, CompareReport } from "@/lib/diff-types";
+import { collectDefinedEsvs, extractNamedRefs, normalizeEsvName, stripJsComments } from "./esv-orphans";
 
 export interface PrecheckReference {
   path: string;
@@ -27,131 +26,109 @@ export interface PromotePrecheckResult {
 }
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
-const BINARY_EXT = new Set([
-  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".pdf",
-  ".zip", ".gz", ".tar", ".tgz", ".7z", ".rar",
-  ".mp3", ".mp4", ".mov", ".avi", ".wav",
-  ".woff", ".woff2", ".ttf", ".eot", ".otf", ".class", ".jar",
-]);
-const SKIP_DIR = new Set([".git", "node_modules", ".next", ".DS_Store"]);
 
-function* walkDir(dir: string): Generator<string> {
-  let entries: fs.Dirent[];
-  try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
-  catch { return; }
-  for (const entry of entries) {
-    if (SKIP_DIR.has(entry.name)) continue;
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) yield* walkDir(full);
-    else if (entry.isFile()) {
-      const ext = path.extname(entry.name).toLowerCase();
-      if (BINARY_EXT.has(ext)) continue;
-      yield full;
-    }
+/**
+ * Collect the set of ESV names currently defined on the target.
+ *
+ *   Local mode  — scan `<targetConfigDir>/esvs/{variables,secrets}/`.
+ *   Remote mode — GET `/environment/variables` and `/environment/secrets`
+ *                 on the tenant. This reflects the tenant's live state,
+ *                 which is what actually matters for a promote; the on-
+ *                 disk snapshot may be stale or missing if the user hasn't
+ *                 pulled those scopes recently.
+ */
+async function collectTargetEsvNames(
+  target: CompareEndpoint,
+  targetConfigDir: string,
+  targetEnvVars: Record<string, string> | undefined,
+): Promise<Set<string>> {
+  if (target.mode === "local") {
+    const { defined } = collectDefinedEsvs(targetConfigDir);
+    return new Set(defined.keys());
   }
+
+  if (!targetEnvVars) throw new Error("Remote target precheck requires env vars");
+  const tenantUrl = targetEnvVars.TENANT_BASE_URL ?? "";
+  if (!tenantUrl) throw new Error("TENANT_BASE_URL missing for remote target");
+
+  const token = await getAccessToken(targetEnvVars);
+  const names = new Set<string>();
+
+  const fetchList = async (resource: "variables" | "secrets") => {
+    const url = `${tenantUrl}/environment/${resource}?_queryFilter=true&_fields=_id`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new Error(`GET /environment/${resource} returned ${res.status}`);
+    const body = (await res.json()) as { result?: { _id?: string }[] };
+    for (const entry of body.result ?? []) {
+      if (typeof entry._id === "string") names.add(normalizeEsvName(entry._id));
+    }
+  };
+  await fetchList("variables");
+  await fetchList("secrets");
+  return names;
 }
 
 /**
- * Given a scope directory and an optional list of item identifiers,
- * yield the absolute file paths that belong to those items. When no
- * items are specified (items === undefined or empty), every file in
- * the scope directory is yielded — i.e. "promote all items".
+ * Run the ESV precheck against a completed dry-run report.
  *
- * The matcher is intentionally loose: a file belongs to an item if
- * any item id appears anywhere in its basename or directory path.
- * That covers the common layouts:
- *   scripts          — scripts-content/<TYPE>/<name>-<uuid>.js
- *   endpoints        — endpoints/<name>.{js,json}
- *   journeys         — journeys/<name>/...
- *   iga-workflows    — iga/workflows/<name>/...
- *   email-templates  — email-templates/<name>/...
- *   custom-nodes     — custom-nodes/<id>/...
- *   managed-objects  — managed-objects/<id>/...
+ * Algorithm (per product spec):
+ *   1. Dependencies are already resolved — the caller (compare route)
+ *      runs `addDepsToSelections` before building the report, so the
+ *      diff already covers every file that will be promoted.
+ *   2. Walk `report.files`, keeping only those with status "added" or
+ *      "modified" (post-dry-run flip semantics: the file will be
+ *      created on or pushed to the target). Unchanged files are skipped
+ *      — their refs already resolve on target by definition. Removed
+ *      files are skipped — they'll be gone from target after promote.
+ *   3. Read each candidate file from the source config dir and extract
+ *      ESV references.
+ *   4. For each referenced name, check it against the target-defined
+ *      set — live REST lookup for remote targets, on-disk scan for
+ *      local. Anything unresolved is reported as missing.
  */
-/**
- * Normalize a task-item identifier into a bare needle suitable for substring
- * matching against on-disk filenames:
- *
- *   "abc-123.json"         (scripts-config filename)       → "abc-123"
- *   "name:MyScript"        (script name surrogate)         → "myscript"
- *   "Login"                (journey dir)                   → "login"
- *
- * Without this, dep-resolved script items like "abc-123.json" and
- * "name:MyScript" only match the .json metadata; the actual script body
- * (scripts-content/<TYPE>/<name>-<uuid>.js) — where ESV references live —
- * is invisible to the scanner.
- */
-function normalizeItemNeedle(item: string): string {
-  let n = item;
-  if (n.startsWith("name:")) n = n.slice(5);
-  if (n.endsWith(".json")) n = n.slice(0, -5);
-  return n.toLowerCase();
-}
+export async function runEsvPrecheckOnReport(input: {
+  report: CompareReport;
+  sourceEnv: string;
+  targetEnv: string;
+  sourceConfigDir: string;
+  target: CompareEndpoint;
+  targetConfigDir: string;
+  targetEnvVars?: Record<string, string>;
+  signal?: AbortSignal;
+}): Promise<PromotePrecheckResult> {
+  const {
+    report, sourceEnv, targetEnv,
+    sourceConfigDir, target, targetConfigDir, targetEnvVars, signal,
+  } = input;
 
-function* filterFilesForItems(scopeDir: string, items: string[] | undefined): Generator<string> {
-  if (!fs.existsSync(scopeDir)) return;
-  const hasItems = items && items.length > 0;
-  const needles = hasItems ? items!.map(normalizeItemNeedle).filter(Boolean) : null;
-  for (const abs of walkDir(scopeDir)) {
-    if (!needles) { yield abs; continue; }
-    const rel = path.relative(scopeDir, abs).toLowerCase();
-    const basename = path.basename(abs).toLowerCase();
-    if (needles.some((n) => rel.includes(n) || basename.includes(n))) {
-      yield abs;
-    }
-  }
-}
+  const targetNames = await collectTargetEsvNames(target, targetConfigDir, targetEnvVars);
 
-export async function runPromotePrecheck(
-  sourceEnv: string,
-  targetEnv: string,
-  scopeSelections: ScopeSelection[],
-  signal?: AbortSignal,
-): Promise<PromotePrecheckResult> {
-  const sourceDir = getConfigDir(sourceEnv);
-  const targetDir = getConfigDir(targetEnv);
-  if (!sourceDir || !fs.existsSync(sourceDir)) {
-    throw new Error(`Source environment '${sourceEnv}' has no config on disk`);
-  }
-  if (!targetDir || !fs.existsSync(targetDir)) {
-    throw new Error(`Target environment '${targetEnv}' has no config on disk`);
-  }
-
-  const { defined: targetDefined } = collectDefinedEsvs(targetDir);
-  const targetNames = new Set(targetDefined.keys());
-
-  const seen = new Set<string>();
   const byName = new Map<string, PrecheckReference[]>();
   let scannedFiles = 0;
 
-  for (const selection of scopeSelections) {
+  for (const file of report.files) {
     if (signal?.aborted) break;
-    // Skip ESV scopes themselves — the point is to check whether refs
-    // elsewhere resolve against the target, not to diff ESV definitions.
-    if (selection.scope === "variables" || selection.scope === "secrets") continue;
-    const scopeDirs = getScopePruneTargets(sourceDir, selection.scope);
-    for (const scopeDir of scopeDirs) {
-      for (const abs of filterFilesForItems(scopeDir, selection.items)) {
-        if (seen.has(abs)) continue;
-        seen.add(abs);
-        let stat: fs.Stats;
-        try { stat = fs.statSync(abs); } catch { continue; }
-        if (stat.size > MAX_FILE_BYTES) continue;
-        let text: string;
-        try { text = fs.readFileSync(abs, "utf8"); } catch { continue; }
-        scannedFiles += 1;
-        const rel = path.relative(sourceDir, abs).split(path.sep).join("/");
-        const ext = path.extname(abs).toLowerCase();
-        const scanText = ext === ".js" || ext === ".groovy" || ext === ".mjs" || ext === ".cjs"
-          ? stripJsComments(text)
-          : text;
-        const refs = extractNamedRefs(scanText, rel, text);
-        for (const r of refs) {
-          const list = byName.get(r.name) ?? [];
-          list.push({ path: r.path, line: r.line, snippet: r.snippet, form: r.form });
-          byName.set(r.name, list);
-        }
-      }
+    // "added" and "modified" are the files that will land on target
+    // — the ones whose refs need to resolve against target's ESVs.
+    if (file.status !== "added" && file.status !== "modified") continue;
+
+    const abs = path.join(sourceConfigDir, file.relativePath);
+    let stat: fs.Stats;
+    try { stat = fs.statSync(abs); } catch { continue; }
+    if (stat.size > MAX_FILE_BYTES) continue;
+    let text: string;
+    try { text = fs.readFileSync(abs, "utf8"); } catch { continue; }
+    scannedFiles += 1;
+
+    const ext = path.extname(abs).toLowerCase();
+    const scanText = ext === ".js" || ext === ".groovy" || ext === ".mjs" || ext === ".cjs"
+      ? stripJsComments(text)
+      : text;
+    const refs = extractNamedRefs(scanText, file.relativePath, text);
+    for (const r of refs) {
+      const list = byName.get(r.name) ?? [];
+      list.push({ path: r.path, line: r.line, snippet: r.snippet, form: r.form });
+      byName.set(r.name, list);
     }
   }
 
@@ -164,8 +141,7 @@ export async function runPromotePrecheck(
   missing.sort((a, b) => a.name.localeCompare(b.name));
 
   return {
-    sourceEnv,
-    targetEnv,
+    sourceEnv, targetEnv,
     missing,
     scannedFiles,
     totalReferences: totalRefs,
