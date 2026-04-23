@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-22
+
+### Fixed
+
+- **ESV precheck**: rewrote against the spec — runs after dry-run dependency resolution, scans only files that will actually land on the target (`added` / `modified` in the report), and looks up defined ESVs on the live tenant via `GET /environment/{variables,secrets}` when the target is remote instead of a potentially-stale on-disk snapshot.
+- **ESV reference detection**: `extractNamedRefs` now covers `identityServer.getProperty(…)` in addition to `systemEnv.*`, and ignores non-ESV platform property lookups (e.g. `identityServer.getProperty("openidm.idpconfig.*")`) that were previously flagged as missing.
+- **Compare item filter**: made the per-item regex scope-aware via `pathToScopeItem`. A task selecting endpoint `le-test` no longer false-matches an unrelated journey `alpha/journeys/le-test/le-test.json` during verify-compare.
+- **Data pull on Windows**: atomic-swap renames (`.pulling-<id>/<type>` → `<type>`) are retried with backoff so transient `EPERM` / `EACCES` / `EBUSY` locks from file watchers or antivirus don't fail the pull after every record has been fetched.
+- **Data pull jobs**: stuck `running` entries are cleaned from the registry so a crashed or abandoned pull no longer blocks future pulls on the same type.
+
+### Added
+
+- **Promote gate**: the "Promote" stepper dot and the "Next: Promote" arrow are disabled whenever the ESV precheck lists missing entries, with a tooltip explaining which ESVs to define on target first.
+
+### Changed
+
+- **Data browse / configs**: async file I/O throughout, loading skeletons while the tree loads, page-slice reads for managed data (so scrolling doesn't read the whole type), and a `_index.json` built at pull time and cached in memory for snapshot browsing.
+
 ## [0.2.0] - 2026-04-22
 
 ### Added
@@ -54,6 +72,7 @@ First public release of PingHub under the Apache License 2.0.
 - Vendored subset of [`fr-config-manager`](https://github.com/ForgeRock/fr-config-manager) under `src/vendor/` (MIT licensed — see `NOTICE`).
 - Apache 2.0 license, project metadata, `SECURITY.md`, `CODE_OF_CONDUCT.md`.
 
-[Unreleased]: https://github.com/bostonidentity/PingHub/compare/aic-pipeline/v0.2.0...HEAD
+[Unreleased]: https://github.com/bostonidentity/PingHub/compare/aic-pipeline/v0.2.1...HEAD
+[0.2.1]: https://github.com/bostonidentity/PingHub/compare/aic-pipeline/v0.2.0...aic-pipeline/v0.2.1
 [0.2.0]: https://github.com/bostonidentity/PingHub/compare/aic-pipeline/v0.1.0...aic-pipeline/v0.2.0
 [0.1.0]: https://github.com/bostonidentity/PingHub/releases/tag/aic-pipeline/v0.1.0
