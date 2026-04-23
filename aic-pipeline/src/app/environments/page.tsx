@@ -1,7 +1,9 @@
 import { getEnvironments } from "@/lib/fr-config";
+import { triggerStaleRefreshAsync } from "@/lib/release/auto-refresh";
 import { EnvironmentsManager } from "./EnvironmentsManager";
 
 export default function EnvironmentsPage() {
+  triggerStaleRefreshAsync();
   const environments = getEnvironments();
   return (
     <div className="space-y-6">

@@ -7,6 +7,7 @@ import { ActivityRow } from "@/components/ActivityRow";
 import { readReleaseInfo } from "@/lib/release/persistence";
 import { classifyUpgrade, daysUntil } from "@/lib/release/urgency";
 import type { ReleaseCacheEntry } from "@/lib/release/types";
+import { triggerStaleRefreshAsync } from "@/lib/release/auto-refresh";
 
 const DASHBOARD_BANNER_SOON_DAYS = 7;
 
@@ -25,6 +26,7 @@ function deriveHealth(
 }
 
 export default function DashboardPage() {
+  triggerStaleRefreshAsync();
   const environments = getEnvironments();
   const history = readHistoryMerged({ limit: 500 }).filter((r) => r.type !== "log-search");
 
