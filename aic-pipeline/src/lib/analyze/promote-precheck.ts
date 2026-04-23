@@ -68,10 +68,30 @@ function* walkDir(dir: string): Generator<string> {
  *   custom-nodes     — custom-nodes/<id>/...
  *   managed-objects  — managed-objects/<id>/...
  */
+/**
+ * Normalize a task-item identifier into a bare needle suitable for substring
+ * matching against on-disk filenames:
+ *
+ *   "abc-123.json"         (scripts-config filename)       → "abc-123"
+ *   "name:MyScript"        (script name surrogate)         → "myscript"
+ *   "Login"                (journey dir)                   → "login"
+ *
+ * Without this, dep-resolved script items like "abc-123.json" and
+ * "name:MyScript" only match the .json metadata; the actual script body
+ * (scripts-content/<TYPE>/<name>-<uuid>.js) — where ESV references live —
+ * is invisible to the scanner.
+ */
+function normalizeItemNeedle(item: string): string {
+  let n = item;
+  if (n.startsWith("name:")) n = n.slice(5);
+  if (n.endsWith(".json")) n = n.slice(0, -5);
+  return n.toLowerCase();
+}
+
 function* filterFilesForItems(scopeDir: string, items: string[] | undefined): Generator<string> {
   if (!fs.existsSync(scopeDir)) return;
   const hasItems = items && items.length > 0;
-  const needles = hasItems ? items!.map((i) => i.toLowerCase()) : null;
+  const needles = hasItems ? items!.map(normalizeItemNeedle).filter(Boolean) : null;
   for (const abs of walkDir(scopeDir)) {
     if (!needles) { yield abs; continue; }
     const rel = path.relative(scopeDir, abs).toLowerCase();
