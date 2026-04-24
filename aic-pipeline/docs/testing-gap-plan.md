@@ -9,7 +9,7 @@ Status legend:
 ## Current Baseline
 
 - `[x]` Ran `npm test -- --coverage` on 2026-04-24.
-- `[x]` Current result after graph-modal tests: 342 passing tests, 0 skipped tests, 53 test files.
+- `[x]` Current result after journey-tree tests: 344 passing tests, 0 skipped tests, 53 test files.
 - `[x]` Current coverage: 23.05% statements, 15.69% branches, 22.99% functions, 24.71% lines.
 - `[x]` Noted coverage caveat: `vitest.config.ts` excludes `src/**/*.tsx`, so most UI workflow risk is not represented by coverage.
 
@@ -41,10 +41,10 @@ Status legend:
   - `[x]` Open parent journey with `journeyTree`.
   - `[x]` Navigate into inner journey.
   - `[x]` Assert descended graph receives inner `nodeInfos` and shows modified node status.
-- `[ ]` Expand `buildReport()` journey tree tests.
-  - Parent `InnerTreeEvaluatorNode` should be marked `modifiedReason: "subjourney"` when child journey changed.
-  - `ScriptedDecisionNode` should be marked `modifiedReason: "script"` when referenced script content changed.
-  - PageNode child config changes should mark the child, not only the parent.
+- `[x]` Expand `buildReport()` journey tree tests.
+  - `[x]` Parent `InnerTreeEvaluatorNode` should be marked `modifiedReason: "subjourney"` when child journey changed.
+  - `[x]` `ScriptedDecisionNode` should be marked `modifiedReason: "script"` when referenced script content changed.
+  - `[x]` PageNode child config changes should mark the child, not only the parent.
 
 ## Phase 3: Break Down And Test Promote Items
 
@@ -173,8 +173,9 @@ Status legend:
 - `[~]` 2. Fix lint scope.
 - `[x]` 3. Add compare route tests.
 - `[x]` 4. Add `JourneyDiffGraphModal` navigation regression test.
-- `[ ]` 5. Refactor and test `promote-items`.
-- `[ ]` 6. Add pull/push orchestration tests.
-- `[ ]` 7. Add promotion/DCC tests.
-- `[ ]` 8. Fill analyze/search/logs.
-- `[ ]` 9. Add broader UI workflow tests.
+- `[x]` 5. Expand `buildReport()` journey tree tests.
+- `[ ]` 6. Refactor and test `promote-items`.
+- `[ ]` 7. Add pull/push orchestration tests.
+- `[ ]` 8. Add promotion/DCC tests.
+- `[ ]` 9. Fill analyze/search/logs.
+- `[ ]` 10. Add broader UI workflow tests.
