@@ -9,7 +9,7 @@ Status legend:
 ## Current Baseline
 
 - `[x]` Ran `npm test -- --coverage` on 2026-04-24.
-- `[x]` Current result after compare-route tests: 341 passing tests, 0 skipped tests, 52 test files.
+- `[x]` Current result after graph-modal tests: 342 passing tests, 0 skipped tests, 53 test files.
 - `[x]` Current coverage: 23.05% statements, 15.69% branches, 22.99% functions, 24.71% lines.
 - `[x]` Noted coverage caveat: `vitest.config.ts` excludes `src/**/*.tsx`, so most UI workflow risk is not represented by coverage.
 
@@ -36,11 +36,11 @@ Status legend:
   - `[x]` Dry-run flips added/removed and swaps content/diff lines.
   - `[x]` Missing dependency warning appears only when `includeDeps` is false.
   - `[x]` ESV precheck runs only after dry-run report construction.
-- `[ ]` Add UI regression tests for `JourneyDiffGraphModal`.
-  - Mock `DiffGraphCanvas` to expose rendered node statuses.
-  - Open parent journey with `journeyTree`.
-  - Navigate into inner journey.
-  - Assert descended graph receives inner `nodeInfos` and shows modified node status.
+- `[x]` Add UI regression tests for `JourneyDiffGraphModal`.
+  - `[x]` Mock `DiffGraphCanvas` to expose rendered node statuses.
+  - `[x]` Open parent journey with `journeyTree`.
+  - `[x]` Navigate into inner journey.
+  - `[x]` Assert descended graph receives inner `nodeInfos` and shows modified node status.
 - `[ ]` Expand `buildReport()` journey tree tests.
   - Parent `InnerTreeEvaluatorNode` should be marked `modifiedReason: "subjourney"` when child journey changed.
   - `ScriptedDecisionNode` should be marked `modifiedReason: "script"` when referenced script content changed.
@@ -172,7 +172,7 @@ Status legend:
 - `[x]` 1. Fix skipped integration tests.
 - `[~]` 2. Fix lint scope.
 - `[x]` 3. Add compare route tests.
-- `[ ]` 4. Add `JourneyDiffGraphModal` navigation regression test.
+- `[x]` 4. Add `JourneyDiffGraphModal` navigation regression test.
 - `[ ]` 5. Refactor and test `promote-items`.
 - `[ ]` 6. Add pull/push orchestration tests.
 - `[ ]` 7. Add promotion/DCC tests.
