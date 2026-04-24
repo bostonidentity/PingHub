@@ -2,8 +2,14 @@
 import { render, screen } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
 import { EnvCard } from "@/components/EnvCard";
+import type { Environment } from "@/lib/fr-config";
 
-const ENV = { name: "dev", label: "dev", color: "blue", envFile: "dev.env", baseUrl: "openam-dev.example.com" } as any;
+const ENV: Environment & { baseUrl: string } = {
+  name: "dev",
+  label: "dev",
+  color: "blue",
+  baseUrl: "openam-dev.example.com",
+};
 
 describe("EnvCard", () => {
   it("renders env name, label, and base URL", () => {
