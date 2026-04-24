@@ -100,6 +100,12 @@ export async function POST(req: NextRequest) {
             for (const script of depsUpdate.addedScripts) {
               emit({ type: "stdout", data: `  + Script: ${script.name}\n`, ts: Date.now() });
             }
+            for (const sub of deps.missingSubJourneys) {
+              emit({ type: "stdout", data: `  ! Missing journey dependency: ${sub}\n`, ts: Date.now() });
+            }
+            for (const uuid of deps.missingScriptUuids) {
+              emit({ type: "stdout", data: `  ! Missing script dependency: ${uuid}\n`, ts: Date.now() });
+            }
 
             emit({ type: "stdout", data: `  Total: ${deps.subJourneys.length} sub-journeys, ${deps.scriptUuids.length} scripts\n`, ts: Date.now() });
             emit({ type: "scope-end", scope: "resolve-deps", code: 0, ts: Date.now() });

@@ -9,6 +9,10 @@ export interface JourneyDeps {
   scriptUuids: string[];
   /** Map of script UUID → human-readable name */
   scriptNames: Map<string, string>;
+  /** Journey names referenced by selected journeys but not found on disk */
+  missingSubJourneys: string[];
+  /** Script UUIDs referenced by selected journeys but not found in scripts-config */
+  missingScriptUuids: string[];
 }
 
 /**
@@ -36,12 +40,19 @@ export function resolveJourneyDeps(
 
   const allSubJourneys = new Set<string>();
   const allScriptUuids = new Set<string>();
+  const missingSubJourneys = new Set<string>();
 
   const scanDeps = (journeyName: string, visited: Set<string>) => {
     if (visited.has(journeyName)) return;
     visited.add(journeyName);
 
-    for (const realmRoot of getRealmRoots(configDir, path.join("journeys", journeyName, "nodes"))) {
+    const realmRoots = getRealmRoots(configDir, path.join("journeys", journeyName, "nodes"));
+    if (realmRoots.length === 0) {
+      missingSubJourneys.add(journeyName);
+      return;
+    }
+
+    for (const realmRoot of realmRoots) {
       const nodesDir = path.join(realmRoot, "journeys", journeyName, "nodes");
       for (const nf of fs.readdirSync(nodesDir)) {
         const fp = path.join(nodesDir, nf);
@@ -70,5 +81,7 @@ export function resolveJourneyDeps(
     subJourneys: [...allSubJourneys],
     scriptUuids: [...allScriptUuids],
     scriptNames,
+    missingSubJourneys: [...missingSubJourneys],
+    missingScriptUuids: [...allScriptUuids].filter((uuid) => !scriptNames.has(uuid)),
   };
 }

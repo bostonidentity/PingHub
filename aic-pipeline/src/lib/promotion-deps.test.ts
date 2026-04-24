@@ -8,6 +8,8 @@ function deps(overrides: Partial<JourneyDeps> = {}): JourneyDeps {
     subJourneys: [],
     scriptUuids: [],
     scriptNames: new Map(),
+    missingSubJourneys: [],
+    missingScriptUuids: [],
     ...overrides,
   };
 }

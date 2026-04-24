@@ -9,7 +9,7 @@ Status legend:
 ## Current Baseline
 
 - `[x]` Ran `npm test -- --coverage` on 2026-04-24.
-- `[x]` Current result after promotion-deps tests: 353 passing tests, 0 skipped tests, 55 test files.
+- `[x]` Current result after dependency resolver tests: 355 passing tests, 0 skipped tests, 56 test files.
 - `[x]` Current coverage: 23.05% statements, 15.69% branches, 22.99% functions, 24.71% lines.
 - `[x]` Noted coverage caveat: `vitest.config.ts` excludes `src/**/*.tsx`, so most UI workflow risk is not represented by coverage.
 
@@ -62,7 +62,7 @@ Status legend:
   - `[ ]` Journey selected by name resolves to expected file paths.
   - `[ ]` Script selected by UUID and `name:` tag resolves correctly.
   - `[x]` Dependencies are de-duped.
-  - `[ ]` Missing subjourneys/scripts are reported predictably.
+  - `[x]` Missing subjourneys/scripts are reported predictably.
   - `[ ]` `includeDeps` changes the plan correctly.
   - `[ ]` Controlled and sandbox environment behavior is represented where applicable.
 - `[ ]` Add route-level smoke tests for promote-items.
