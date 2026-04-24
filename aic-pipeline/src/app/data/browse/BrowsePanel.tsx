@@ -32,6 +32,7 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [titlePrefs, setTitlePrefs] = useState<Record<string, string>>({});
+  const [typeFilter, setTypeFilter] = useState("");
 
   // Rehydrate display-attribute preferences after mount. Kept out of the
   // useState initializer so server and client renders agree before hydration.
@@ -134,6 +135,20 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
 
   const globalActive = globalQ.trim().length > 0;
 
+  const filteredTypes = useMemo(() => {
+    const needle = typeFilter.trim().toLowerCase();
+    if (!needle) return types;
+    return types.filter((t) => t.name.toLowerCase().includes(needle));
+  }, [types, typeFilter]);
+
+  // Suppress the row click if the user just released a text selection on it.
+  // Lets them drag-select record text without navigating.
+  function handleRowClick(action: () => void) {
+    const sel = typeof window !== "undefined" ? window.getSelection() : null;
+    if (sel && sel.toString().length > 0) return;
+    action();
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-end gap-3 flex-wrap">
@@ -158,7 +173,7 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
         </div>
         <div className="flex-1 min-w-[240px] flex flex-col gap-1">
           <label className="text-xs text-slate-500 font-medium">
-            Search all types
+            Search All Records in All Managed Objects
             {globalLoading && <span className="ml-2 text-slate-400">loading…</span>}
             {globalError && <span className="ml-2 text-rose-600">{globalError}</span>}
             {!globalError && globalActive && !globalLoading && (
@@ -207,17 +222,20 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
                   </div>
                   <div className="divide-y divide-slate-100">
                     {hits.map((h) => (
-                      <button
+                      <div
                         key={`${h.type}/${h.id}`}
-                        type="button"
-                        onClick={() => jumpTo(h.type, h.id)}
-                        className="w-full text-left px-3 py-1.5 hover:bg-sky-50 transition-colors"
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => handleRowClick(() => jumpTo(h.type, h.id))}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); jumpTo(h.type, h.id); } }}
+                        title={`${h.id}\n${h.preview}`}
+                        className="w-full text-left px-3 py-1.5 hover:bg-sky-50 transition-colors cursor-pointer select-text"
                       >
                         <div className="flex items-center gap-2">
                           <span className="text-xs font-medium text-slate-800 truncate font-mono">{h.id}</span>
                         </div>
                         <div className="text-[11px] text-slate-500 font-mono truncate">{h.preview}</div>
-                      </button>
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -234,22 +252,49 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
         </div>
       ) : (
         <>
-          <div className="flex flex-wrap gap-1 border-b border-slate-200 pb-2">
-            {types.map((t) => (
-              <button
-                key={t.name}
-                type="button"
-                onClick={() => { setSelectedType(t.name); setSelectedId(null); setPage(1); }}
-                className={cn(
-                  "px-3 py-1 text-xs rounded transition-colors",
-                  selectedType === t.name
-                    ? "bg-sky-600 text-white"
-                    : "bg-slate-100 text-slate-700 hover:bg-slate-200",
-                )}
-              >
-                {t.name} <span className="opacity-70">({t.count})</span>
-              </button>
-            ))}
+          <div className="flex flex-col gap-2 border-b border-slate-200 pb-2">
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={typeFilter}
+                onChange={(e) => setTypeFilter(e.target.value)}
+                placeholder="Filter managed objects…"
+                className="flex-1 max-w-xs text-xs rounded border border-slate-300 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-sky-400"
+              />
+              {typeFilter && (
+                <button
+                  type="button"
+                  onClick={() => setTypeFilter("")}
+                  className="text-xs text-slate-400 hover:text-slate-600"
+                  title="Clear"
+                >
+                  ✕
+                </button>
+              )}
+              <span className="text-[11px] text-slate-400">
+                {filteredTypes.length} / {types.length}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {filteredTypes.map((t) => (
+                <button
+                  key={t.name}
+                  type="button"
+                  onClick={() => { setSelectedType(t.name); setSelectedId(null); setPage(1); }}
+                  className={cn(
+                    "px-3 py-1 text-xs rounded transition-colors",
+                    selectedType === t.name
+                      ? "bg-sky-600 text-white"
+                      : "bg-slate-100 text-slate-700 hover:bg-slate-200",
+                  )}
+                >
+                  {t.name} <span className="opacity-70">({t.count})</span>
+                </button>
+              ))}
+              {filteredTypes.length === 0 && (
+                <span className="text-[11px] text-slate-400 italic px-1 py-1">No managed objects match.</span>
+              )}
+            </div>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] gap-4">
@@ -289,17 +334,20 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
               <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
                 {loading && !data && <div className="p-4 text-xs text-slate-400">Loading…</div>}
                 {data?.records.map((r) => (
-                  <button
+                  <div
                     key={r.id}
-                    type="button"
-                    onClick={() => setSelectedId(r.id)}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => handleRowClick(() => setSelectedId(r.id))}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedId(r.id); } }}
+                    title={`${r.id}\n${r.title}`}
                     className={cn(
-                      "w-full text-left px-3 py-2 hover:bg-slate-50 transition-colors",
+                      "w-full text-left px-3 py-2 hover:bg-slate-50 transition-colors cursor-pointer select-text",
                       selectedId === r.id && "bg-sky-50",
                     )}
                   >
                     <div className="text-xs font-medium text-slate-800 truncate">{r.title}</div>
-                  </button>
+                  </div>
                 ))}
                 {data && data.records.length === 0 && (
                   <div className="p-4 text-xs text-slate-400 italic">No matches.</div>
