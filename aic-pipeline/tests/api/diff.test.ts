@@ -16,11 +16,13 @@ const REPORT: CompareReport = {
   generatedAt: "2026-04-13T00:00:00Z",
   summary: { added: 0, removed: 0, modified: 0, unchanged: 0 },
   files: [
-    { scope: "journeys", relativePath: "journeys/Login", status: "added" } as any,
-    { scope: "journeys", relativePath: "journeys/MFA",   status: "modified" } as any,
-    { scope: "scripts",  relativePath: "scripts/foo.js", status: "removed" } as any,
+    { scope: "journeys", relativePath: "journeys/Login", status: "added" },
+    { scope: "journeys", relativePath: "journeys/MFA", status: "modified" },
+    { scope: "scripts", relativePath: "scripts/foo.js", status: "removed" },
   ],
 };
+
+let fetchMock: ReturnType<typeof vi.fn>;
 
 function ndjsonBody(lines: object[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -33,7 +35,8 @@ function ndjsonBody(lines: object[]): ReadableStream<Uint8Array> {
 }
 
 beforeEach(() => {
-  (globalThis as any).fetch = vi.fn();
+  fetchMock = vi.fn();
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -59,7 +62,7 @@ describe("POST /api/diff", () => {
   });
 
   it("returns DiffSummary[] on success", async () => {
-    (globalThis.fetch as any).mockResolvedValueOnce(
+    fetchMock.mockResolvedValueOnce(
       new Response(
         ndjsonBody([
           { type: "stdout", data: "pulling…", ts: 0 },
@@ -79,7 +82,7 @@ describe("POST /api/diff", () => {
   });
 
   it("returns 500 when compare fetch fails", async () => {
-    (globalThis.fetch as any).mockResolvedValueOnce(
+    fetchMock.mockResolvedValueOnce(
       new Response("boom", { status: 500 })
     );
     const res = await POST(post({ target: "dev", scopes: ["journeys"] }));
@@ -89,7 +92,7 @@ describe("POST /api/diff", () => {
   });
 
   it("returns 500 when stream never emits a report line", async () => {
-    (globalThis.fetch as any).mockResolvedValueOnce(
+    fetchMock.mockResolvedValueOnce(
       new Response(
         ndjsonBody([
           { type: "stdout", data: "pulling…", ts: 0 },
