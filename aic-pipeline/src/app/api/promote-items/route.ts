@@ -310,7 +310,7 @@ export async function POST(req: NextRequest) {
             if (deps.scriptUuids.length > 0) {
               let scriptSel = scopeSelections.find((s) => s.scope === "scripts");
               if (!scriptSel) {
-                scriptSel = { scope: "scripts" as any, items: [] };
+                scriptSel = { scope: "scripts" as ScopeSelection["scope"], items: [] };
                 scopeSelections.push(scriptSel);
               }
               if (!scriptSel.items) scriptSel.items = [];

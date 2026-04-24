@@ -9,7 +9,7 @@ Status legend:
 ## Current Baseline
 
 - `[x]` Ran `npm test -- --coverage` on 2026-04-24.
-- `[x]` Current result after Phase 1 skipped-test fix: 337 passing tests, 0 skipped tests, 51 test files.
+- `[x]` Current result after compare-route tests: 341 passing tests, 0 skipped tests, 52 test files.
 - `[x]` Current coverage: 23.05% statements, 15.69% branches, 22.99% functions, 24.71% lines.
 - `[x]` Noted coverage caveat: `vitest.config.ts` excludes `src/**/*.tsx`, so most UI workflow risk is not represented by coverage.
 
@@ -28,14 +28,14 @@ Status legend:
 
 ## Phase 2: Cover Compare And Journey Diff Regressions
 
-- `[ ]` Add route tests for `src/app/api/compare/route.ts`.
-  - Local-local compare returns a report.
-  - Remote source/target calls pull orchestration and streams pull logs.
-  - `scopeSelections` filters files by parsed scope and does not leak item names across scopes.
-  - Journey dependency expansion adds subjourneys and scripts.
-  - Dry-run flips added/removed and swaps content/diff lines.
-  - Missing dependency warning appears only when `includeDeps` is false.
-  - ESV precheck runs only after dry-run report construction.
+- `[x]` Add route tests for `src/app/api/compare/route.ts`.
+  - `[x]` Local-local compare returns a report.
+  - `[x]` Remote source/target calls pull orchestration and streams pull logs.
+  - `[x]` `scopeSelections` filters files by parsed scope and does not leak item names across scopes.
+  - `[x]` Journey dependency expansion adds subjourneys and scripts.
+  - `[x]` Dry-run flips added/removed and swaps content/diff lines.
+  - `[x]` Missing dependency warning appears only when `includeDeps` is false.
+  - `[x]` ESV precheck runs only after dry-run report construction.
 - `[ ]` Add UI regression tests for `JourneyDiffGraphModal`.
   - Mock `DiffGraphCanvas` to expose rendered node statuses.
   - Open parent journey with `journeyTree`.
@@ -171,7 +171,7 @@ Status legend:
 
 - `[x]` 1. Fix skipped integration tests.
 - `[~]` 2. Fix lint scope.
-- `[ ]` 3. Add compare route tests.
+- `[x]` 3. Add compare route tests.
 - `[ ]` 4. Add `JourneyDiffGraphModal` navigation regression test.
 - `[ ]` 5. Refactor and test `promote-items`.
 - `[ ]` 6. Add pull/push orchestration tests.
