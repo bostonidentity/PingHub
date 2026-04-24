@@ -9,7 +9,7 @@ Status legend:
 ## Current Baseline
 
 - `[x]` Ran `npm test -- --coverage` on 2026-04-24.
-- `[x]` Current result after journey-tree tests: 344 passing tests, 0 skipped tests, 53 test files.
+- `[x]` Current result after promotion-selection tests: 350 passing tests, 0 skipped tests, 54 test files.
 - `[x]` Current coverage: 23.05% statements, 15.69% branches, 22.99% functions, 24.71% lines.
 - `[x]` Noted coverage caveat: `vitest.config.ts` excludes `src/**/*.tsx`, so most UI workflow risk is not represented by coverage.
 
@@ -48,17 +48,22 @@ Status legend:
 
 ## Phase 3: Break Down And Test Promote Items
 
-- `[ ]` Refactor `src/app/api/promote-items/route.ts`.
-  - Extract pure helper modules from the route.
+- `[~]` Refactor `src/app/api/promote-items/route.ts`.
+  - `[~]` Extract pure helper modules from the route.
+  - `[x]` Extract `promotion-selection.ts` for scope directory resolution, staging paths, recursive copy, name/ID maps, and ID remapping.
   - Candidate modules: `promotion-selection.ts`, `promotion-deps.ts`, `promotion-plan.ts`, `promotion-validation.ts`.
   - Keep the route handler focused on request parsing and response formatting.
-- `[ ]` Add unit tests for extracted promote-item helpers.
-  - Journey selected by name resolves to expected file paths.
-  - Script selected by UUID and `name:` tag resolves correctly.
-  - Dependencies are de-duped.
-  - Missing subjourneys/scripts are reported predictably.
-  - `includeDeps` changes the plan correctly.
-  - Controlled and sandbox environment behavior is represented where applicable.
+- `[~]` Add unit tests for extracted promote-item helpers.
+  - `[x]` Scope directories resolve across `realms/<realm>` and vendored `<realm>` layouts.
+  - `[x]` Realm-scoped staging paths are normalized for vendor push handlers.
+  - `[x]` Script config IDs are remapped and renamed to target UUIDs.
+  - `[x]` Directory-based generic scopes are keyed by folder name during ID remap.
+  - `[ ]` Journey selected by name resolves to expected file paths.
+  - `[ ]` Script selected by UUID and `name:` tag resolves correctly.
+  - `[ ]` Dependencies are de-duped.
+  - `[ ]` Missing subjourneys/scripts are reported predictably.
+  - `[ ]` `includeDeps` changes the plan correctly.
+  - `[ ]` Controlled and sandbox environment behavior is represented where applicable.
 - `[ ]` Add route-level smoke tests for promote-items.
   - Valid request creates expected promotion task.
   - Invalid env/scope/item returns expected status.
@@ -174,7 +179,7 @@ Status legend:
 - `[x]` 3. Add compare route tests.
 - `[x]` 4. Add `JourneyDiffGraphModal` navigation regression test.
 - `[x]` 5. Expand `buildReport()` journey tree tests.
-- `[ ]` 6. Refactor and test `promote-items`.
+- `[~]` 6. Refactor and test `promote-items`.
 - `[ ]` 7. Add pull/push orchestration tests.
 - `[ ]` 8. Add promotion/DCC tests.
 - `[ ]` 9. Fill analyze/search/logs.
