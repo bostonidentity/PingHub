@@ -15,6 +15,7 @@ import { parseEnvFile } from "@/lib/env-parser";
 import type { ScopeSelection } from "@/lib/fr-config-types";
 import { resolveJourneyDeps } from "@/lib/resolve-journey-deps";
 import { buildNameToIdMap, copyDirSync, remapIds, resolveScopeDirs, stagingRelPath } from "@/lib/promotion-selection";
+import { addJourneyDepsToSelections, getSelectedJourneyNames } from "@/lib/promotion-deps";
 import { pullManagedObjects, pushManagedObjects, pullScripts, pushScripts, pullJourneys, pushJourneys, isIdmFlatScope, pullIdmFlatScope, pushIdmFlatScope, pullPasswordPolicy, pushPasswordPolicy, pullOrgPrivileges, pushOrgPrivileges, pullCookieDomains, pushCookieDomains, pullCors, pushCors, pullCsp, pushCsp, pullLocales, pushLocales, pullEndpoints, pushEndpoints, pullInternalRoles, pushInternalRoles, pullEmailTemplates, pushEmailTemplates, pullCustomNodes, pushCustomNodes, pullThemes, pushThemes, pullEmailProvider, pushEmailProvider, pullSchedules, pushSchedules, pullIgaWorkflows, pushIgaWorkflows, pullTermsAndConditions, pushTermsAndConditions, pullServiceObjects, pushServiceObjects, pullRawConfig, pushRawConfig, pullAuthzPolicies, pushAuthzPolicies, pullOauth2Agents, pushOauth2Agents, pullServices, pushServices, pullTelemetry, pushTelemetry, pullConnectorDefinitions, pushConnectorDefinitions, pullConnectorMappings, pushConnectorMappings, pullRemoteServers, pushRemoteServers, pullSecrets, pushSecrets, pullSecretMappings, pushSecretMappings } from "@/vendor/fr-config-manager";
 import { getAccessToken } from "@/lib/iga-api";
 
@@ -86,43 +87,18 @@ export async function POST(req: NextRequest) {
 
         // Step 0b: Resolve journey dependencies if includeDeps is enabled
         if (includeDeps) {
-          const journeyScopes = scopeSelections.filter((s) => s.scope === "journeys" && s.items?.length);
-          if (journeyScopes.length > 0) {
+          const journeyNames = getSelectedJourneyNames(scopeSelections);
+          if (journeyNames.length > 0) {
             emit({ type: "scope-start", scope: "resolve-deps", ts: Date.now() });
             emit({ type: "stdout", data: "Resolving journey dependencies...\n", ts: Date.now() });
 
-            const journeyNames = journeyScopes.flatMap((s) => s.items!);
             const deps = resolveJourneyDeps(sourceConfigDir, journeyNames);
-
-            // Add sub-journeys to scopeSelections
-            if (deps.subJourneys.length > 0) {
-              const journeySel = scopeSelections.find((s) => s.scope === "journeys");
-              if (journeySel?.items) {
-                for (const sub of deps.subJourneys) {
-                  if (!journeySel.items.includes(sub)) {
-                    journeySel.items.push(sub);
-                    emit({ type: "stdout", data: `  + Sub-journey: ${sub}\n`, ts: Date.now() });
-                  }
-                }
-              }
+            const depsUpdate = addJourneyDepsToSelections(scopeSelections, deps);
+            for (const sub of depsUpdate.addedSubJourneys) {
+              emit({ type: "stdout", data: `  + Sub-journey: ${sub}\n`, ts: Date.now() });
             }
-
-            // Add scripts to scopeSelections
-            if (deps.scriptUuids.length > 0) {
-              let scriptSel = scopeSelections.find((s) => s.scope === "scripts");
-              if (!scriptSel) {
-                scriptSel = { scope: "scripts" as ScopeSelection["scope"], items: [] };
-                scopeSelections.push(scriptSel);
-              }
-              if (!scriptSel.items) scriptSel.items = [];
-              for (const uuid of deps.scriptUuids) {
-                const configFile = uuid + ".json";
-                if (!scriptSel.items.includes(configFile)) {
-                  const name = deps.scriptNames.get(uuid) ?? uuid;
-                  scriptSel.items.push(configFile);
-                  emit({ type: "stdout", data: `  + Script: ${name}\n`, ts: Date.now() });
-                }
-              }
+            for (const script of depsUpdate.addedScripts) {
+              emit({ type: "stdout", data: `  + Script: ${script.name}\n`, ts: Date.now() });
             }
 
             emit({ type: "stdout", data: `  Total: ${deps.subJourneys.length} sub-journeys, ${deps.scriptUuids.length} scripts\n`, ts: Date.now() });
