@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Environment } from "@/lib/fr-config-types";
 import { EnvironmentBadge } from "@/components/EnvironmentBadge";
 import { FileContentViewer } from "@/components/FileContentViewer";
@@ -42,6 +43,7 @@ interface PersistedState {
   data: SearchResponse | null;
   expanded: string[];
   selected: { path: string; line: number } | null;
+  leftPct: number;
 }
 
 function loadPersisted(): Partial<PersistedState> {
@@ -78,6 +80,58 @@ export function SearchExplorer({ environments }: Props) {
   const [hydrated, setHydrated] = useState(false);
   const hadPersistedEnvRef = useRef(false);
 
+  // Left-panel width as % of the split container. Drag the divider to resize.
+  const [leftPct, setLeftPct] = useState<number>(45);
+  const splitRef = useRef<HTMLDivElement>(null);
+  const [splitActive, setSplitActive] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const apply = () => setSplitActive(mq.matches);
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
+
+  // Custom tooltip (faster than native `title`, also escapes scroll clipping).
+  const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
+  const tipTimerRef = useRef<number | null>(null);
+
+  const showTip = useCallback((e: React.MouseEvent, text: string) => {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    if (tipTimerRef.current) window.clearTimeout(tipTimerRef.current);
+    tipTimerRef.current = window.setTimeout(() => {
+      setTip({ text, x: rect.left, y: rect.bottom + 4 });
+    }, 80);
+  }, []);
+  const hideTip = useCallback(() => {
+    if (tipTimerRef.current) { window.clearTimeout(tipTimerRef.current); tipTimerRef.current = null; }
+    setTip(null);
+  }, []);
+
+  const handleSplitDrag = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const container = splitRef.current;
+    if (!container) return;
+    const onMove = (ev: MouseEvent) => {
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      const pct = ((ev.clientX - rect.left) / rect.width) * 100;
+      setLeftPct(Math.max(20, Math.min(80, pct)));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, []);
+
   useEffect(() => {
     const p = loadPersisted();
     if (p.env) { setEnv(p.env); hadPersistedEnvRef.current = true; }
@@ -89,6 +143,7 @@ export function SearchExplorer({ environments }: Props) {
     if (p.data != null) setData(p.data);
     if (p.expanded) setExpanded(new Set(p.expanded));
     if (p.selected != null) setSelected(p.selected);
+    if (typeof p.leftPct === "number" && p.leftPct >= 20 && p.leftPct <= 80) setLeftPct(p.leftPct);
     setHydrated(true);
   }, []);
 
@@ -107,11 +162,11 @@ export function SearchExplorer({ environments }: Props) {
     try {
       const payload: PersistedState = {
         env, query, regex, matchCase, wholeWord, glob,
-        data, expanded: Array.from(expanded), selected,
+        data, expanded: Array.from(expanded), selected, leftPct,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch { /* ignore quota errors */ }
-  }, [hydrated, env, query, regex, matchCase, wholeWord, glob, data, expanded, selected]);
+  }, [hydrated, env, query, regex, matchCase, wholeWord, glob, data, expanded, selected, leftPct]);
 
 
   useEffect(() => {
@@ -373,9 +428,15 @@ export function SearchExplorer({ environments }: Props) {
 
       {/* Results + file preview split */}
       {data && !error && data.results.length > 0 && (
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)] gap-4">
+        <div
+          ref={splitRef}
+          className="flex flex-col lg:flex-row gap-4 lg:gap-0"
+        >
           {/* Results list */}
-          <div className="bg-white rounded-lg border border-slate-200 overflow-hidden flex flex-col max-h-[calc(100vh-320px)]">
+          <div
+            className="bg-white rounded-lg border border-slate-200 overflow-hidden flex flex-col max-h-[calc(100vh-320px)] min-w-0 w-full lg:shrink-0"
+            style={splitActive ? { width: `${leftPct}%` } : undefined}
+          >
             <div className="flex items-center gap-3 px-3 py-1.5 border-b border-slate-200 bg-slate-50/50 shrink-0">
               <button
                 type="button"
@@ -409,6 +470,8 @@ export function SearchExplorer({ environments }: Props) {
                         <button
                           type="button"
                           onClick={() => toggleExpand(f.path)}
+                          onMouseEnter={(e) => showTip(e, f.path)}
+                          onMouseLeave={hideTip}
                           className="w-full flex items-center gap-2 px-4 py-1.5 hover:bg-slate-50 text-left"
                         >
                           <span className="text-slate-400 text-[10px] w-3">{isOpen ? "▾" : "▸"}</span>
@@ -422,6 +485,8 @@ export function SearchExplorer({ environments }: Props) {
                                 key={i}
                                 type="button"
                                 onClick={() => setSelected({ path: f.path, line: m.line })}
+                                onMouseEnter={(e) => showTip(e, `${f.path}:${m.line}`)}
+                                onMouseLeave={hideTip}
                                 className={cn(
                                   "w-full flex gap-3 px-4 py-1 text-[11px] font-mono text-left hover:bg-sky-50 border-l-2",
                                   selected?.path === f.path && selected.line === m.line
@@ -445,17 +510,32 @@ export function SearchExplorer({ environments }: Props) {
             </div>
           </div>
 
+          {/* Drag handle */}
+          <div
+            onMouseDown={handleSplitDrag}
+            role="separator"
+            aria-orientation="vertical"
+            title="Drag to resize"
+            className="hidden lg:block shrink-0 w-1.5 mx-1 rounded bg-slate-200 hover:bg-sky-400 cursor-col-resize transition-colors"
+          />
+
           {/* File preview */}
           <div className={cn(
-            "bg-white border border-slate-200 overflow-hidden flex flex-col",
+            "bg-white border border-slate-200 overflow-hidden flex flex-col min-w-0",
             previewFullscreen
               ? "fixed inset-0 z-50 rounded-none"
-              : "rounded-lg max-h-[calc(100vh-320px)]"
+              : "rounded-lg max-h-[calc(100vh-320px)] flex-1"
           )}>
             {selected ? (
               <>
                 <div className="px-4 py-2 border-b border-slate-200 bg-slate-50/50 flex items-center gap-3">
-                  <span className="text-xs font-mono text-slate-700 truncate flex-1 min-w-0">{selected.path}</span>
+                  <span
+                    className="text-xs font-mono text-slate-700 truncate flex-1 min-w-0"
+                    onMouseEnter={(e) => showTip(e, selected.path)}
+                    onMouseLeave={hideTip}
+                  >
+                    {selected.path}
+                  </span>
                   <span className="text-[10px] text-slate-400 shrink-0">line {selected.line}</span>
                   <a
                     href={`/configs?env=${encodeURIComponent(env)}&file=${encodeURIComponent(selected.path)}&line=${selected.line}`}
@@ -518,6 +598,20 @@ export function SearchExplorer({ environments }: Props) {
 
       {data && !error && data.results.length === 0 && (
         <div className="text-center text-sm text-slate-400 py-8">No matches.</div>
+      )}
+
+      {tip && typeof document !== "undefined" && createPortal(
+        <div
+          className="fixed z-[9999] pointer-events-none rounded bg-slate-900 text-white text-[11px] font-mono px-2 py-1 shadow-lg break-all"
+          style={{
+            left: Math.min(tip.x, (typeof window !== "undefined" ? window.innerWidth : 1200) - 400),
+            top: tip.y,
+            maxWidth: "min(80vw, 600px)",
+          }}
+        >
+          {tip.text}
+        </div>,
+        document.body
       )}
     </div>
   );
