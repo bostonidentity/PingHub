@@ -6,6 +6,7 @@ import { Environment } from "@/lib/fr-config-types";
 import { EnvironmentBadge } from "@/components/EnvironmentBadge";
 import { useDialog } from "@/components/ConfirmDialog";
 import { cn } from "@/lib/utils";
+import { findKeywordMatchRows, logEntryMatchKey } from "@/lib/log-match-navigation";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -467,7 +468,7 @@ function terminalLevelClass(level: string): string {
 
 function TailTerminal({
   entries, defaultSource, searchTerm, keywords, wrapLines = false,
-  scrollToIndex = null, activeMatchIndex = null, matchCase = false, wholeWord = false,
+  scrollRequest = null, activeMatchIndex = null, matchCase = false, wholeWord = false,
   dupeCounts,
 }: {
   entries: LogEntry[];
@@ -476,7 +477,7 @@ function TailTerminal({
   keywords: string[];
   dupeCounts?: Map<number, number>;
   wrapLines?: boolean;
-  scrollToIndex?: number | null;
+  scrollRequest?: { index: number; nonce: number } | null;
   activeMatchIndex?: number | null;
   matchCase?: boolean;
   wholeWord?: boolean;
@@ -525,18 +526,20 @@ function TailTerminal({
   }, [entries.length, wrapLines]);
 
   // Scroll to match index
+  const scrollRequestIndex = scrollRequest?.index;
+  const scrollRequestNonce = scrollRequest?.nonce;
   useEffect(() => {
-    if (scrollToIndex === null || scrollToIndex < 0) return;
+    if (scrollRequestIndex == null || scrollRequestIndex < 0) return;
     lastProgrammaticScrollRef.current = Date.now();
     if (wrapLines) {
-      wrapVirtualizer.scrollToIndex(scrollToIndex, { align: "center" });
+      wrapVirtualizer.scrollToIndex(scrollRequestIndex, { align: "center" });
     } else if (outerRef.current) {
-      outerRef.current.scrollTop = scrollToIndex * TERMINAL_ROW_H - outerRef.current.clientHeight / 2 + TERMINAL_ROW_H / 2;
+      outerRef.current.scrollTop = scrollRequestIndex * TERMINAL_ROW_H - outerRef.current.clientHeight / 2 + TERMINAL_ROW_H / 2;
     }
     atBottomRef.current = false;
     setAtBottom(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scrollToIndex, wrapLines]);
+  }, [scrollRequestNonce, wrapLines]);
 
   function handleScroll(e: React.UIEvent<HTMLDivElement>) {
     const el = e.currentTarget;
@@ -560,8 +563,8 @@ function TailTerminal({
   // Flash key: increments each time we navigate to a match, re-triggers the CSS animation
   const [flashKey, setFlashKey] = useState(0);
   useEffect(() => {
-    if (scrollToIndex !== null && scrollToIndex >= 0) setFlashKey((k) => k + 1);
-  }, [scrollToIndex]);
+    if (scrollRequestIndex != null && scrollRequestIndex >= 0) setFlashKey((k) => k + 1);
+  }, [scrollRequestNonce, scrollRequestIndex]);
 
   // Highlight search / keyword terms — compile regexes once, not per row
   const allTerms = [searchTerm, ...keywords].filter(Boolean);
@@ -1074,7 +1077,9 @@ export function LogsExplorer({
     .split(",")
     .map((k) => k.trim())
     .filter(Boolean);
-  const [matchCursor, setMatchCursor] = useState(-1); // index into matchIndices; -1 = none selected
+  const [matchCursor, setMatchCursor] = useState(-1); // index into matchRows; -1 = none selected
+  const [activeMatchKey, setActiveMatchKey] = useState<string | null>(null);
+  const [matchScrollNonce, setMatchScrollNonce] = useState(0);
   const [highlightedTableIdx, setHighlightedTableIdx] = useState<number | null>(null); // filtered idx to highlight in table view
   const [matchCase, setMatchCase] = useState(false);
   const [wholeWord, setWholeWord] = useState(false);
@@ -1564,38 +1569,66 @@ export function LogsExplorer({
   const filtered = useMemo(() => filteredWithIdx.map(({ e }) => e), [filteredWithIdx]);
 
   // ── Match navigation (terminal view, keyword highlighting) ──
-  // Compute indices into `filtered` where any keyword matches the formatted line
-  const matchIndices = useMemo<number[]>(() => {
-    if (keywords.length === 0) return [];
-    const escaped = keywords.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    const wrapped = wholeWord ? escaped.map((k) => `\\b${k}\\b`) : escaped;
-    const flags = matchCase ? "g" : "gi";
-    const re = new RegExp(wrapped.join("|"), flags);
-    const result: number[] = [];
-    for (let fi = 0; fi < filteredWithIdx.length; fi++) {
-      if (re.test(entryStrings[filteredWithIdx[fi].i].line)) result.push(fi);
-    }
-    return result;
-  }, [filteredWithIdx, entryStrings, keywords, matchCase, wholeWord]);
+  // Compute indices into `filtered` where any keyword matches the formatted line.
+  const matchRows = useMemo(() => findKeywordMatchRows(
+    filteredWithIdx.map(({ e, i }) => ({
+      key: logEntryMatchKey(e, i),
+      line: entryStrings[i].line,
+    })),
+    keywords,
+    { matchCase, wholeWord },
+  ), [filteredWithIdx, entryStrings, keywords, matchCase, wholeWord]);
+  const matchIndices = useMemo(() => matchRows.map((m) => m.index), [matchRows]);
 
   // Jump to first match when keywords/options change; reset when no matches
   useEffect(() => {
-    setMatchCursor(matchIndices.length > 0 ? 0 : -1);
+    if (matchRows.length > 0) {
+      setMatchCursor(0);
+      setActiveMatchKey(matchRows[0].key);
+      setMatchScrollNonce((n) => n + 1);
+    } else {
+      setMatchCursor(-1);
+      setActiveMatchKey(null);
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keywordsActive, matchCase, wholeWord]);
 
-  const scrollToIndex = matchCursor >= 0 && matchCursor < matchIndices.length
-    ? matchIndices[matchCursor]
+  // When tailing adds entries, keep the current match anchored without issuing
+  // a new scroll request. This lets the count update while the viewport stays
+  // where the user is inspecting.
+  useEffect(() => {
+    if (!activeMatchKey) return;
+    const nextCursor = matchRows.findIndex((m) => m.key === activeMatchKey);
+    if (nextCursor >= 0 && nextCursor !== matchCursor) {
+      setMatchCursor(nextCursor);
+    } else if (nextCursor < 0) {
+      setMatchCursor(-1);
+      setActiveMatchKey(null);
+    }
+  }, [activeMatchKey, matchRows, matchCursor]);
+
+  const activeMatchIndex = matchCursor >= 0 && matchCursor < matchRows.length
+    ? matchRows[matchCursor].index
     : null;
-  const activeMatchIndex = scrollToIndex;
+  const matchScrollRequest = activeMatchIndex !== null && matchScrollNonce > 0
+    ? { index: activeMatchIndex, nonce: matchScrollNonce }
+    : null;
+
+  function navigateToMatch(nextCursor: number) {
+    const row = matchRows[nextCursor];
+    if (!row) return;
+    setMatchCursor(nextCursor);
+    setActiveMatchKey(row.key);
+    setMatchScrollNonce((n) => n + 1);
+  }
 
   function goNextMatch() {
-    if (matchIndices.length === 0) return;
-    setMatchCursor((c) => (c + 1) % matchIndices.length);
+    if (matchRows.length === 0) return;
+    navigateToMatch((matchCursor + 1) % matchRows.length);
   }
   function goPrevMatch() {
-    if (matchIndices.length === 0) return;
-    setMatchCursor((c) => (c <= 0 ? matchIndices.length - 1 : c - 1));
+    if (matchRows.length === 0) return;
+    navigateToMatch(matchCursor <= 0 ? matchRows.length - 1 : matchCursor - 1);
   }
 
   // ── Pagination (page 1 = oldest, last page = newest) ──
@@ -1898,7 +1931,7 @@ export function LogsExplorer({
                       placeholder="–"
                       onChange={(e) => {
                         const n = parseInt(e.target.value, 10);
-                        if (!isNaN(n) && n >= 1 && n <= matchIndices.length) setMatchCursor(n - 1);
+                        if (!isNaN(n) && n >= 1 && n <= matchRows.length) navigateToMatch(n - 1);
                       }}
                       className="w-12 text-center text-[11px] rounded border border-slate-300 px-1 py-0.5 font-mono focus:outline-none focus:ring-1 focus:ring-sky-400 focus:border-sky-400 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                     />
@@ -2204,7 +2237,7 @@ export function LogsExplorer({
                   keywords={keywords}
                   wrapLines={wrapLines}
                   dupeCounts={dupeCounts}
-                  scrollToIndex={scrollToIndex}
+                  scrollRequest={matchScrollRequest}
                   activeMatchIndex={activeMatchIndex}
                   matchCase={matchCase}
                   wholeWord={wholeWord}
