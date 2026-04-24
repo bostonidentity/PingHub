@@ -9,7 +9,7 @@ Status legend:
 ## Current Baseline
 
 - `[x]` Ran `npm test -- --coverage` on 2026-04-24.
-- `[x]` Current result after promotion-selection tests: 350 passing tests, 0 skipped tests, 54 test files.
+- `[x]` Current result after promotion-deps tests: 353 passing tests, 0 skipped tests, 55 test files.
 - `[x]` Current coverage: 23.05% statements, 15.69% branches, 22.99% functions, 24.71% lines.
 - `[x]` Noted coverage caveat: `vitest.config.ts` excludes `src/**/*.tsx`, so most UI workflow risk is not represented by coverage.
 
@@ -51,6 +51,7 @@ Status legend:
 - `[~]` Refactor `src/app/api/promote-items/route.ts`.
   - `[~]` Extract pure helper modules from the route.
   - `[x]` Extract `promotion-selection.ts` for scope directory resolution, staging paths, recursive copy, name/ID maps, and ID remapping.
+  - `[x]` Extract `promotion-deps.ts` for journey dependency expansion into scope selections.
   - Candidate modules: `promotion-selection.ts`, `promotion-deps.ts`, `promotion-plan.ts`, `promotion-validation.ts`.
   - Keep the route handler focused on request parsing and response formatting.
 - `[~]` Add unit tests for extracted promote-item helpers.
@@ -60,7 +61,7 @@ Status legend:
   - `[x]` Directory-based generic scopes are keyed by folder name during ID remap.
   - `[ ]` Journey selected by name resolves to expected file paths.
   - `[ ]` Script selected by UUID and `name:` tag resolves correctly.
-  - `[ ]` Dependencies are de-duped.
+  - `[x]` Dependencies are de-duped.
   - `[ ]` Missing subjourneys/scripts are reported predictably.
   - `[ ]` `includeDeps` changes the plan correctly.
   - `[ ]` Controlled and sandbox environment behavior is represented where applicable.
