@@ -359,6 +359,18 @@ interface JourneyMeta {
   rawNodes: Map<string, Record<string, unknown>>;
 }
 
+function walkNodeFiles(dir: string, out: string[]): void {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walkNodeFiles(full, out);
+    } else if (entry.name.endsWith(".json")) {
+      out.push(full);
+    }
+  }
+}
+
 function scanJourneys(configDir: string): Map<string, JourneyMeta> {
   const map = new Map<string, JourneyMeta>();
 
@@ -389,9 +401,10 @@ function scanJourneys(configDir: string): Map<string, JourneyMeta> {
         const rawNodes = new Map<string, Record<string, unknown>>();
         const nodesDir = path.join(journeysDir, jDir.name, "nodes");
         if (fs.existsSync(nodesDir)) {
-          for (const nf of fs.readdirSync(nodesDir)) {
-            const fp = path.join(nodesDir, nf);
-            if (fs.statSync(fp).isDirectory()) continue;
+          const nodeFiles: string[] = [];
+          walkNodeFiles(nodesDir, nodeFiles);
+          for (const fp of nodeFiles) {
+            const nf = path.basename(fp);
             try {
               const nd = JSON.parse(fs.readFileSync(fp, "utf-8")) as Record<string, unknown> & { tree?: string; script?: string; _type?: { _id?: string; name?: string }; _id?: string };
               // Accept both "NodeType - uuid.json" and "NodeType_-_uuid.json"

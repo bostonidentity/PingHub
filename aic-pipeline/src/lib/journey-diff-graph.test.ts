@@ -91,6 +91,23 @@ describe("parseMergedDiffGraph", () => {
     expect(real!.data.diffStatus).toBeDefined();
   });
 
+  it("uses explicit status map entries for PageNode children", () => {
+    const j = journey({
+      nodes: {
+        page: { nodeType: "PageNode", displayName: "Page" },
+      },
+    });
+    const { nodes } = parseMergedDiffGraph(
+      j,
+      j,
+      new Map([["child-1", "modified"]]),
+      undefined,
+      new Map([["page", { nodes: [{ _id: "child-1", displayName: "Child", nodeType: "PingOneProtectInitializeNode" }] }]]),
+    );
+    const child = nodes.find((n) => n.id === "page__child__child-1");
+    expect(child?.data.diffStatus).toBe("modified");
+  });
+
   it("returns invalid JSON as empty graph without throwing", () => {
     const { nodes } = parseMergedDiffGraph("not json", undefined, new Map());
     expect(nodes).toEqual([]);

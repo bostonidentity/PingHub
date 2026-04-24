@@ -39,7 +39,7 @@ import {
   diffNodeHeight,
   diffPageGroupHeight,
 } from "@/lib/journey-diff-graph";
-import type { FileDiff, JourneyNodeInfo } from "@/lib/diff-types";
+import type { FileDiff, JourneyNodeInfo, JourneyTreeNode } from "@/lib/diff-types";
 import { JourneyGraph      } from "../configs/JourneyGraph";
 import { JourneyOutlineView } from "../configs/JourneyOutlineView";
 import { JourneyTableView   } from "../configs/JourneyTableView";
@@ -1423,6 +1423,8 @@ export interface JourneyDiffGraphModalProps {
   sourceEnv: string;
   targetEnv: string;
   files: FileDiff[];
+  /** Journey tree nodes used to retain per-node statuses while descending into inner journeys. */
+  journeyTree?: JourneyTreeNode[];
   /** Pre-populate the nav stack with ancestor journeys so the user can navigate back up. */
   ancestorPath?: NavEntry[];
   /** When set, the modal will zoom to and activate this node once the graph loads. */
@@ -1440,6 +1442,7 @@ export function JourneyDiffGraphModal({
   sourceEnv,
   targetEnv,
   files,
+  journeyTree,
   ancestorPath,
   initialFocusNodeId,
   onClose,
@@ -1907,6 +1910,16 @@ export function JourneyDiffGraphModal({
     setTimeout(() => { syncSource.current = null; }, 150);
   }, [syncViewports]);
 
+  const findJourneyNode = useCallback((name: string): JourneyTreeNode | null => {
+    const stack = [...(journeyTree ?? [])];
+    while (stack.length > 0) {
+      const n = stack.shift()!;
+      if (n.name === name) return n;
+      stack.push(...n.subJourneys);
+    }
+    return null;
+  }, [journeyTree]);
+
   // Navigate into an inner journey
   const navigateInto = useCallback(async (nodeId: string, _nodeData: Record<string, unknown>) => {
     setNavigating(true);
@@ -1970,11 +1983,13 @@ export function JourneyDiffGraphModal({
       if (!subLocalContent  && sourceEnv) subLocalContent  = await fetchJourney(sourceEnv);
       if (!subRemoteContent && targetEnv) subRemoteContent = await fetchJourney(targetEnv);
 
+      const subTreeNode = findJourneyNode(treeName);
+
       setNavStack((prev) => [...prev, {
         name: treeName!,
         localContent:  subLocalContent,
         remoteContent: subRemoteContent,
-        nodeInfos:     [],
+        nodeInfos:     subTreeNode?.nodes ?? [],
         sourceNodeId:  nodeId,
       }]);
       setActiveNode(null);
@@ -1982,7 +1997,7 @@ export function JourneyDiffGraphModal({
     } finally {
       setNavigating(false);
     }
-  }, [files, sourceEnv, targetEnv, active.name]);
+  }, [files, sourceEnv, targetEnv, active.name, findJourneyNode]);
 
   // Handle node activate from canvas (single click → side panel only)
   const handleNodeActivate = useCallback((nodeId: string | null, nodeData: Record<string, unknown>) => {
