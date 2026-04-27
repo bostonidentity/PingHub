@@ -4,36 +4,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { JsonFileViewer } from "@/components/JsonFileViewer";
 import { cn } from "@/lib/utils";
+import type { RefsResponse } from "@/app/api/data/refs/[env]/[type]/[id]/route";
 import type { GlobalSearchResponse } from "@/app/api/data/search/[env]/route";
-
-// ── Ref extraction ───────────────────────────────────────────────────────────
-
-interface ManagedRef {
-  /** JSON path where the _ref was found, e.g. "roles[0]" */
-  path: string;
-  type: string;
-  id: string;
-}
-
-/** Recursively walk an object and collect every `_ref` that matches `managed/{type}/{id}`. */
-function extractOutgoingRefs(obj: unknown, prefix = ""): ManagedRef[] {
-  const refs: ManagedRef[] = [];
-  if (obj == null || typeof obj !== "object") return refs;
-  if (Array.isArray(obj)) {
-    obj.forEach((item, i) => refs.push(...extractOutgoingRefs(item, `${prefix}[${i}]`)));
-    return refs;
-  }
-  const rec = obj as Record<string, unknown>;
-  if (typeof rec._ref === "string") {
-    const m = rec._ref.match(/^managed\/([^/]+)\/(.+)$/);
-    if (m) refs.push({ path: prefix || "(root)", type: m[1], id: m[2] });
-  }
-  for (const [key, val] of Object.entries(rec)) {
-    if (key === "_ref") continue;
-    refs.push(...extractOutgoingRefs(val, prefix ? `${prefix}.${key}` : key));
-  }
-  return refs;
-}
 
 // ── Component ────────────────────────────────────────────────────────────────
 
@@ -63,37 +35,54 @@ export function RecordDetailPane({
 
   const content = useMemo(() => (record ? JSON.stringify(record, null, 2) : ""), [record]);
 
-  // ── Outgoing refs ────────────────────────────────────────────────────────
-  const outgoing = useMemo(() => (record ? extractOutgoingRefs(record) : []), [record]);
-
-  // ── Incoming refs (records that reference this one) ──────────────────────
+  // ── Dependencies – lazy loaded on demand ─────────────────────────────────
+  const [outgoing, setOutgoing] = useState<{ type: string; id: string }[]>([]);
   const [incoming, setIncoming] = useState<{ type: string; id: string }[]>([]);
-  const [incomingLoading, setIncomingLoading] = useState(false);
-  const [incomingTruncated, setIncomingTruncated] = useState(false);
+  const [depsLoading, setDepsLoading] = useState(false);
+  const [depsRequested, setDepsRequested] = useState(false);
 
+  // Reset deps when the selected record changes
   useEffect(() => {
-    if (!type || !id) { setIncoming([]); return; }
-    let cancelled = false;
-    setIncomingLoading(true);
-    const needle = `managed/${type}/${id}`;
-    const params = new URLSearchParams({ q: needle, limit: "100" });
-    fetch(`/api/data/search/${env}?${params.toString()}`)
-      .then((r) => r.ok ? r.json() : { hits: [], truncated: false })
-      .then((d: GlobalSearchResponse) => {
-        if (cancelled) return;
-        // Exclude the current record itself from the results.
-        const hits = d.hits.filter((h) => !(h.type === type && h.id === id));
-        setIncoming(hits.map((h) => ({ type: h.type, id: h.id })));
-        setIncomingTruncated(d.truncated);
-      })
-      .catch(() => { if (!cancelled) setIncoming([]); })
-      .finally(() => { if (!cancelled) setIncomingLoading(false); });
-    return () => { cancelled = true; };
+    setOutgoing([]);
+    setIncoming([]);
+    setDepsRequested(false);
   }, [env, type, id]);
+
+  // Fetch deps only when explicitly requested
+  useEffect(() => {
+    if (!depsRequested || !type || !id) return;
+    let cancelled = false;
+    setDepsLoading(true);
+
+    fetch(`/api/data/refs/${env}/${type}/${id}`)
+      .then((r) => r.ok ? r.json() : null)
+      .then(async (data: RefsResponse | null) => {
+        if (cancelled) return;
+
+        if (data && !data.indexMissing) {
+          setOutgoing(data.outgoing);
+          setIncoming(data.incoming);
+        } else {
+          setOutgoing([]);
+          const needle = `managed/${type}/${id}`;
+          const params = new URLSearchParams({ q: needle, limit: "100" });
+          const res = await fetch(`/api/data/search/${env}?${params.toString()}`);
+          if (cancelled) return;
+          if (res.ok) {
+            const d = await res.json() as GlobalSearchResponse;
+            const hits = d.hits.filter((h) => !(h.type === type && h.id === id));
+            setIncoming(hits.map((h) => ({ type: h.type, id: h.id })));
+          }
+        }
+      })
+      .catch(() => { if (!cancelled) { setOutgoing([]); setIncoming([]); } })
+      .finally(() => { if (!cancelled) setDepsLoading(false); });
+    return () => { cancelled = true; };
+  }, [depsRequested, env, type, id]);
 
   // Group outgoing by type for display
   const outgoingByType = useMemo(() => {
-    const m = new Map<string, ManagedRef[]>();
+    const m = new Map<string, { type: string; id: string }[]>();
     for (const r of outgoing) {
       if (!m.has(r.type)) m.set(r.type, []);
       m.get(r.type)!.push(r);
@@ -111,7 +100,7 @@ export function RecordDetailPane({
     return m;
   }, [incoming]);
 
-  const hasDeps = outgoing.length > 0 || incoming.length > 0 || incomingLoading;
+  const hasDeps = outgoing.length > 0 || incoming.length > 0;
 
   // ── Deps panel open/closed ───────────────────────────────────────────────
   const [depsOpen, setDepsOpen] = useState(true);
@@ -124,8 +113,19 @@ export function RecordDetailPane({
           : <span className="text-slate-400">Click a record to view details</span>}
       </div>
 
-      {/* Dependencies panel */}
-      {type && id && record && hasDeps && (
+      {/* Dependencies panel – lazy loaded */}
+      {type && id && record && !depsRequested && (
+        <div className="border-b border-slate-100 shrink-0 px-3 py-1.5">
+          <button
+            type="button"
+            onClick={() => setDepsRequested(true)}
+            className="text-[11px] font-semibold text-sky-600 hover:text-sky-800 hover:underline transition-colors"
+          >
+            Show Dependencies
+          </button>
+        </div>
+      )}
+      {type && id && record && depsRequested && (depsLoading || hasDeps) && (
         <div className="border-b border-slate-100 shrink-0">
           <button
             type="button"
@@ -137,7 +137,7 @@ export function RecordDetailPane({
             </svg>
             Dependencies
             <span className="font-normal text-slate-400">
-              ({outgoing.length} outgoing{incomingLoading ? "" : `, ${incoming.length} incoming`})
+              {depsLoading ? "(loading…)" : `(${outgoing.length} outgoing, ${incoming.length} incoming)`}
             </span>
           </button>
 
@@ -158,7 +158,7 @@ export function RecordDetailPane({
                             key={`${r.type}:${r.id}`}
                             type="button"
                             onClick={() => onNavigate?.(r.type, r.id)}
-                            title={`${r.path} → ${r.type}/${r.id}`}
+                            title={`${r.type}/${r.id}`}
                             className="font-mono text-sky-600 hover:underline hover:text-sky-800 truncate max-w-[240px]"
                           >
                             {r.id}
@@ -171,13 +171,10 @@ export function RecordDetailPane({
               )}
 
               {/* Incoming: records that reference this one */}
-              {(incoming.length > 0 || incomingLoading) && (
+              {incoming.length > 0 && (
                 <div>
                   <div className="text-slate-500 font-semibold mb-0.5">
-                    Referenced by{" "}
-                    {incomingLoading
-                      ? <span className="font-normal text-slate-400">loading…</span>
-                      : <span className="font-normal text-slate-400">({incoming.length}{incomingTruncated ? "+" : ""})</span>}
+                    Referenced by <span className="font-normal text-slate-400">({incoming.length})</span>
                   </div>
                   {[...incomingByType.entries()].map(([refType, refs]) => (
                     <div key={refType} className="ml-2 mb-1">
@@ -201,6 +198,11 @@ export function RecordDetailPane({
               )}
             </div>
           )}
+        </div>
+      )}
+      {type && id && record && depsRequested && !depsLoading && !hasDeps && (
+        <div className="border-b border-slate-100 shrink-0 px-3 py-1.5 text-[11px] text-slate-400">
+          No dependencies found.
         </div>
       )}
 
