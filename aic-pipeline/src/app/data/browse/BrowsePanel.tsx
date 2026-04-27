@@ -419,7 +419,7 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
             </div>
 
             <div className="flex-1 min-w-0">
-              <RecordDetailPane env={env} type={selectedType} id={selectedId} />
+              <RecordDetailPane env={env} type={selectedType} id={selectedId} onNavigate={jumpTo} />
             </div>
           </div>
         </>
