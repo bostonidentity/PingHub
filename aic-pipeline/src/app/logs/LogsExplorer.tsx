@@ -524,7 +524,7 @@ function terminalMsgClass(level: string): string {
   }
 }
 
-function TailTerminal({
+const TailTerminal = memo(function TailTerminal({
   entries, defaultSource, searchTerm, keywords, wrapLines = false,
   scrollRequest = null, activeMatchIndex = null, matchCase = false, wholeWord = false,
   dupeCounts, autoScroll = true, onEntryDoubleClick, contextAnchorIdx = null,
@@ -545,9 +545,12 @@ function TailTerminal({
 }) {
   const outerRef = useRef<HTMLDivElement>(null);
   const [viewH, setViewH] = useState(400);
-  const [scrollTop, setScrollTop] = useState(0);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
+  // Nowrap virtual list: track only the computed startIdx to avoid re-renders
+  // on every scroll pixel.  Raw scrollTop is kept in a ref.
+  const scrollTopRef = useRef(0);
+  const [startIdx, setStartIdx] = useState(0);
   // Timestamp of the most recent programmatic scroll (auto-tail, match-nav).
   // handleScroll skips its at-bottom flip for ~400ms after that so the
   // programmatic scroll's cascade of scroll events doesn't flip auto-tail
@@ -626,7 +629,12 @@ function TailTerminal({
 
   function handleScroll(e: React.UIEvent<HTMLDivElement>) {
     const el = e.currentTarget;
-    setScrollTop(el.scrollTop);
+    scrollTopRef.current = el.scrollTop;
+    // Only re-render when the visible row window actually shifts
+    if (!wrapLines) {
+      const newStart = Math.max(0, Math.floor(el.scrollTop / TERMINAL_ROW_H) - TERMINAL_OVERSCAN);
+      setStartIdx((prev) => (prev === newStart ? prev : newStart));
+    }
     // Within ~400ms of a programmatic scroll, skip the at-bottom flip so
     // the cascade of scroll events from that programmatic scroll can't
     // re-enable auto-tail and drag the user off a match they're inspecting.
@@ -638,9 +646,8 @@ function TailTerminal({
     }
   }
 
-  // Virtual list window
+  // Virtual list window — startIdx is now state-driven (only updates when visible range shifts)
   const totalH = entries.length * TERMINAL_ROW_H;
-  const startIdx = Math.max(0, Math.floor(scrollTop / TERMINAL_ROW_H) - TERMINAL_OVERSCAN);
   const endIdx = Math.min(entries.length - 1, startIdx + Math.ceil(viewH / TERMINAL_ROW_H) + TERMINAL_OVERSCAN * 2);
 
   // Flash key: increments each time we navigate to a match, re-triggers the CSS animation
@@ -813,7 +820,7 @@ function TailTerminal({
       )}
     </div>
   );
-}
+});
 
 // ── Entry row ────────────────────────────────────────────────────────────────
 
@@ -1662,9 +1669,11 @@ export function LogsExplorer({
   const activeMatchIndex = matchCursor >= 0 && matchCursor < matchRows.length
     ? matchRows[matchCursor].index
     : null;
-  const matchScrollRequest = activeMatchIndex !== null && matchScrollNonce > 0
-    ? { index: activeMatchIndex, nonce: matchScrollNonce }
-    : null;
+  const matchScrollRequest = useMemo(() =>
+    activeMatchIndex !== null && matchScrollNonce > 0
+      ? { index: activeMatchIndex, nonce: matchScrollNonce }
+      : null,
+    [activeMatchIndex, matchScrollNonce]);
 
   function navigateToMatch(nextCursor: number) {
     const row = matchRows[nextCursor];
@@ -1713,7 +1722,7 @@ export function LogsExplorer({
   }
 
   // ── Context window — open ±5 seconds around clicked entry in a new tab ──
-  function handleContextEntry(displayIdx: number) {
+  const handleContextEntry = useCallback((displayIdx: number) => {
     if (!onOpenEntryContextTab) return;
     const clickedEntry = filteredWithIdx[displayIdx]?.e;
     if (!clickedEntry) return;
@@ -1721,7 +1730,7 @@ export function LogsExplorer({
     const beginTimestamp = new Date(ts - 5000).toISOString();
     const endTimestamp = new Date(ts + 5000).toISOString();
     onOpenEntryContextTab(clickedEntry.timestamp, beginTimestamp, endTimestamp);
-  }
+  }, [onOpenEntryContextTab, filteredWithIdx]);
 
   // ── Pagination (page 1 = oldest, last page = newest) ──
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
