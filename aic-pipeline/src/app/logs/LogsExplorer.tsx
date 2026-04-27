@@ -1665,16 +1665,23 @@ export function LogsExplorer({
     navigateToMatch(matchCursor <= 0 ? matchRows.length - 1 : matchCursor - 1);
   }
 
-  // ── Context window activation — open ±N entries in a new tab ──
+  // ── Context window activation — open ±N raw entries in a new tab ──
+  // Slices from the raw `entries` array (ignoring filters/dedup) so the
+  // context tab shows the full unfiltered picture around the clicked entry.
   function handleContextEntry(displayIdx: number) {
     if (!onOpenEntryContextTab) return;
-    // Map display index back to the full filteredWithIdx space
-    const originalIdx = contextActive ? cxStart + displayIdx : displayIdx;
-    // Slice ±contextRadius from the full filter result
-    const sliceStart = Math.max(0, originalIdx - contextRadius);
-    const sliceEnd = Math.min(filteredWithIdx.length, originalIdx + contextRadius + 1);
-    const slicedEntries = filteredWithIdx.slice(sliceStart, sliceEnd).map(({ e }) => e);
-    const anchorInSlice = originalIdx - sliceStart;
+    // Map display index → filteredWithIdx → the actual entry object
+    const fIdx = contextActive ? cxStart + displayIdx : displayIdx;
+    const clickedEntry = filteredWithIdx[fIdx]?.e;
+    if (!clickedEntry) return;
+    // Find this entry's position in the raw entries array
+    const rawIdx = entries.indexOf(clickedEntry);
+    if (rawIdx < 0) return;
+    // Slice ±contextRadius from the raw entries
+    const sliceStart = Math.max(0, rawIdx - contextRadius);
+    const sliceEnd = Math.min(entries.length, rawIdx + contextRadius + 1);
+    const slicedEntries = entries.slice(sliceStart, sliceEnd);
+    const anchorInSlice = rawIdx - sliceStart;
     onOpenEntryContextTab(slicedEntries, anchorInSlice, contextRadius);
   }
 
