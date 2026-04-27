@@ -1189,7 +1189,7 @@ export function LogsExplorer({
   onFullscreenChange?: (v: boolean) => void;
   txSearchId?: { id: string; seq: number };
   onOpenContextTab?: (timestamp: string, source: string) => void;
-  onOpenEntryContextTab?: (anchorTimestamp: string, beginTimestamp: string, endTimestamp: string, radius: number) => void;
+  onOpenEntryContextTab?: (anchorTimestamp: string, beginTimestamp: string, endTimestamp: string) => void;
   anchorTimestamp?: string;
 }) {
   const { env, selectedSources, sourcesError, levelFilter, mode, tailSecs, tailing, loading, preset, customBegin, customEnd, searchSeq, searching } = config;
@@ -1304,11 +1304,6 @@ export function LogsExplorer({
   function saveHeight(h: number) { try { localStorage.setItem("log-table-height", String(h)); } catch { /* ignore */ } }
   const grow = () => setTableHeight((h) => { const next = Math.min(window.innerHeight - 100, h + 50); saveHeight(next); return next; });
   const shrink = () => setTableHeight((h) => { const next = Math.max(200, h - 50); saveHeight(next); return next; });
-
-  // ── Context window (±N entries around a user-selected anchor) ──
-  const [contextAnchor, setContextAnchor] = useState<number | null>(null);
-  const [contextRadius, setContextRadius] = useState(1000);
-  const [contextDismissed, setContextDismissed] = useState(false);
 
   // ── Transaction drill-down (from clicking inline txId in table) ──
   const [drilldown, setDrilldown] = useState<{ txId: string } | null>(null);
@@ -1487,7 +1482,6 @@ export function LogsExplorer({
       setEntries([]);
       setFetched(false);
       setError("");
-      setContextAnchor(null);
       workerRef.current?.postMessage({ type: "tail-start", env, sources: tailSources, tailSecs });
     } else if (!tailing && prevTailing.current) {
       // Stop tail
@@ -1550,8 +1544,6 @@ export function LogsExplorer({
     setFetched(false);
     setExpandedIdx(null);
     setFetchProgress(null);
-    setContextAnchor(null);
-    setContextDismissed(false);
     onConfigChange({ searching: true });
     workerRef.current?.postMessage({ type: "fetch", env, sources: selectedSources, beginTime, endTime, queryFilter });
     return doCleanup;
@@ -1613,52 +1605,31 @@ export function LogsExplorer({
     return { filteredWithIdx: result, dupeCounts: counts };
   }, [rawFilteredWithIdx, dedupe]);
 
-  // ── Context window — slice filteredWithIdx to ±N around anchor ──
-  // Synchronous anchor computation for context tabs — runs during render so the
-  // slice is always consistent with entries (avoids startTransition timing bugs).
-  const computedAnchor = useMemo(() => {
-    if (!anchorTimestamp || contextDismissed || entries.length === 0) return null;
+  // ── Anchor highlight — find the entry closest to anchorTimestamp for violet highlight ──
+  const contextAnchorDisplay = useMemo(() => {
+    if (!anchorTimestamp || filteredWithIdx.length === 0) return null;
     const targetTs = new Date(anchorTimestamp).getTime();
     let bestIdx = 0;
     let bestDiff = Infinity;
-    for (let i = 0; i < entries.length; i++) {
-      const diff = Math.abs(new Date(entries[i].timestamp).getTime() - targetTs);
+    for (let i = 0; i < filteredWithIdx.length; i++) {
+      const diff = Math.abs(new Date(filteredWithIdx[i].e.timestamp).getTime() - targetTs);
       if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
     }
     return bestIdx;
-  }, [anchorTimestamp, contextDismissed, entries]);
-  const effectiveAnchor = computedAnchor ?? contextAnchor;
-  const contextActive = effectiveAnchor !== null;
-  const cxStart = contextActive ? Math.max(0, effectiveAnchor - contextRadius) : 0;
-  const cxEnd = contextActive ? Math.min(filteredWithIdx.length, effectiveAnchor + contextRadius + 1) : filteredWithIdx.length;
-  const displayFilteredWithIdx = useMemo(() =>
-    contextActive ? filteredWithIdx.slice(cxStart, cxEnd) : filteredWithIdx,
-    [filteredWithIdx, contextActive, cxStart, cxEnd]);
-  const displayDupeCounts = useMemo(() => {
-    if (!contextActive) return dupeCounts;
-    const remapped = new Map<number, number>();
-    for (const [key, count] of dupeCounts) {
-      const adj = key - cxStart;
-      if (adj >= 0 && adj < displayFilteredWithIdx.length) {
-        remapped.set(adj, count);
-      }
-    }
-    return remapped;
-  }, [contextActive, cxStart, dupeCounts, displayFilteredWithIdx.length]);
-  const contextAnchorDisplay = contextActive ? effectiveAnchor - cxStart : null;
+  }, [anchorTimestamp, filteredWithIdx]);
 
-  const filtered = useMemo(() => displayFilteredWithIdx.map(({ e }) => e), [displayFilteredWithIdx]);
+  const filtered = useMemo(() => filteredWithIdx.map(({ e }) => e), [filteredWithIdx]);
 
   // ── Match navigation (terminal view, keyword highlighting) ──
   // Compute indices into `filtered` where any keyword matches the formatted line.
   const matchRows = useMemo(() => findKeywordMatchRows(
-    displayFilteredWithIdx.map(({ e, i }) => ({
+    filteredWithIdx.map(({ e, i }) => ({
       key: logEntryMatchKey(e, i),
       line: entryStrings[i].line,
     })),
     keywords,
     { matchCase, wholeWord },
-  ), [displayFilteredWithIdx, entryStrings, keywords, matchCase, wholeWord]);
+  ), [filteredWithIdx, entryStrings, keywords, matchCase, wholeWord]);
   const matchIndices = useMemo(() => matchRows.map((m) => m.index), [matchRows]);
 
   // Jump to first match when keywords/options change; reset when no matches
@@ -1741,27 +1712,15 @@ export function LogsExplorer({
     navigateToMatch(matchCursor <= 0 ? matchRows.length - 1 : matchCursor - 1);
   }
 
-  // ── Context window activation — open ±N raw entries in a new tab ──
-  // Slices from the raw `entries` array (ignoring filters/dedup) so the
-  // context tab shows the full unfiltered picture around the clicked entry.
+  // ── Context window — open ±5 seconds around clicked entry in a new tab ──
   function handleContextEntry(displayIdx: number) {
     if (!onOpenEntryContextTab) return;
-    // Map display index → filteredWithIdx → the actual entry object
-    const fIdx = contextActive ? cxStart + displayIdx : displayIdx;
-    const clickedEntry = filteredWithIdx[fIdx]?.e;
+    const clickedEntry = filteredWithIdx[displayIdx]?.e;
     if (!clickedEntry) return;
-    // Find this entry's position in the raw entries array
-    const rawIdx = entries.indexOf(clickedEntry);
-    if (rawIdx < 0) return;
-    // Compute a time window from nearby entries' timestamps.
-    // Even though entries may be server-filtered (keyword search), their
-    // timestamps define a reasonable window. The new context tab will re-fetch
-    // ALL entries (no _queryFilter) within this window from the API.
-    const sliceStart = Math.max(0, rawIdx - contextRadius);
-    const sliceEnd = Math.min(entries.length - 1, rawIdx + contextRadius);
-    const beginTimestamp = entries[sliceStart].timestamp;
-    const endTimestamp = entries[sliceEnd].timestamp;
-    onOpenEntryContextTab(clickedEntry.timestamp, beginTimestamp, endTimestamp, contextRadius);
+    const ts = new Date(clickedEntry.timestamp).getTime();
+    const beginTimestamp = new Date(ts - 5000).toISOString();
+    const endTimestamp = new Date(ts + 5000).toISOString();
+    onOpenEntryContextTab(clickedEntry.timestamp, beginTimestamp, endTimestamp);
   }
 
   // ── Pagination (page 1 = oldest, last page = newest) ──
@@ -2361,29 +2320,6 @@ export function LogsExplorer({
           </div>
         </div>
 
-        {/* Context anchor indicator */}
-        {contextActive && (
-          <div className="flex items-center justify-between px-4 py-1.5 border-t border-violet-200 bg-violet-50/80 shrink-0">
-            <div className="flex items-center gap-2">
-              <svg className="w-3.5 h-3.5 text-violet-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 3.75H6A2.25 2.25 0 003.75 6v1.5M16.5 3.75H18A2.25 2.25 0 0120.25 6v1.5M16.5 20.25H18A2.25 2.25 0 0020.25 18v-1.5M7.5 20.25H6A2.25 2.25 0 013.75 18v-1.5" />
-              </svg>
-              <span className="text-xs text-violet-700 font-medium">
-                Anchor: entry #{effectiveAnchor! + 1} of {filtered.length.toLocaleString()}
-              </span>
-              <span className="text-xs text-violet-500">
-                Double-click an entry to open a new context tab · Click Search to re-fetch from API
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={() => { setContextAnchor(null); setContextDismissed(true); }}
-              className="px-2 py-0.5 text-xs font-medium text-violet-700 bg-violet-100 rounded hover:bg-violet-200 transition-colors"
-              title="Clear anchor highlight"
-            >✕ Clear</button>
-          </div>
-        )}
-
         {/* Scrollable log window — CSS resize handle at bottom-right corner */}
         <div
           ref={scrollContainerRef}
@@ -2428,7 +2364,7 @@ export function LogsExplorer({
                 searchTerm={search}
                 keywords={keywords}
                 wrapLines={wrapLines}
-                dupeCounts={displayDupeCounts}
+                dupeCounts={dupeCounts}
                 scrollRequest={matchScrollRequest}
                 activeMatchIndex={activeMatchIndex}
                 matchCase={matchCase}
@@ -2503,7 +2439,7 @@ export function LogsExplorer({
                       rowIdx={globalIdx}
                       matchCase={matchCase}
                       wholeWord={wholeWord}
-                      dupeCount={displayDupeCounts.get(globalIdx) ?? 1}
+                      dupeCount={dupeCounts.get(globalIdx) ?? 1}
                     />
                   );
                 })}
@@ -2867,12 +2803,12 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
     setActiveId(id);
   }
 
-  function openEntryContextTab(anchorTs: string, beginTs: string, endTs: string, radius: number) {
+  function openEntryContextTab(anchorTs: string, beginTs: string, endTs: string) {
     const id = _nextTabId++;
     const tabEnv = tabs.find((t) => t.id === activeId)?.config.env ?? "";
     const tabSources = tabs.find((t) => t.id === activeId)?.config.selectedSources ?? ["am-everything", "idm-everything"];
     const shortTime = new Date(anchorTs).toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    const label = `±${radius} @${shortTime} (${tabEnv})`;
+    const label = `±5s @${shortTime} (${tabEnv})`;
     const begin = toDatetimeLocal(beginTs, tzMode);
     const end = toDatetimeLocal(endTs, tzMode);
     const baseConfig = makeDefaultConfig(environments);
