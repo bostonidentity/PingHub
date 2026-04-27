@@ -6,7 +6,8 @@ import { Environment } from "@/lib/fr-config-types";
 import { EnvironmentBadge } from "@/components/EnvironmentBadge";
 import { useDialog } from "@/components/ConfirmDialog";
 import { cn } from "@/lib/utils";
-import { findKeywordMatchRows, logEntryMatchKey } from "@/lib/log-match-navigation";
+import { logEntryMatchKey } from "@/lib/log-match-navigation";
+import { parseQuery } from "@/lib/log-query";
 
 // ── Timezone ──────────────────────────────────────────────────────────────────
 
@@ -1256,10 +1257,6 @@ export function LogsExplorer({
   const keywordsRawRef = useRef("");
   const [keywordsActive, setKeywordsActive] = useState(""); // debounced — drives actual highlighting
   const keywordsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const keywords = keywordsActive
-    .split(",")
-    .map((k) => k.trim())
-    .filter(Boolean);
   const [matchCursor, setMatchCursor] = useState(-1); // index into matchRows; -1 = none selected
   const [activeMatchKey, setActiveMatchKey] = useState<string | null>(null);
   const [matchScrollNonce, setMatchScrollNonce] = useState(0);
@@ -1596,7 +1593,10 @@ export function LogsExplorer({
     // This mirrors Tenant Utilities' approach: only matching entries are returned by AIC,
     // dramatically reducing page count and eliminating rate-limit risk on long ranges.
     function escapeFilterValue(v: string) { return v.replace(/\\/g, "\\\\").replace(/"/g, '\\"'); }
-    const allTerms = keywordsRawRef.current.split(",").map((k) => k.trim()).filter(Boolean);
+    // Parse the highlight box and pull out positive leaf terms. Server-side filtering is
+    // a conservative OR over leaves; the client predicate still enforces &&, () precisely.
+    const parsed = parseQuery(keywordsRawRef.current, { matchCase, wholeWord });
+    const allTerms = parsed.error ? [] : parsed.highlightTerms;
     const queryFilter = allTerms.length > 0
       ? allTerms.map((t) => {
         const v = escapeFilterValue(t);
@@ -1636,17 +1636,31 @@ export function LogsExplorer({
     })),
     [levelFiltered, defaultSourceForNav]);
 
+  // Parse the Filter box as a boolean query supporting && / || / ( ) and quoted phrases.
+  // Comma is also accepted as `||` for backwards compatibility with older usage.
+  const filterQuery = useMemo(
+    () => parseQuery(search ?? "", { matchCase, wholeWord }),
+    [search, matchCase, wholeWord],
+  );
+
+  // Same for the Highlight box. The positive leaf terms drive per-token <mark>
+  // rendering; the predicate drives match navigation.
+  const highlightQuery = useMemo(
+    () => parseQuery(keywordsActive, { matchCase, wholeWord }),
+    [keywordsActive, matchCase, wholeWord],
+  );
+  const keywords = highlightQuery.empty || highlightQuery.error
+    ? []
+    : highlightQuery.highlightTerms;
+
   const rawFilteredWithIdx = useMemo(() => {
-    if (!search) return levelFiltered.map((e, i) => ({ e, i }));
-    const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const pattern = wholeWord ? `\\b${escaped}\\b` : escaped;
-    const flags = matchCase ? "g" : "gi";
-    const re = new RegExp(pattern, flags);
+    if (filterQuery.empty) return levelFiltered.map((e, i) => ({ e, i }));
+    if (filterQuery.error) return [] as { e: LogEntry; i: number }[];
     return levelFiltered.reduce<{ e: LogEntry; i: number }[]>((acc, e, i) => {
-      if (re.test(entryStrings[i].json)) acc.push({ e, i });
+      if (filterQuery.test(entryStrings[i].json)) acc.push({ e, i });
       return acc;
     }, []);
-  }, [levelFiltered, entryStrings, search, matchCase, wholeWord]);
+  }, [levelFiltered, entryStrings, filterQuery]);
 
   // Dedupe pass — collapses exact-match duplicates to the first occurrence and tracks counts.
   // Key: source + level + message text. When off, dupeCounts is empty and everything passes through.
@@ -1686,15 +1700,18 @@ export function LogsExplorer({
   const filtered = useMemo(() => filteredWithIdx.map(({ e }) => e), [filteredWithIdx]);
 
   // ── Match navigation (terminal view, keyword highlighting) ──
-  // Compute indices into `filtered` where any keyword matches the formatted line.
-  const matchRows = useMemo(() => findKeywordMatchRows(
-    filteredWithIdx.map(({ e, i }) => ({
-      key: logEntryMatchKey(e, i),
-      line: entryStrings[i].line,
-    })),
-    keywords,
-    { matchCase, wholeWord },
-  ), [filteredWithIdx, entryStrings, keywords, matchCase, wholeWord]);
+  // Compute indices into `filtered` where the highlight query matches the formatted line.
+  const matchRows = useMemo(() => {
+    if (highlightQuery.empty || highlightQuery.error) return [];
+    const out: { key: string; index: number }[] = [];
+    for (let idx = 0; idx < filteredWithIdx.length; idx++) {
+      const { e, i } = filteredWithIdx[idx];
+      if (highlightQuery.test(entryStrings[i].line)) {
+        out.push({ key: logEntryMatchKey(e, i), index: idx });
+      }
+    }
+    return out;
+  }, [filteredWithIdx, entryStrings, highlightQuery]);
   const matchIndices = useMemo(() => matchRows.map((m) => m.index), [matchRows]);
 
   // Jump to first match when keywords/options change; reset when no matches
@@ -2075,10 +2092,19 @@ export function LogsExplorer({
                   if (e.shiftKey) goPrevMatch(); else goNextMatch();
                 }
               }}
-              placeholder="Keywords to highlight, comma-separated…"
-              className="flex-1 text-xs rounded border border-slate-200 px-2.5 py-1 font-mono focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-amber-400"
+              placeholder="Highlight (supports && || ( ) and &quot;phrase&quot;)…"
+              className={cn(
+                "flex-1 text-xs rounded border px-2.5 py-1 font-mono focus:outline-none focus:ring-2",
+                highlightQuery.error
+                  ? "border-rose-300 focus:ring-rose-400 focus:border-rose-400"
+                  : "border-slate-200 focus:ring-amber-400 focus:border-amber-400",
+              )}
             />
-            {keywordsRaw && (
+            {highlightQuery.error ? (
+              <span className="text-xs text-rose-600 whitespace-nowrap" title={highlightQuery.error}>
+                {highlightQuery.error}
+              </span>
+            ) : keywordsRaw && (
               <span className="text-xs text-amber-600 whitespace-nowrap">
                 {keywords.length} keyword{keywords.length !== 1 ? "s" : ""}
               </span>
@@ -2231,14 +2257,21 @@ export function LogsExplorer({
               value={rawSearch}
               onChange={(e) => handleFilterChange(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") applySearch(rawSearch); }}
-              placeholder="Filter entries… (3+ chars or Enter)"
+              placeholder="Filter entries… (supports && || ( ) and &quot;phrase&quot;; 3+ chars or Enter)"
               className={cn(
-                "flex-1 text-xs rounded border px-3 py-1.5 font-mono focus:outline-none focus:ring-2 focus:ring-sky-500",
-                rawSearch && !search
-                  ? "border-amber-300 focus:ring-amber-400"   // typed but not yet active
-                  : "border-slate-300"
+                "flex-1 text-xs rounded border px-3 py-1.5 font-mono focus:outline-none focus:ring-2",
+                filterQuery.error
+                  ? "border-rose-300 focus:ring-rose-400"
+                  : rawSearch && !search
+                    ? "border-amber-300 focus:ring-amber-400"   // typed but not yet active
+                    : "border-slate-300 focus:ring-sky-500"
               )}
             />
+            {filterQuery.error && (
+              <span className="text-xs text-rose-600 whitespace-nowrap" title={filterQuery.error}>
+                {filterQuery.error}
+              </span>
+            )}
             {rawSearch && (
               <button type="button" onClick={clearSearch} className="text-xs text-slate-400 hover:text-slate-600">
                 Clear
