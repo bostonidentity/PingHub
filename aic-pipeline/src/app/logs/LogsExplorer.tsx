@@ -412,14 +412,15 @@ function deepUnescapeJson(val: unknown): unknown {
   return val;
 }
 
-/** Find the index of the first top-level { or [ that could start embedded JSON. */
+/** Find the index of the first opening delimiter that matches the string's
+ *  closing delimiter. If the string ends with }, look for the first {.
+ *  If it ends with ], look for the first [. This avoids false positives
+ *  like "[uuid]" appearing before the actual JSON object. */
 function findJsonStart(s: string): number {
-  const braceIdx = s.indexOf("{");
-  const bracketIdx = s.indexOf("[");
-  if (braceIdx < 0 && bracketIdx < 0) return -1;
-  if (braceIdx < 0) return bracketIdx;
-  if (bracketIdx < 0) return braceIdx;
-  return Math.min(braceIdx, bracketIdx);
+  const t = s.trimEnd();
+  if (t.endsWith("}")) { const i = s.indexOf("{"); return i > 0 ? i : -1; }
+  if (t.endsWith("]")) { const i = s.indexOf("["); return i > 0 ? i : -1; }
+  return -1;
 }
 
 function JsonLogView({
