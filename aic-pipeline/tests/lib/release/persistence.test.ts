@@ -6,9 +6,11 @@ import { readReleaseInfo, writeReleaseInfo } from "@/lib/release/persistence";
 import type { ReleaseCacheEntry } from "@/lib/release/types";
 
 let tmp: string;
+let envsDir: string;
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rel-persist-"));
-  fs.mkdirSync(path.join(tmp, "environments/dev"), { recursive: true });
+  envsDir = path.join(tmp, "environments");
+  fs.mkdirSync(path.join(envsDir, "dev"), { recursive: true });
 });
 afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
@@ -19,29 +21,29 @@ const success = (): ReleaseCacheEntry => ({
 
 describe("readReleaseInfo", () => {
   it("returns null when the file does not exist", () => {
-    expect(readReleaseInfo("dev", { rootDir: tmp })).toBeNull();
+    expect(readReleaseInfo("dev", { rootDir: envsDir })).toBeNull();
   });
 
   it("returns null on malformed JSON", () => {
-    fs.writeFileSync(path.join(tmp, "environments/dev/release.json"), "{bad");
-    expect(readReleaseInfo("dev", { rootDir: tmp })).toBeNull();
+    fs.writeFileSync(path.join(envsDir, "dev/release.json"), "{bad");
+    expect(readReleaseInfo("dev", { rootDir: envsDir })).toBeNull();
   });
 });
 
 describe("writeReleaseInfo + read round-trip", () => {
   it("writes and reads back the same entry", () => {
-    writeReleaseInfo("dev", success(), { rootDir: tmp });
-    expect(readReleaseInfo("dev", { rootDir: tmp })).toEqual(success());
+    writeReleaseInfo("dev", success(), { rootDir: envsDir });
+    expect(readReleaseInfo("dev", { rootDir: envsDir })).toEqual(success());
   });
 
   it("persists an error entry with no info", () => {
     const errEntry: ReleaseCacheEntry = { fetchedAt: "2026-04-23T10:00:00.000Z", error: "HTTP 503" };
-    writeReleaseInfo("dev", errEntry, { rootDir: tmp });
-    expect(readReleaseInfo("dev", { rootDir: tmp })).toEqual(errEntry);
+    writeReleaseInfo("dev", errEntry, { rootDir: envsDir });
+    expect(readReleaseInfo("dev", { rootDir: envsDir })).toEqual(errEntry);
   });
 
   it("creates the env directory if missing", () => {
-    writeReleaseInfo("brand-new", success(), { rootDir: tmp });
-    expect(fs.existsSync(path.join(tmp, "environments/brand-new/release.json"))).toBe(true);
+    writeReleaseInfo("brand-new", success(), { rootDir: envsDir });
+    expect(fs.existsSync(path.join(envsDir, "brand-new/release.json"))).toBe(true);
   });
 });

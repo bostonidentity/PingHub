@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 import path from "path";
 import fs from "fs";
 import { cwd } from "process";
+import { ENVIRONMENTS_DIR } from "@/lib/paths";
 import { parseEnvFile } from "@/lib/env-parser";
 import { getAccessToken } from "@/lib/iga-api";
 
@@ -29,7 +30,7 @@ const ID_PAGE_SIZE = 1000;
 const PAGINATION_COUNT_CAP = 200_000;
 
 function envVarsFor(env: string): Record<string, string> | null {
-  const envFile = path.join(cwd(), "environments", env, ".env");
+  const envFile = path.join(ENVIRONMENTS_DIR, env, ".env");
   if (!fs.existsSync(envFile)) return null;
   return parseEnvFile(fs.readFileSync(envFile, "utf-8")) as Record<string, string>;
 }

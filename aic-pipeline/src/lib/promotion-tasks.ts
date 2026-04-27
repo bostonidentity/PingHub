@@ -3,7 +3,8 @@ import path from "path";
 import crypto from "crypto";
 import type { ScopeSelection } from "./fr-config-types";
 
-const ENVIRONMENTS_DIR = path.join(process.cwd(), "environments");
+import { ENVIRONMENTS_DIR } from "./paths";
+
 const TASKS_PATH = path.join(ENVIRONMENTS_DIR, "promotion-tasks.json");
 
 export type TaskStatus = "new" | "in-progress" | "completed" | "failed";

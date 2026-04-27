@@ -29,7 +29,7 @@ describe("loadSettings", () => {
     const { loadSettings } = await loadModule();
     const s = loadSettings();
     expect(s.branch).toBe("main");
-    expect(s.targetDir).toBe("environments");
+    expect(s.targetDir).toBe("../environments");
     expect(s.autoPush).toBe(false);
     expect(s.remoteUrl).toBe("");
     expect(s.commitTemplate).toContain("{op}");
@@ -42,7 +42,7 @@ describe("loadSettings", () => {
     expect(s.remoteUrl).toBe("git@example.com:org/repo.git");
     expect(s.branch).toBe("master");
     // Untouched default still present
-    expect(s.targetDir).toBe("environments");
+    expect(s.targetDir).toBe("../environments");
   });
 
   it("returns defaults when the settings file is malformed", async () => {

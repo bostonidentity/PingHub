@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import path from "path";
 import { cwd } from "process";
 import fs from "fs";
+import { ENVIRONMENTS_DIR } from "@/lib/paths";
 import { parseEnvFile } from "@/lib/env-parser";
 import { getAccessToken } from "@/lib/iga-api";
 import { getRegistry, JobConflictError } from "@/lib/data/job-registry";
@@ -18,7 +19,7 @@ export function getController(id: string): AbortController | undefined {
 }
 
 function envVarsFor(env: string): Record<string, string> | null {
-  const envFile = path.join(cwd(), "environments", env, ".env");
+  const envFile = path.join(ENVIRONMENTS_DIR, env, ".env");
   if (!fs.existsSync(envFile)) return null;
   return parseEnvFile(fs.readFileSync(envFile, "utf-8")) as Record<string, string>;
 }
@@ -60,7 +61,7 @@ export async function POST(req: NextRequest) {
   void runPull({
     job,
     registry,
-    envsRoot: path.join(cwd(), "environments"),
+    envsRoot: ENVIRONMENTS_DIR,
     envVars,
     mintToken: (vars) => getAccessToken(vars),
     signal: ctl.signal,

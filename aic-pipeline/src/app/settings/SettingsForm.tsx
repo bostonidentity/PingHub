@@ -252,7 +252,7 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
               className={inputCls}
             />
           </Field>
-          <Field label="Target directory" description="Relative to project root, or absolute.">
+          <Field label="Target directory" description="Where environment data lives. Relative to project root, or absolute.">
             <input
               type="text"
               value={settings.targetDir}

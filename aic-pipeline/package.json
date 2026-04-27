@@ -14,9 +14,11 @@
     "url": "https://github.com/bostonidentity/PingHub/issues"
   },
   "scripts": {
-    "dev": "next dev --webpack",
+    "dev": "next dev",
+    "dev:dir": "node cli.mjs dev --data-dir",
     "build": "next build",
     "start": "next start",
+    "start:dir": "node cli.mjs start --data-dir",
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest"

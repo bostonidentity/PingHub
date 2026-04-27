@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 import path from "path";
 import fs from "fs";
 import { cwd } from "process";
+import { ENVIRONMENTS_DIR } from "@/lib/paths";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +26,7 @@ export async function GET(
   const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
   const format = url.searchParams.get("format") === "csv" ? "csv" : "json";
 
-  const envsRoot = path.join(cwd(), "environments");
+  const envsRoot = ENVIRONMENTS_DIR;
   const dir = path.join(envsRoot, env, "managed-data", type);
   if (!fs.existsSync(dir)) return new Response("snapshot not found", { status: 404 });
 

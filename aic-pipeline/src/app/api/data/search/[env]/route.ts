@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import path from "path";
 import fs from "fs";
 import { cwd } from "process";
+import { ENVIRONMENTS_DIR } from "@/lib/paths";
 
 export const dynamic = "force-dynamic";
 
@@ -47,7 +48,7 @@ export async function GET(
     return NextResponse.json({ hits: [], truncated: false } satisfies GlobalSearchResponse);
   }
 
-  const envsRoot = path.join(cwd(), "environments");
+  const envsRoot = ENVIRONMENTS_DIR;
   const managedDir = path.join(envsRoot, env, "managed-data");
   if (!fs.existsSync(managedDir)) {
     return NextResponse.json({ hits: [], truncated: false } satisfies GlobalSearchResponse);

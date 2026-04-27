@@ -6,9 +6,11 @@ import { readStatus, writeStatus } from "@/lib/rcs/persistence";
 import type { RcsStatusFile } from "@/lib/rcs/types";
 
 let tmp: string;
+let envsDir: string;
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rcs-persist-"));
-  fs.mkdirSync(path.join(tmp, "environments/dev"), { recursive: true });
+  envsDir = path.join(tmp, "environments");
+  fs.mkdirSync(path.join(envsDir, "dev"), { recursive: true });
 });
 afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
@@ -37,24 +39,24 @@ const mkFile = (): RcsStatusFile => ({
 
 describe("readStatus", () => {
   it("returns null when the file does not exist", () => {
-    expect(readStatus("dev", { rootDir: tmp })).toBeNull();
+    expect(readStatus("dev", { rootDir: envsDir })).toBeNull();
   });
 
   it("returns null when the env directory itself does not exist", () => {
-    expect(readStatus("never-created", { rootDir: tmp })).toBeNull();
+    expect(readStatus("never-created", { rootDir: envsDir })).toBeNull();
   });
 });
 
 describe("writeStatus + readStatus round-trip", () => {
   it("writes and then reads back the same object", () => {
     const file = mkFile();
-    writeStatus("dev", file, { rootDir: tmp });
-    expect(readStatus("dev", { rootDir: tmp })).toEqual(file);
+    writeStatus("dev", file, { rootDir: envsDir });
+    expect(readStatus("dev", { rootDir: envsDir })).toEqual(file);
   });
 
   it("creates the env directory if it was missing", () => {
     const file = mkFile();
-    writeStatus("brand-new", file, { rootDir: tmp });
-    expect(fs.existsSync(path.join(tmp, "environments/brand-new/rcs-status.json"))).toBe(true);
+    writeStatus("brand-new", file, { rootDir: envsDir });
+    expect(fs.existsSync(path.join(envsDir, "brand-new/rcs-status.json"))).toBe(true);
   });
 });

@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ReleaseCacheEntry } from "./types";
 
+import { ENVIRONMENTS_DIR } from "../paths";
+
 export interface PersistenceOpts {
   rootDir?: string;
 }
@@ -9,8 +11,8 @@ export interface PersistenceOpts {
 const FILE = "release.json";
 
 function filePath(envName: string, opts?: PersistenceOpts): string {
-  const root = opts?.rootDir ?? process.cwd();
-  return path.join(root, "environments", envName, FILE);
+  const root = opts?.rootDir ?? ENVIRONMENTS_DIR;
+  return path.join(root, envName, FILE);
 }
 
 export function readReleaseInfo(envName: string, opts?: PersistenceOpts): ReleaseCacheEntry | null {

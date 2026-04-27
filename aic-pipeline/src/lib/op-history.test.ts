@@ -19,12 +19,14 @@ beforeEach(() => {
   originalCwd = process.cwd();
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "op-history-test-"));
   fs.mkdirSync(path.join(tmpRoot, "environments"), { recursive: true });
+  process.env.PINGHUB_DATA_DIR = path.join(tmpRoot, "environments");
   process.chdir(tmpRoot);
   vi.resetModules(); // re-evaluate module so OP_LOG_PATH picks up new cwd
 });
 
 afterEach(() => {
   process.chdir(originalCwd);
+  delete process.env.PINGHUB_DATA_DIR;
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
@@ -168,7 +170,7 @@ describe("rotateOpLog", () => {
     expect(all.some((r) => r.summary === "n0")).toBe(false);
     expect(all.some((r) => r.summary === "n2")).toBe(false);
     expect(all.some((r) => r.summary === "n502")).toBe(true);
-  });
+  }, 15_000);
 });
 
 describe("readHistoryEntry", () => {

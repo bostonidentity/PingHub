@@ -18,7 +18,7 @@ export interface GitSettings {
 const DEFAULT_SETTINGS: GitSettings = {
   remoteUrl: "",
   branch: "main",
-  targetDir: "environments",
+  targetDir: "../environments",
   authorName: "",
   authorEmail: "",
   autoPush: false,
