@@ -1,12 +1,24 @@
 "use client";
 
-import { useState, useEffect, useRef, Fragment, startTransition, useDeferredValue, useCallback, useMemo, memo } from "react";
+import { useState, useEffect, useRef, Fragment, startTransition, useDeferredValue, useCallback, useMemo, memo, createContext, useContext } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Environment } from "@/lib/fr-config-types";
 import { EnvironmentBadge } from "@/components/EnvironmentBadge";
 import { useDialog } from "@/components/ConfirmDialog";
 import { cn } from "@/lib/utils";
 import { findKeywordMatchRows, logEntryMatchKey } from "@/lib/log-match-navigation";
+
+// ── Timezone ──────────────────────────────────────────────────────────────────
+
+type TzMode = "local" | "utc" | "epoch";
+
+const TZ_OPTIONS: { value: TzMode; label: string }[] = [
+  { value: "local", label: "Local" },
+  { value: "utc", label: "UTC / Zulu" },
+  { value: "epoch", label: "Epoch (ms)" },
+];
+
+const TzContext = createContext<TzMode>("local");
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -89,14 +101,29 @@ const TERMINAL_OVERSCAN = 15;    // extra rows rendered above/below viewport
 
 
 
-function toDatetimeLocal(iso: string): string {
-  // Format in LOCAL time so <input type="datetime-local"> shows and stores the right value.
-  // Slicing a UTC ISO string directly would be off by the local UTC offset.
+function toDatetimeLocal(iso: string, tz: TzMode = "local"): string {
   const d = new Date(iso);
   const pad = (n: number) => String(n).padStart(2, "0");
+  if (tz === "epoch") {
+    // datetime-local input can't show epoch; fall back to UTC representation
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+  }
+  if (tz === "utc") {
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+  }
+  // local
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
-function fromDatetimeLocal(val: string): string { return val ? new Date(val).toISOString() : ""; }
+
+function fromDatetimeLocal(val: string, tz: TzMode = "local"): string {
+  if (!val) return "";
+  if (tz === "utc" || tz === "epoch") {
+    // The input value is in UTC; append Z so Date parses it as UTC
+    return new Date(val + "Z").toISOString();
+  }
+  // local — browser interprets the value as local time
+  return new Date(val).toISOString();
+}
 
 export interface TabConfig {
   env: string;
@@ -271,12 +298,17 @@ function SourceBadge({ source }: { source: string }) {
 
 // ── Timestamp formatting ────────────────────────────────────────────────────
 
-function formatTs(ts: string): { date: string; time: string } {
+function formatTs(ts: string, tz: TzMode = "local"): { date: string; time: string } {
   try {
     const d = new Date(ts);
-    const date = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-    const time = d.toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" })
-      + "." + String(d.getMilliseconds()).padStart(3, "0");
+    if (tz === "epoch") {
+      return { date: "", time: String(d.getTime()) };
+    }
+    const tzOpt: Intl.DateTimeFormatOptions["timeZone"] = tz === "utc" ? "UTC" : undefined;
+    const date = d.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: tzOpt });
+    const time = d.toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: tzOpt })
+      + "." + String(d.getMilliseconds()).padStart(3, "0")
+      + (tz === "utc" ? "Z" : "");
     return { date, time };
   } catch {
     return { date: "", time: ts };
@@ -673,6 +705,7 @@ const EntryRow = memo(function EntryRow({
   dupeCount?: number;
 }) {
   const [txCopied, setTxCopied] = useState(false);
+  const tz = useContext(TzContext);
   const effectiveSource = entry.source ?? source;
   const level = getLevel(entry);
   const message = getMessage(entry);
@@ -680,7 +713,7 @@ const EntryRow = memo(function EntryRow({
   const transactionId = getTransactionId(entry);
   const userId = getUserId(entry);
   const status = getStatus(entry);
-  const { date, time } = formatTs(entry.timestamp);
+  const { date, time } = formatTs(entry.timestamp, tz);
   const isText = isTextEntry(entry);
 
   function highlight(text: string) {
@@ -844,6 +877,7 @@ function TransactionDrilldown({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const tz = useContext(TzContext);
 
   // Prefer aggregate sources for full coverage; fall back to individual sources
   const AM_INDIVIDUAL = ["am-access", "am-authentication", "am-core"];
@@ -928,7 +962,7 @@ function TransactionDrilldown({
                 {entries.map((entry, i) => {
                   const level = getLevel(entry);
                   const message = getMessage(entry);
-                  const { date, time } = formatTs(entry.timestamp);
+                  const { date, time } = formatTs(entry.timestamp, tz);
                   return (
                     <Fragment key={i}>
                       <tr
@@ -1003,6 +1037,7 @@ export function LogsExplorer({
 }) {
   const { env, selectedSources, sourcesError, levelFilter, mode, tailSecs, tailing, loading, preset, customBegin, customEnd, searchSeq, searching } = config;
   const { confirm } = useDialog();
+  const tz = useContext(TzContext);
   // Derived: sources used for tail mode — all selected sources are tailed concurrently.
   // `tailSource` (singular) is kept as the first for UI affordances that still expect one.
   const tailSources = selectedSources;
@@ -1322,8 +1357,8 @@ export function LogsExplorer({
     let beginTime: string;
     let endTime: string;
     if (preset === "custom") {
-      beginTime = fromDatetimeLocal(customBegin);
-      endTime = fromDatetimeLocal(customEnd);
+      beginTime = fromDatetimeLocal(customBegin, tz);
+      endTime = fromDatetimeLocal(customEnd, tz);
     } else {
       const ms = PRESETS.find((p) => p.value === preset)!.ms;
       const now = new Date();
@@ -2367,17 +2402,25 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
   ]);
   const [activeId, setActiveId] = useState(1);
   const [fullscreen, setFullscreen] = useState(false);
+  const [tzMode, setTzMode] = useState<TzMode>("local");
 
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LOGS_STATE_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw) as { tabs?: TabDef[]; activeId?: number };
+        const parsed = JSON.parse(raw) as { tabs?: TabDef[]; activeId?: number; tzMode?: TzMode };
+        if (parsed.tzMode && TZ_OPTIONS.some((o) => o.value === parsed.tzMode)) {
+          setTzMode(parsed.tzMode);
+        }
         if (Array.isArray(parsed.tabs) && parsed.tabs.length > 0) {
-          const restored = parsed.tabs.map((t) => ({
-            ...t,
-            config: sanitizeConfigForPersist({ ...makeDefaultConfig(environments), ...t.config }),
-          }));
+          const validEnvNames = new Set(environments.map((e) => e.name));
+          const defaultCfg = makeDefaultConfig(environments);
+          const restored = parsed.tabs.map((t) => {
+            const merged = { ...defaultCfg, ...t.config };
+            // Reset env if the stored value no longer exists
+            if (!validEnvNames.has(merged.env)) merged.env = defaultCfg.env;
+            return { ...t, config: sanitizeConfigForPersist(merged) };
+          });
           setTabs(restored);
           const maxId = Math.max(...restored.map((t) => t.id));
           _nextTabId = maxId + 1;
@@ -2398,10 +2441,11 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
       const payload = {
         tabs: tabs.map((t) => ({ ...t, config: sanitizeConfigForPersist(t.config) })),
         activeId,
+        tzMode,
       };
       localStorage.setItem(LOGS_STATE_KEY, JSON.stringify(payload));
     } catch { /* ignore */ }
-  }, [mounted, tabs, activeId]);
+  }, [mounted, tabs, activeId, tzMode]);
 
   useEffect(() => {
     if (!fullscreen) return;
@@ -2438,8 +2482,8 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
   function openContextTab(timestamp: string, source: string) {
     const id = _nextTabId++;
     const ts = new Date(timestamp).getTime();
-    const begin = toDatetimeLocal(new Date(ts - 60000).toISOString());
-    const end = toDatetimeLocal(new Date(ts + 60000).toISOString());
+    const begin = toDatetimeLocal(new Date(ts - 60000).toISOString(), tzMode);
+    const end = toDatetimeLocal(new Date(ts + 60000).toISOString(), tzMode);
     const isIDM = source.startsWith("idm-");
     const contextSources = isIDM ? ["idm-everything"] : ["am-everything"];
     const shortTime = new Date(timestamp).toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -2485,173 +2529,188 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
   }
 
   return (
-    <div className="space-y-0">
-      {/* ── Controls (above tabs) ── */}
-      {cfg && (
-        <div className="card-padded space-y-4 rounded-b-none border-b-0">
-          {/* Row 1: env + source + level */}
-          <div className="flex flex-wrap items-end gap-4">
-            <div className="space-y-1">
-              <label className="label-xs">Environment</label>
-              <select
-                value={cfg.env}
-                onChange={(e) => updateActiveConfig({ env: e.target.value, tailing: false })}
-                disabled={cfg.loading || cfg.tailing}
-                className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-50 bg-white"
-              >
-                {environments.map((e) => (
-                  <option key={e.name} value={e.name} disabled={!e.hasLogApi}>
-                    {e.label}{!e.hasLogApi ? " (no credentials)" : ""}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="space-y-1">
-              <label className="label-xs">Log Source</label>
-              <div className="flex gap-3 py-1">
-                {LOG_SOURCES.map((s) => (
-                  <label key={s} className={cn("flex items-center gap-1.5 text-sm cursor-pointer select-none", (cfg.loading || cfg.tailing) ? "opacity-50 cursor-not-allowed" : "")}>
-                    <input
-                      type="checkbox"
-                      checked={cfg.selectedSources.includes(s)}
-                      disabled={cfg.loading || cfg.tailing}
-                      onChange={(e) => {
-                        const next = e.target.checked
-                          ? [...cfg.selectedSources, s]
-                          : cfg.selectedSources.filter((x) => x !== s);
-                        updateActiveConfig({ selectedSources: next, tailing: false });
-                      }}
-                      className="rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-                    />
-                    <span className="font-mono text-xs">{s}</span>
-                  </label>
-                ))}
+    <TzContext.Provider value={tzMode}>
+      <div className="space-y-0">
+        {/* ── Controls (above tabs) ── */}
+        {cfg && (
+          <div className="card-padded space-y-4 rounded-b-none border-b-0">
+            {/* Row 1: env + source + level */}
+            <div className="flex flex-wrap items-end gap-4">
+              <div className="space-y-1">
+                <label className="label-xs">Environment</label>
+                <select
+                  value={cfg.env}
+                  onChange={(e) => updateActiveConfig({ env: e.target.value, tailing: false })}
+                  disabled={cfg.loading || cfg.tailing}
+                  className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-50 bg-white"
+                >
+                  {environments.map((e) => (
+                    <option key={e.name} value={e.name} disabled={!e.hasLogApi}>
+                      {e.label}{!e.hasLogApi ? " (no credentials)" : ""}
+                    </option>
+                  ))}
+                </select>
               </div>
-            </div>
 
-            <div className="space-y-1">
-              <label className="label-xs">Min Level</label>
-              <select
-                value={cfg.levelFilter}
-                onChange={(e) => updateActiveConfig({ levelFilter: e.target.value })}
-                className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 bg-white"
-              >
-                {LEVEL_FILTERS.map((l) => (
-                  <option key={l.value} value={l.value}>{l.label}</option>
-                ))}
-              </select>
-            </div>
-
-            {selectedEnv && (
-              <div className="pb-0.5">
-                <EnvironmentBadge env={selectedEnv} />
+              <div className="space-y-1">
+                <label className="label-xs">Log Source</label>
+                <div className="flex gap-3 py-1">
+                  {LOG_SOURCES.map((s) => (
+                    <label key={s} className={cn("flex items-center gap-1.5 text-sm cursor-pointer select-none", (cfg.loading || cfg.tailing) ? "opacity-50 cursor-not-allowed" : "")}>
+                      <input
+                        type="checkbox"
+                        checked={cfg.selectedSources.includes(s)}
+                        disabled={cfg.loading || cfg.tailing}
+                        onChange={(e) => {
+                          const next = e.target.checked
+                            ? [...cfg.selectedSources, s]
+                            : cfg.selectedSources.filter((x) => x !== s);
+                          updateActiveConfig({ selectedSources: next, tailing: false });
+                        }}
+                        className="rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                      />
+                      <span className="font-mono text-xs">{s}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
-            )}
-          </div>
 
-          {/* Row 2: transaction ID search */}
-          <div className="flex items-center gap-2">
-            <label className="label-xs shrink-0">Transaction ID</label>
-            <input
-              type="text"
-              value={txInput}
-              onChange={(e) => setTxInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") submitTxSearch(); }}
-              placeholder="Paste a transaction ID to trace…"
-              className="px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 font-mono w-96"
-            />
-            <button
-              type="button"
-              onClick={submitTxSearch}
-              disabled={!txInput.trim() || !cfg?.env || cfg?.loading}
-              className="btn-primary disabled:opacity-40 flex items-center gap-1.5"
-            >
-              {cfg?.loading && txSearch ? (
-                <>
-                  <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  Tracing…
-                </>
-              ) : (
-                "Trace"
+              <div className="space-y-1">
+                <label className="label-xs">Min Level</label>
+                <select
+                  value={cfg.levelFilter}
+                  onChange={(e) => updateActiveConfig({ levelFilter: e.target.value })}
+                  className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 bg-white"
+                >
+                  {LEVEL_FILTERS.map((l) => (
+                    <option key={l.value} value={l.value}>{l.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="label-xs">Timezone</label>
+                <select
+                  value={tzMode}
+                  onChange={(e) => setTzMode(e.target.value as TzMode)}
+                  className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 bg-white"
+                >
+                  {TZ_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              {selectedEnv && (
+                <div className="pb-0.5">
+                  <EnvironmentBadge env={selectedEnv} />
+                </div>
               )}
-            </button>
-            {txInput && (
-              <button type="button" onClick={() => { setTxInput(""); setTxSearch(undefined); }} className="text-xs text-slate-400 hover:text-slate-600 transition-colors">
-                Clear
-              </button>
-            )}
-          </div>
-        </div>
-      )}
+            </div>
 
-      {/* ── Tab bar ── */}
-      <div className="flex items-end gap-0 border-b border-slate-200 bg-white border-x border-slate-200">
-        {tabs.map((tab) => (
-          <div
-            key={tab.id}
-            className={cn(
-              "flex items-center gap-1.5 px-3 py-2 text-xs border-b-2 cursor-pointer select-none transition-colors",
-              tab.id === activeId
-                ? "border-sky-600 text-slate-900 font-medium bg-white"
-                : "border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50"
-            )}
-          >
-            <span onClick={() => setActiveId(tab.id)} className="max-w-[160px] truncate">
-              {tab.label}
-            </span>
-            {tabs.length > 1 && (
+            {/* Row 2: transaction ID search */}
+            <div className="flex items-center gap-2">
+              <label className="label-xs shrink-0">Transaction ID</label>
+              <input
+                type="text"
+                value={txInput}
+                onChange={(e) => setTxInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") submitTxSearch(); }}
+                placeholder="Paste a transaction ID to trace…"
+                className="px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 font-mono w-96"
+              />
               <button
                 type="button"
-                onClick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
-                className="text-slate-300 hover:text-slate-500 leading-none text-sm ml-0.5"
-                title="Close tab"
+                onClick={submitTxSearch}
+                disabled={!txInput.trim() || !cfg?.env || cfg?.loading}
+                className="btn-primary disabled:opacity-40 flex items-center gap-1.5"
               >
-                ×
+                {cfg?.loading && txSearch ? (
+                  <>
+                    <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Tracing…
+                  </>
+                ) : (
+                  "Trace"
+                )}
               </button>
-            )}
+              {txInput && (
+                <button type="button" onClick={() => { setTxInput(""); setTxSearch(undefined); }} className="text-xs text-slate-400 hover:text-slate-600 transition-colors">
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Tab bar ── */}
+        <div className="flex items-end gap-0 border-b border-slate-200 bg-white border-x border-slate-200">
+          {tabs.map((tab) => (
+            <div
+              key={tab.id}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-2 text-xs border-b-2 cursor-pointer select-none transition-colors",
+                tab.id === activeId
+                  ? "border-sky-600 text-slate-900 font-medium bg-white"
+                  : "border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50"
+              )}
+            >
+              <span onClick={() => setActiveId(tab.id)} className="max-w-[160px] truncate">
+                {tab.label}
+              </span>
+              {tabs.length > 1 && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
+                  className="text-slate-300 hover:text-slate-500 leading-none text-sm ml-0.5"
+                  title="Close tab"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={addTab}
+            className="px-3 py-2 text-slate-400 hover:text-slate-700 hover:bg-slate-50 text-base leading-none transition-colors"
+            title="New tab"
+          >
+            +
+          </button>
+        </div>
+
+        {/* ── Tab panels ── */}
+        {tabs.map((tab) => (
+          <div key={tab.id} className={tab.id === activeId ? "" : "hidden"}>
+            <div className="pt-4">
+              <LogsExplorer
+                environments={environments}
+                config={tab.config}
+                onConfigChange={(updates) =>
+                  setTabs((prev) =>
+                    prev.map((t) =>
+                      t.id === tab.id ? { ...t, config: { ...t.config, ...updates } } : t
+                    )
+                  )
+                }
+                isActive={tab.id === activeId}
+                onLabelChange={(label) => updateLabel(tab.id, label)}
+                tabs={tabs.map((t) => ({ id: t.id, label: t.label }))}
+                activeTabId={activeId}
+                onTabSwitch={setActiveId}
+                fullscreen={fullscreen}
+                onFullscreenChange={setFullscreen}
+                txSearchId={tab.id === activeId ? txSearch : undefined}
+                onOpenContextTab={openContextTab}
+              />
+            </div>
           </div>
         ))}
-        <button
-          type="button"
-          onClick={addTab}
-          className="px-3 py-2 text-slate-400 hover:text-slate-700 hover:bg-slate-50 text-base leading-none transition-colors"
-          title="New tab"
-        >
-          +
-        </button>
       </div>
-
-      {/* ── Tab panels ── */}
-      {tabs.map((tab) => (
-        <div key={tab.id} className={tab.id === activeId ? "" : "hidden"}>
-          <div className="pt-4">
-            <LogsExplorer
-              environments={environments}
-              config={tab.config}
-              onConfigChange={(updates) =>
-                setTabs((prev) =>
-                  prev.map((t) =>
-                    t.id === tab.id ? { ...t, config: { ...t.config, ...updates } } : t
-                  )
-                )
-              }
-              isActive={tab.id === activeId}
-              onLabelChange={(label) => updateLabel(tab.id, label)}
-              tabs={tabs.map((t) => ({ id: t.id, label: t.label }))}
-              activeTabId={activeId}
-              onTabSwitch={setActiveId}
-              fullscreen={fullscreen}
-              onFullscreenChange={setFullscreen}
-              txSearchId={tab.id === activeId ? txSearch : undefined}
-              onOpenContextTab={openContextTab}
-            />
-          </div>
-        </div>
-      ))}
-    </div>
+    </TzContext.Provider>
   );
 }
