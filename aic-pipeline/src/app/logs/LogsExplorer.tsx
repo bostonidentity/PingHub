@@ -712,14 +712,18 @@ function TailTerminal({
                     onClick={() => toggleRow(vRow.index)}
                     onDoubleClick={() => onEntryDoubleClick?.(vRow.index)}
                     className={cn(
-                      "px-3 py-px font-mono text-[11px] whitespace-pre-wrap break-all select-text leading-snug border-b border-slate-100 cursor-pointer",
+                      "px-3 py-px font-mono text-[11px] select-text leading-snug border-b border-slate-100 cursor-pointer",
                       terminalLevelClass(level),
                       isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
                       isCtxAnchor && !isActive && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
-                      !isRowExpanded && "max-h-[3.6em] overflow-hidden",
                     )}
                   >
-                    {highlightLine(line, isActive)}
+                    <span className={cn(
+                      "whitespace-pre-wrap break-all",
+                      !isRowExpanded && "line-clamp-3",
+                    )}>
+                      {highlightLine(line, isActive)}
+                    </span>
                     {count > 1 && (
                       <span className="ml-2 inline-block px-1.5 py-0 rounded bg-amber-100 text-amber-700 text-[10px] font-semibold align-middle">
                         ×{count}
