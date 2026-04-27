@@ -25,6 +25,9 @@ Thumbs.db
 # Secrets / keys
 *.pem
 
+# environments/ is managed in its own git repository
+/environments/
+
 # Log files
 *.log
 npm-debug.log*

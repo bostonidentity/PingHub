@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from "next/server";
 import path from "path";
 import fs from "fs";
 import { cwd } from "process";
+import { ENVIRONMENTS_DIR } from "@/lib/paths";
 
 export const dynamic = "force-dynamic";
 
@@ -47,7 +48,7 @@ export async function GET(
     { params }: { params: Promise<{ env: string; type: string; id: string }> },
 ) {
     const { env, type, id } = await params;
-    const managedDir = path.join(cwd(), "environments", env, "managed-data");
+    const managedDir = path.join(ENVIRONMENTS_DIR, env, "managed-data");
 
     if (!fs.existsSync(managedDir)) {
         return NextResponse.json({ outgoing: [], incoming: [], indexMissing: true } satisfies RefsResponse);

@@ -5,8 +5,9 @@ import crypto from "crypto";
 import type { CompareEndpoint } from "./diff-types";
 import { loadSettings, resolveTargetDir, targetHasGit } from "./git-settings";
 
+import { ENVIRONMENTS_DIR } from "./paths";
+
 const REPO_ROOT = process.cwd();
-const ENVIRONMENTS_DIR = path.join(REPO_ROOT, "environments");
 const OP_LOG_PATH = path.join(ENVIRONMENTS_DIR, ".op-log.jsonl");
 const OP_LOG_MAX = 500;
 const REPORTS_DIR = path.join(ENVIRONMENTS_DIR, "promotion-reports");

@@ -66,7 +66,7 @@ describe("runPull: happy path", () => {
 
     const typeDir = path.join(tmpDir, "uat", "managed-data", "alpha_user");
     expect(fs.readdirSync(typeDir).sort()).toEqual([
-      "_index.json", "_manifest.json", "u1.json", "u2.json", "u3.json",
+      "_index.json", "_manifest.json", "_refs.json", "u1.json", "u2.json", "u3.json",
     ]);
     const manifest = JSON.parse(fs.readFileSync(path.join(typeDir, "_manifest.json"), "utf-8"));
     expect(manifest.count).toBe(3);

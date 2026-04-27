@@ -3,6 +3,7 @@ import path from "path";
 import fs from "fs";
 import { cwd } from "process";
 import { getConfigDir } from "@/lib/fr-config";
+import { ENVIRONMENTS_DIR } from "@/lib/paths";
 import { listRecords } from "@/lib/data/snapshot-fs";
 import { deriveDisplayFields, fallbackDisplayFields } from "@/lib/data/display-fields";
 
@@ -28,7 +29,7 @@ export async function GET(
   const titleField = url.searchParams.get("titleField")?.trim() || undefined;
 
   const schema = loadSchema(env, type);
-  const envsRoot = path.join(cwd(), "environments");
+  const envsRoot = ENVIRONMENTS_DIR;
   let display;
   if (schema) {
     display = deriveDisplayFields(schema);

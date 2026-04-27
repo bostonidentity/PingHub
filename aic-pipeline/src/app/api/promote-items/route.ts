@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { spawnFrConfig, getConfigDir, getEnvFileContent } from "@/lib/fr-config";
+import { ENVIRONMENTS_DIR } from "@/lib/paths";
 
 // Long-running streaming response. Force the Node.js runtime, opt out of
 // route-level caching, and bump the per-request max duration to 10 min so
@@ -292,7 +293,7 @@ export async function POST(req: NextRequest) {
             if (!fs.existsSync(cfgDir)) continue;
             for (const f of fs.readdirSync(cfgDir)) {
               if (!f.endsWith(".json")) continue;
-              try { const j = JSON.parse(fs.readFileSync(path.join(cfgDir, f), "utf-8")); if (j.name && j._id) sourceScriptNameToUuid.set(j.name, j._id); } catch {}
+              try { const j = JSON.parse(fs.readFileSync(path.join(cfgDir, f), "utf-8")); if (j.name && j._id) sourceScriptNameToUuid.set(j.name, j._id); } catch { }
             }
           }
           for (const dir of resolveScopeDirs(targetConfigDir!, "scripts")) {
@@ -300,7 +301,7 @@ export async function POST(req: NextRequest) {
             if (!fs.existsSync(cfgDir)) continue;
             for (const f of fs.readdirSync(cfgDir)) {
               if (!f.endsWith(".json")) continue;
-              try { const j = JSON.parse(fs.readFileSync(path.join(cfgDir, f), "utf-8")); if (j.name && j._id) targetScriptNameToUuid.set(j.name, j._id); } catch {}
+              try { const j = JSON.parse(fs.readFileSync(path.join(cfgDir, f), "utf-8")); if (j.name && j._id) targetScriptNameToUuid.set(j.name, j._id); } catch { }
             }
           }
 
@@ -1079,7 +1080,7 @@ export async function POST(req: NextRequest) {
           const { spawn: spawnProc } = await import("child_process");
           const pullEnvVars = parseEnvFile(getEnvFileContent(targetEnvironment));
           const pullEnv = { ...process.env, ...pullEnvVars };
-          const pullCwd = path.join(process.cwd(), "environments", targetEnvironment);
+          const pullCwd = path.join(ENVIRONMENTS_DIR, targetEnvironment);
 
           for (const sel of scopeSelections) {
             if (sel.scope === "journeys" && sel.items && sel.items.length > 0) {
