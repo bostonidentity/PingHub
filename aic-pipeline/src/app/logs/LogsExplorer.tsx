@@ -501,9 +501,9 @@ function formatTerminalLine(entry: LogEntry, defaultSource: string): string {
 
 function terminalLevelClass(level: string): string {
   switch (level.toUpperCase()) {
-    case "ERROR": case "SEVERE": return "text-red-600";
-    case "WARN": case "WARNING": return "text-amber-600";
-    case "INFO": case "INFORMATION": return "text-emerald-700";
+    case "ERROR": case "SEVERE": return "text-slate-700 font-semibold";
+    case "WARN": case "WARNING": return "text-slate-600";
+    case "INFO": case "INFORMATION": return "text-slate-500";
     case "DEBUG": case "FINE": case "FINER": case "FINEST": case "TRACE": return "text-slate-400";
     default: return "text-slate-500";
   }
