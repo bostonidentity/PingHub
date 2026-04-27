@@ -828,7 +828,7 @@ const TailTerminal = memo(function TailTerminal({
                 const isCtxAnchor = contextAnchorIdx === absIdx;
                 return (
                   <div
-                    key={isActive ? flashKey : absIdx}
+                    key={isActive ? `flash-${flashKey}` : absIdx}
                     onDoubleClick={() => onEntryDoubleClick?.(absIdx)}
                     style={{ height: TERMINAL_ROW_H, lineHeight: `${TERMINAL_ROW_H}px` }}
                     className={cn(
