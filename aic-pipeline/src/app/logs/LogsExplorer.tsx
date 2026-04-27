@@ -379,6 +379,29 @@ function ResizableHeader({
 // ── JSON view ─────────────────────────────────────────────────────────────────
 // Single pretty-printed JSON document over all filtered entries. Filters, level
 // filter, and dedupe are already applied by the caller; this just serializes.
+/** Recursively unescape JSON-encoded string values within an object.
+ *  If a string value looks like JSON (starts with { or [), try to parse it
+ *  and replace the string with the parsed structure so JSON.stringify can
+ *  pretty-print it inline. */
+function deepUnescapeJson(val: unknown): unknown {
+  if (typeof val === "string") {
+    const trimmed = val.trim();
+    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+      try { return deepUnescapeJson(JSON.parse(trimmed)); } catch { /* not valid JSON — keep as string */ }
+    }
+    return val;
+  }
+  if (Array.isArray(val)) return val.map(deepUnescapeJson);
+  if (val !== null && typeof val === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+      out[k] = deepUnescapeJson(v);
+    }
+    return out;
+  }
+  return val;
+}
+
 function JsonLogView({
   entries,
   wrapLines = false,
@@ -402,7 +425,8 @@ function JsonLogView({
   onEntryDoubleClick?: (idx: number) => void;
   contextAnchorIdx?: number;
 }) {
-  const text = useMemo(() => JSON.stringify(entries, null, 2), [entries]);
+  const unescaped = useMemo(() => entries.map(deepUnescapeJson), [entries]);
+  const text = useMemo(() => JSON.stringify(unescaped, null, 2), [unescaped]);
   const [copied, setCopied] = useState(false);
   const onCopy = () => {
     navigator.clipboard.writeText(text).then(() => {
@@ -444,7 +468,7 @@ function JsonLogView({
   }
 
   // Render each entry as its own block so we can scroll to matched entries
-  const entryTexts = useMemo(() => entries.map((e) => JSON.stringify(e, null, 2)), [entries]);
+  const entryTexts = useMemo(() => unescaped.map((e) => JSON.stringify(e, null, 2)), [unescaped]);
 
   return (
     <div className="relative">
