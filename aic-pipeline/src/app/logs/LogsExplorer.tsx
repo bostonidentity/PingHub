@@ -508,11 +508,19 @@ function formatTerminalLine(entry: LogEntry, defaultSource: string): string {
 
 function terminalLevelClass(level: string): string {
   switch (level.toUpperCase()) {
-    case "ERROR": case "SEVERE": return "text-slate-700 font-semibold";
-    case "WARN": case "WARNING": return "text-slate-600";
-    case "INFO": case "INFORMATION": return "text-slate-500";
+    case "ERROR": case "SEVERE": return "text-red-600 font-semibold";
+    case "WARN": case "WARNING": return "text-amber-600 font-medium";
+    case "INFO": case "INFORMATION": return "text-emerald-600";
     case "DEBUG": case "FINE": case "FINER": case "FINEST": case "TRACE": return "text-slate-400";
     default: return "text-slate-500";
+  }
+}
+
+function terminalMsgClass(level: string): string {
+  switch (level.toUpperCase()) {
+    case "ERROR": case "SEVERE": return "text-slate-800 font-medium";
+    case "WARN": case "WARNING": return "text-slate-700";
+    default: return "text-slate-600";
   }
 }
 
@@ -676,6 +684,31 @@ function TailTerminal({
     );
   }
 
+  function renderStructuredLine(entry: LogEntry, isActive: boolean) {
+    const src = entry.source ?? defaultSource;
+    const lvl = getLevel(entry);
+    const msg = getMessage(entry);
+    let ts: string;
+    try {
+      const d = new Date(entry.timestamp);
+      const pad = (n: number) => String(n).padStart(2, "0");
+      ts = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, "0")}`;
+    } catch {
+      ts = entry.timestamp;
+    }
+    return (
+      <>
+        <span className="text-slate-400 select-text">{ts}</span>
+        <span className="text-slate-400 select-none">{"  "}</span>
+        <span className="text-sky-600/80 select-text">{src.padEnd(15)}</span>
+        <span className="text-slate-400 select-none">{"  "}</span>
+        <span className={cn("select-text", terminalLevelClass(lvl))}>{lvl.padEnd(5)}</span>
+        <span className="text-slate-400 select-none">{"  "}</span>
+        <span className={cn("select-text", terminalMsgClass(lvl))}>{highlightLine(msg, isActive)}</span>
+      </>
+    );
+  }
+
   return (
     <div className="relative h-full flex flex-col bg-white">
       <div
@@ -692,8 +725,6 @@ function TailTerminal({
           <div style={{ height: wrapVirtualizer.getTotalSize(), position: "relative" }}>
             {wrapVirtualizer.getVirtualItems().map((vRow) => {
               const entry = entries[vRow.index];
-              const level = getLevel(entry);
-              const line = formatTerminalLine(entry, defaultSource);
               const count = dupeCounts?.get(vRow.index) ?? 1;
               const isActive = activeMatchIndex === vRow.index;
               const isCtxAnchor = contextAnchorIdx === vRow.index;
@@ -714,7 +745,6 @@ function TailTerminal({
                     className={cn(
                       "px-3 py-px font-mono text-[11px] select-text leading-snug border-b border-slate-200 cursor-pointer",
                       vRow.index % 2 === 0 && "bg-slate-100/60",
-                      terminalLevelClass(level),
                       isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
                       isCtxAnchor && !isActive && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
                     )}
@@ -723,7 +753,7 @@ function TailTerminal({
                       "whitespace-pre-wrap break-all",
                       !isRowExpanded && "line-clamp-3",
                     )}>
-                      {highlightLine(line, isActive)}
+                      {renderStructuredLine(entry, isActive)}
                     </span>
                     {count > 1 && (
                       <span className="ml-2 inline-block px-1.5 py-0 rounded bg-amber-100 text-amber-700 text-[10px] font-semibold align-middle">
@@ -741,8 +771,6 @@ function TailTerminal({
             <div style={{ position: "absolute", top: startIdx * TERMINAL_ROW_H, left: 0, right: 0 }}>
               {entries.slice(startIdx, endIdx + 1).map((entry, i) => {
                 const absIdx = startIdx + i;
-                const level = getLevel(entry);
-                const line = formatTerminalLine(entry, defaultSource);
                 const count = dupeCounts?.get(absIdx) ?? 1;
                 const isActive = activeMatchIndex === absIdx;
                 const isCtxAnchor = contextAnchorIdx === absIdx;
@@ -754,12 +782,11 @@ function TailTerminal({
                     className={cn(
                       "px-3 font-mono text-[11px] whitespace-nowrap select-text border-b border-slate-200",
                       absIdx % 2 === 0 && "bg-slate-100/60",
-                      terminalLevelClass(level),
                       isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
                       isCtxAnchor && !isActive && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
                     )}
                   >
-                    {highlightLine(line, isActive)}
+                    {renderStructuredLine(entry, isActive)}
                     {count > 1 && (
                       <span className="ml-2 inline-block px-1.5 rounded bg-amber-100 text-amber-700 text-[10px] font-semibold align-middle">
                         ×{count}
