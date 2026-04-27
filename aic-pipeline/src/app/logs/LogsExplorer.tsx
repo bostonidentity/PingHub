@@ -1574,6 +1574,16 @@ export function LogsExplorer({
     if (preset === "custom") {
       beginTime = fromDatetimeLocal(customBegin, tz);
       endTime = fromDatetimeLocal(customEnd, tz);
+      if (!beginTime || !endTime) {
+        setError("Custom range requires both a start and end time.");
+        onConfigChange({ searching: false });
+        return doCleanup;
+      }
+      if (new Date(endTime).getTime() <= new Date(beginTime).getTime()) {
+        setError("End time must be after start time.");
+        onConfigChange({ searching: false });
+        return doCleanup;
+      }
     } else {
       const ms = PRESETS.find((p) => p.value === preset)!.ms;
       const now = new Date();
@@ -1968,68 +1978,83 @@ export function LogsExplorer({
             )}
 
             {/* Search mode controls */}
-            {mode === "search" && (
-              <div className="flex items-center gap-1.5 shrink-0">
-                <select
-                  value={preset}
-                  onChange={(e) => onConfigChange({ preset: e.target.value as Preset })}
-                  disabled={searching}
-                  className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50"
-                >
-                  {PRESETS.map((p) => (
-                    <option key={p.value} value={p.value}>{p.label}</option>
-                  ))}
-                </select>
-                {preset === "custom" && (
-                  <>
-                    <input
-                      type="datetime-local"
-                      step="1"
-                      value={customBegin}
-                      onChange={(e) => onConfigChange({ customBegin: e.target.value })}
-                      disabled={searching}
-                      className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-sky-500"
-                    />
-                    <span className="text-slate-400 text-[11px]">→</span>
-                    <input
-                      type="datetime-local"
-                      step="1"
-                      value={customEnd}
-                      onChange={(e) => onConfigChange({ customEnd: e.target.value })}
-                      disabled={searching}
-                      className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-sky-500"
-                    />
-                  </>
-                )}
-                <button
-                  type="button"
-                  onClick={() => onConfigChange({ searchSeq: (searchSeq ?? 0) + 1 })}
-                  disabled={loading || searching || selectedSources.length === 0 || !!sourcesError}
-                  className="px-3 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 disabled:opacity-50 transition-colors flex items-center gap-1"
-                >
-                  {searching ? (
+            {mode === "search" && (() => {
+              const customRangeInvalid = preset === "custom" && !!customBegin && !!customEnd
+                && new Date(customEnd).getTime() <= new Date(customBegin).getTime();
+              return (
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <select
+                    value={preset}
+                    onChange={(e) => onConfigChange({ preset: e.target.value as Preset })}
+                    disabled={searching}
+                    className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50"
+                  >
+                    {PRESETS.map((p) => (
+                      <option key={p.value} value={p.value}>{p.label}</option>
+                    ))}
+                  </select>
+                  {preset === "custom" && (
                     <>
-                      <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                      Running…
+                      <input
+                        type="datetime-local"
+                        step="1"
+                        value={customBegin}
+                        onChange={(e) => onConfigChange({ customBegin: e.target.value })}
+                        disabled={searching}
+                        className={cn(
+                          "rounded border px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1",
+                          customRangeInvalid ? "border-rose-400 focus:ring-rose-400" : "border-slate-300 focus:ring-sky-500",
+                        )}
+                      />
+                      <span className="text-slate-400 text-[11px]">→</span>
+                      <input
+                        type="datetime-local"
+                        step="1"
+                        value={customEnd}
+                        onChange={(e) => onConfigChange({ customEnd: e.target.value })}
+                        disabled={searching}
+                        className={cn(
+                          "rounded border px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1",
+                          customRangeInvalid ? "border-rose-400 focus:ring-rose-400" : "border-slate-300 focus:ring-sky-500",
+                        )}
+                      />
+                      {customRangeInvalid && (
+                        <span className="text-[11px] text-rose-600 whitespace-nowrap" title="End time must be after start time">
+                          End must be after start
+                        </span>
+                      )}
                     </>
-                  ) : (
-                    "Search"
                   )}
-                </button>
-                {searching && (
                   <button
                     type="button"
-                    onClick={() => workerRef.current?.postMessage({ type: "fetch-stop" })}
-                    className="px-3 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+                    onClick={() => onConfigChange({ searchSeq: (searchSeq ?? 0) + 1 })}
+                    disabled={loading || searching || selectedSources.length === 0 || !!sourcesError || customRangeInvalid}
+                    className="px-3 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 disabled:opacity-50 transition-colors flex items-center gap-1"
                   >
-                    Stop
+                    {searching ? (
+                      <>
+                        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Running…
+                      </>
+                    ) : (
+                      "Search"
+                    )}
                   </button>
-                )}
-              </div>
-            )}
+                  {searching && (
+                    <button
+                      type="button"
+                      onClick={() => workerRef.current?.postMessage({ type: "fetch-stop" })}
+                      className="px-3 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+                    >
+                      Stop
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
 
             <span className="text-slate-300 select-none shrink-0">|</span>
             <label className="text-xs font-medium text-slate-500 shrink-0">Highlight</label>
