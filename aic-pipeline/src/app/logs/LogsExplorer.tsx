@@ -379,7 +379,25 @@ function ResizableHeader({
 // ── JSON view ─────────────────────────────────────────────────────────────────
 // Single pretty-printed JSON document over all filtered entries. Filters, level
 // filter, and dedupe are already applied by the caller; this just serializes.
-function JsonLogView({ entries, wrapLines = false }: { entries: LogEntry[]; wrapLines?: boolean }) {
+function JsonLogView({
+  entries,
+  wrapLines = false,
+  keywords = [],
+  searchTerm = "",
+  activeEntryIdx = -1,
+  matchIndices = [],
+  matchCase = false,
+  wholeWord = false,
+}: {
+  entries: LogEntry[];
+  wrapLines?: boolean;
+  keywords?: string[];
+  searchTerm?: string;
+  activeEntryIdx?: number;
+  matchIndices?: number[];
+  matchCase?: boolean;
+  wholeWord?: boolean;
+}) {
   const text = useMemo(() => JSON.stringify(entries, null, 2), [entries]);
   const [copied, setCopied] = useState(false);
   const onCopy = () => {
@@ -388,6 +406,42 @@ function JsonLogView({ entries, wrapLines = false }: { entries: LogEntry[]; wrap
       setTimeout(() => setCopied(false), 1500);
     }).catch(() => { });
   };
+
+  // Build highlight regex once
+  const allTerms = [searchTerm, ...keywords].filter(Boolean);
+  const [hlRegex, hlTestRe] = useMemo(() => {
+    if (allTerms.length === 0) return [null, null] as const;
+    const escaped = allTerms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const wrapped = wholeWord ? escaped.map((k) => `\\b${k}\\b`) : escaped;
+    const flags = matchCase ? "g" : "gi";
+    return [
+      new RegExp(`(${wrapped.join("|")})`, flags),
+      new RegExp(`^(?:${wrapped.join("|")})$`, matchCase ? "" : "i"),
+    ] as const;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchTerm, keywords, matchCase, wholeWord]);
+
+  const matchSet = useMemo(() => new Set(matchIndices), [matchIndices]);
+
+  function highlightText(str: string, isActiveEntry: boolean) {
+    if (!hlRegex || !hlTestRe) return <>{str}</>;
+    hlRegex.lastIndex = 0;
+    const parts = str.split(hlRegex);
+    if (parts.length === 1) return <>{str}</>;
+    return (
+      <>
+        {parts.map((part, i) =>
+          hlTestRe.test(part)
+            ? <mark key={i} className={isActiveEntry ? "bg-amber-400 text-black rounded-sm" : "bg-yellow-200 text-inherit rounded-sm"}>{part}</mark>
+            : part
+        )}
+      </>
+    );
+  }
+
+  // Render each entry as its own block so we can scroll to matched entries
+  const entryTexts = useMemo(() => entries.map((e) => JSON.stringify(e, null, 2)), [entries]);
+
   return (
     <div className="relative">
       <button
@@ -398,14 +452,33 @@ function JsonLogView({ entries, wrapLines = false }: { entries: LogEntry[]; wrap
       >
         {copied ? "Copied" : "Copy JSON"}
       </button>
-      <pre
+      <div
         className={cn(
           "p-4 pt-2 font-mono text-[12px] leading-5 text-slate-700",
           wrapLines ? "whitespace-pre-wrap break-all" : "whitespace-pre",
         )}
       >
-        {text}
-      </pre>
+        {"[\n"}
+        {entryTexts.map((etxt, i) => {
+          const isMatch = matchSet.has(i);
+          const isActive = i === activeEntryIdx;
+          return (
+            <div
+              key={i}
+              data-entry-idx={i}
+              className={cn(
+                isActive && "bg-amber-50 ring-1 ring-inset ring-amber-300 rounded",
+                isMatch && !isActive && "bg-yellow-50/60",
+              )}
+            >
+              {isMatch ? highlightText(etxt, isActive) : etxt}
+              {i < entryTexts.length - 1 ? "," : ""}
+              {"\n"}
+            </div>
+          );
+        })}
+        {"]"}
+      </div>
     </div>
   );
 }
@@ -428,11 +501,11 @@ function formatTerminalLine(entry: LogEntry, defaultSource: string): string {
 
 function terminalLevelClass(level: string): string {
   switch (level.toUpperCase()) {
-    case "ERROR": case "SEVERE": return "text-red-400";
-    case "WARN": case "WARNING": return "text-yellow-300";
-    case "INFO": case "INFORMATION": return "text-green-300";
+    case "ERROR": case "SEVERE": return "text-red-600";
+    case "WARN": case "WARNING": return "text-amber-600";
+    case "INFO": case "INFORMATION": return "text-emerald-700";
     case "DEBUG": case "FINE": case "FINER": case "FINEST": case "TRACE": return "text-slate-400";
-    default: return "text-slate-300";
+    default: return "text-slate-500";
   }
 }
 
@@ -564,7 +637,7 @@ function TailTerminal({
           hlTestRe.test(part)
             ? <mark key={i} className={isActive
               ? "bg-amber-400 text-black rounded-sm"
-              : "bg-sky-400/50 text-white rounded-sm"
+              : "bg-yellow-200 text-inherit rounded-sm"
             }>{part}</mark>
             : part
         )}
@@ -573,7 +646,7 @@ function TailTerminal({
   }
 
   return (
-    <div className="relative h-full flex flex-col bg-slate-950">
+    <div className="relative h-full flex flex-col bg-white">
       <div
         ref={outerRef}
         onScroll={handleScroll}
@@ -581,7 +654,7 @@ function TailTerminal({
       >
         {entries.length === 0 ? (
           <div className="flex items-center justify-center h-full min-h-[120px]">
-            <span className="text-slate-500 text-xs font-mono animate-pulse">Waiting for log entries…</span>
+            <span className="text-slate-400 text-xs font-mono animate-pulse">Waiting for log entries…</span>
           </div>
         ) : wrapLines ? (
           /* Wrap mode: variable-height virtual list via @tanstack/react-virtual */
@@ -604,14 +677,14 @@ function TailTerminal({
                   <div
                     key={isActive ? flashKey : undefined}
                     className={cn(
-                      "px-3 py-px font-mono text-[11px] whitespace-pre-wrap break-all select-text leading-snug",
+                      "px-3 py-px font-mono text-[11px] whitespace-pre-wrap break-all select-text leading-snug border-b border-slate-100",
                       terminalLevelClass(level),
-                      isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-400/15 ring-1 ring-inset ring-amber-400/40 shadow-[0_0_0_1px_rgba(251,191,36,0.25)] animate-match-flash",
+                      isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
                     )}
                   >
                     {highlightLine(line, isActive)}
                     {count > 1 && (
-                      <span className="ml-2 inline-block px-1.5 py-0 rounded bg-amber-900/60 text-amber-300 text-[10px] font-semibold align-middle">
+                      <span className="ml-2 inline-block px-1.5 py-0 rounded bg-amber-100 text-amber-700 text-[10px] font-semibold align-middle">
                         ×{count}
                       </span>
                     )}
@@ -635,14 +708,14 @@ function TailTerminal({
                     key={isActive ? flashKey : absIdx}
                     style={{ height: TERMINAL_ROW_H, lineHeight: `${TERMINAL_ROW_H}px` }}
                     className={cn(
-                      "px-3 font-mono text-[11px] whitespace-nowrap select-text",
+                      "px-3 font-mono text-[11px] whitespace-nowrap select-text border-b border-slate-100",
                       terminalLevelClass(level),
-                      isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-400/15 ring-1 ring-inset ring-amber-400/40 shadow-[0_0_0_1px_rgba(251,191,36,0.25)] animate-match-flash",
+                      isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
                     )}
                   >
                     {highlightLine(line, isActive)}
                     {count > 1 && (
-                      <span className="ml-2 inline-block px-1.5 rounded bg-amber-900/60 text-amber-300 text-[10px] font-semibold align-middle">
+                      <span className="ml-2 inline-block px-1.5 rounded bg-amber-100 text-amber-700 text-[10px] font-semibold align-middle">
                         ×{count}
                       </span>
                     )}
@@ -660,7 +733,7 @@ function TailTerminal({
             const el = outerRef.current;
             if (el) { el.scrollTop = el.scrollHeight; atBottomRef.current = true; setAtBottom(true); }
           }}
-          className="absolute bottom-4 right-4 px-3 py-1.5 text-xs bg-sky-700 text-white rounded-full shadow-lg hover:bg-sky-600 transition-colors z-10"
+          className="absolute bottom-4 right-4 px-3 py-1.5 text-xs bg-sky-600 text-white rounded-full shadow-lg hover:bg-sky-700 transition-colors z-10"
         >
           ↓ Jump to bottom
         </button>
@@ -1499,6 +1572,35 @@ export function LogsExplorer({
     setMatchCursor(nextCursor);
     setActiveMatchKey(row.key);
     setMatchScrollNonce((n) => n + 1);
+
+    // Table view: jump to the right page and highlight the row
+    if (viewMode === "table") {
+      const targetPage = Math.floor(row.index / pageSize) + 1;
+      setPage(targetPage);
+      setHighlightedTableIdx(row.index);
+      setExpandedIdx(null);
+      // Scroll into view after React re-renders the page
+      requestAnimationFrame(() => {
+        const el = scrollContainerRef.current?.querySelector(`[data-row-idx="${row.index}"]`);
+        if (el) {
+          lastProgrammaticScrollAtRef.current = Date.now();
+          el.scrollIntoView({ block: "center" });
+          scrollAtBottomRef.current = false;
+        }
+      });
+    }
+
+    // JSON view: scroll to the matched entry block
+    if (viewMode === "json") {
+      requestAnimationFrame(() => {
+        const el = scrollContainerRef.current?.querySelector(`[data-entry-idx="${row.index}"]`);
+        if (el) {
+          lastProgrammaticScrollAtRef.current = Date.now();
+          el.scrollIntoView({ block: "center" });
+          scrollAtBottomRef.current = false;
+        }
+      });
+    }
   }
 
   function goNextMatch() {
@@ -1764,11 +1866,9 @@ export function LogsExplorer({
                 keywordsDebounceRef.current = setTimeout(() => setKeywordsActive(val), 300);
               }}
               onKeyDown={(e) => {
-                if (terminalView && matchIndices.length > 0) {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    if (e.shiftKey) goPrevMatch(); else goNextMatch();
-                  }
+                if (matchIndices.length > 0 && e.key === "Enter") {
+                  e.preventDefault();
+                  if (e.shiftKey) goPrevMatch(); else goNextMatch();
                 }
               }}
               placeholder="Keywords to highlight, comma-separated…"
@@ -1799,7 +1899,7 @@ export function LogsExplorer({
                 )}
               >[W]</button>
             </div>
-            {terminalView && matchIndices.length > 0 && (
+            {matchIndices.length > 0 && (
               <>
                 <div className="flex items-center gap-1 text-[11px] text-slate-400 whitespace-nowrap tabular-nums">
                   <input
@@ -2101,12 +2201,12 @@ export function LogsExplorer({
         >
           {viewMode === "terminal" ? (
             !fetched && !tailing ? (
-              <div className="flex items-center justify-center h-full min-h-[160px] bg-slate-950">
-                <p className="text-sm text-slate-500 font-mono">Select sources and start tailing or run a search</p>
+              <div className="flex items-center justify-center h-full min-h-[160px]">
+                <p className="text-sm text-slate-400 font-mono">Select sources and start tailing or run a search</p>
               </div>
             ) : deferredIsActive && filtered.length === 0 && fetched && !searching ? (
-              <div className="flex items-center justify-center h-full min-h-[160px] bg-slate-950">
-                <p className="text-sm text-slate-500 font-mono">
+              <div className="flex items-center justify-center h-full min-h-[160px]">
+                <p className="text-sm text-slate-400 font-mono">
                   {entries.length === 0 ? "No log entries returned." : "No entries match the filter."}
                 </p>
               </div>
@@ -2135,7 +2235,16 @@ export function LogsExplorer({
                 {entries.length === 0 ? "No log entries returned for this time range." : "No entries match the filter."}
               </div>
             ) : (
-              <JsonLogView entries={filtered} wrapLines={wrapLines} />
+              <JsonLogView
+                entries={filtered}
+                wrapLines={wrapLines}
+                keywords={keywords}
+                searchTerm={search}
+                activeEntryIdx={activeMatchIndex ?? -1}
+                matchIndices={matchIndices}
+                matchCase={matchCase}
+                wholeWord={wholeWord}
+              />
             )
           ) : !fetched ? (
             <div className="flex items-center justify-center h-full min-h-[160px]">
@@ -2173,7 +2282,7 @@ export function LogsExplorer({
                       onTimestampClick={onOpenContextTab}
                       fullscreen={fullscreen}
                       showFullMessage={showFullMessage}
-                      highlighted={highlightedTableIdx === globalIdx}
+                      highlighted={highlightedTableIdx === globalIdx || activeMatchIndex === globalIdx}
                       rowIdx={globalIdx}
                       matchCase={matchCase}
                       wholeWord={wholeWord}
@@ -2291,10 +2400,10 @@ export function LogsExplorer({
 
         {/* Tail status indicator */}
         {tailing && (
-          <div className="flex items-center justify-between px-4 py-2 border-t border-slate-700 bg-slate-900 shrink-0">
+          <div className="flex items-center justify-between px-4 py-2 border-t border-slate-200 bg-slate-50 shrink-0">
             <div className="flex items-center gap-2">
-              <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-              <span className="text-xs text-slate-300 font-mono">
+              <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+              <span className="text-xs text-slate-600 font-mono">
                 {loading
                   ? `Fetching…`
                   : lastUpdated
@@ -2324,14 +2433,14 @@ export function LogsExplorer({
                     URL.revokeObjectURL(url);
                   } catch { /* ignore */ }
                 }}
-                className="px-2.5 py-1 text-xs font-medium bg-slate-700 text-slate-200 rounded hover:bg-slate-600 transition-colors"
+                className="px-2.5 py-1 text-xs font-medium bg-slate-200 text-slate-700 rounded hover:bg-slate-300 transition-colors"
               >
                 Export session
               </button>
               <button
                 type="button"
                 onClick={() => onConfigChange({ tailing: false })}
-                className="px-2.5 py-1 text-xs font-medium bg-red-900/60 text-red-300 rounded hover:bg-red-900 transition-colors"
+                className="px-2.5 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
               >
                 Stop
               </button>
