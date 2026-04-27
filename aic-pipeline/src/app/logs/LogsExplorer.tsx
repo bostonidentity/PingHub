@@ -1927,6 +1927,7 @@ export function LogsExplorer({
                   <>
                     <input
                       type="datetime-local"
+                      step="1"
                       value={customBegin}
                       onChange={(e) => onConfigChange({ customBegin: e.target.value })}
                       disabled={searching}
@@ -1935,6 +1936,7 @@ export function LogsExplorer({
                     <span className="text-slate-400 text-[11px]">→</span>
                     <input
                       type="datetime-local"
+                      step="1"
                       value={customEnd}
                       onChange={(e) => onConfigChange({ customEnd: e.target.value })}
                       disabled={searching}
