@@ -2092,7 +2092,7 @@ export function LogsExplorer({
                   if (e.shiftKey) goPrevMatch(); else goNextMatch();
                 }
               }}
-              placeholder="Highlight (supports && || ( ) and &quot;phrase&quot;)…"
+              placeholder="Highlight (space=AND, ||, ( ), &quot;phrase&quot;)…"
               className={cn(
                 "flex-1 text-xs rounded border px-2.5 py-1 font-mono focus:outline-none focus:ring-2",
                 highlightQuery.error
@@ -2257,7 +2257,7 @@ export function LogsExplorer({
               value={rawSearch}
               onChange={(e) => handleFilterChange(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") applySearch(rawSearch); }}
-              placeholder="Filter entries… (supports && || ( ) and &quot;phrase&quot;; 3+ chars or Enter)"
+              placeholder="Filter entries… (space=AND, ||, ( ), &quot;phrase&quot;; 3+ chars or Enter)"
               className={cn(
                 "flex-1 text-xs rounded border px-3 py-1.5 font-mono focus:outline-none focus:ring-2",
                 filterQuery.error
