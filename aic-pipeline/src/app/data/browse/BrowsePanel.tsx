@@ -1,7 +1,7 @@
 // src/app/data/browse/BrowsePanel.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import type { Environment } from "@/lib/fr-config";
 import type { SnapshotType } from "@/lib/data/types";
 import type { GlobalSearchHit, GlobalSearchResponse } from "@/app/api/data/search/[env]/route";
@@ -26,6 +26,19 @@ function saveTitlePrefs(prefs: Record<string, string>): void {
 }
 const prefKey = (env: string, type: string) => `${env}::${type}`;
 
+// Splitter width persistence
+const SPLIT_PREF_KEY = "data-browse-split-pct";
+function loadSplitPct(): number {
+  if (typeof window === "undefined") return 40;
+  try {
+    const v = localStorage.getItem(SPLIT_PREF_KEY);
+    return v ? Math.max(15, Math.min(85, Number(v))) : 40;
+  } catch { return 40; }
+}
+function saveSplitPct(pct: number): void {
+  try { localStorage.setItem(SPLIT_PREF_KEY, String(pct)); } catch { /* quota */ }
+}
+
 export function BrowsePanel({ environments }: { environments: Environment[] }) {
   const { env, setEnv } = useDataEnv(environments);
   const [types, setTypes] = useState<SnapshotType[]>([]);
@@ -37,6 +50,35 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
   // Rehydrate display-attribute preferences after mount. Kept out of the
   // useState initializer so server and client renders agree before hydration.
   useEffect(() => { setTitlePrefs(loadTitlePrefs()); }, []);
+
+  // ── Draggable splitter ───────────────────────────────────────────────────
+  const [splitPct, setSplitPct] = useState(40);
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+  useEffect(() => { setSplitPct(loadSplitPct()); }, []);
+  const onDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    draggingRef.current = true;
+    const onMove = (ev: MouseEvent) => {
+      if (!draggingRef.current || !splitContainerRef.current) return;
+      const rect = splitContainerRef.current.getBoundingClientRect();
+      const pct = ((ev.clientX - rect.left) / rect.width) * 100;
+      const clamped = Math.max(15, Math.min(85, pct));
+      setSplitPct(clamped);
+    };
+    const onUp = () => {
+      draggingRef.current = false;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      setSplitPct((v) => { saveSplitPct(v); return v; });
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, []);
 
   useEffect(() => {
     if (!env) return;
@@ -297,8 +339,8 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] gap-4">
-            <div className="bg-white border border-slate-200 rounded-lg overflow-hidden flex flex-col min-h-[500px] max-h-[calc(100vh-280px)]">
+          <div ref={splitContainerRef} className="flex flex-col lg:flex-row min-h-[500px] max-h-[calc(100vh-280px)]">
+            <div style={{ flex: `0 0 ${splitPct}%` }} className="min-w-0 bg-white border border-slate-200 rounded-lg overflow-hidden flex flex-col">
               <div className="px-3 py-2 border-b border-slate-100 flex items-center gap-2 flex-wrap">
                 <input
                   type="text"
@@ -366,7 +408,19 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
               )}
             </div>
 
-            <RecordDetailPane env={env} type={selectedType} id={selectedId} />
+            {/* Draggable divider — hidden on mobile (stacked layout) */}
+            <div
+              role="separator"
+              onMouseDown={onDragStart}
+              className="hidden lg:flex items-center justify-center w-2 cursor-col-resize group shrink-0 select-none"
+              title="Drag to resize panels"
+            >
+              <div className="w-0.5 h-8 rounded-full bg-slate-300 group-hover:bg-sky-400 group-active:bg-sky-500 transition-colors" />
+            </div>
+
+            <div className="flex-1 min-w-0">
+              <RecordDetailPane env={env} type={selectedType} id={selectedId} />
+            </div>
           </div>
         </>
       )}
