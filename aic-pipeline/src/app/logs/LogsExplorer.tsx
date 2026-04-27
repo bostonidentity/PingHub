@@ -1849,6 +1849,15 @@ export function LogsExplorer({
                     "Search"
                   )}
                 </button>
+                {searching && (
+                  <button
+                    type="button"
+                    onClick={() => workerRef.current?.postMessage({ type: "fetch-stop" })}
+                    className="px-3 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+                  >
+                    Stop
+                  </button>
+                )}
               </div>
             )}
 
