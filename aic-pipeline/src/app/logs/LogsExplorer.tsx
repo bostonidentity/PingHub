@@ -1115,6 +1115,9 @@ export function LogsExplorer({
   onFullscreenChange,
   txSearchId,
   onOpenContextTab,
+  onOpenEntryContextTab,
+  initialEntries: initEntries,
+  initialContextAnchor: initAnchor,
 }: {
   environments: EnvWithLogApi[];
   config: TabConfig;
@@ -1128,6 +1131,9 @@ export function LogsExplorer({
   onFullscreenChange?: (v: boolean) => void;
   txSearchId?: { id: string; seq: number };
   onOpenContextTab?: (timestamp: string, source: string) => void;
+  onOpenEntryContextTab?: (entries: LogEntry[], anchorIdx: number, radius: number) => void;
+  initialEntries?: LogEntry[];
+  initialContextAnchor?: number;
 }) {
   const { env, selectedSources, sourcesError, levelFilter, mode, tailSecs, tailing, loading, preset, customBegin, customEnd, searchSeq, searching } = config;
   const { confirm } = useDialog();
@@ -1155,10 +1161,10 @@ export function LogsExplorer({
 
 
 
-  const [entries, setEntries] = useState<LogEntry[]>([]);
+  const [entries, setEntries] = useState<LogEntry[]>(() => initEntries ?? []);
   const [error, setError] = useState("");
-  const [fetched, setFetched] = useState(false);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [fetched, setFetched] = useState(() => !!(initEntries && initEntries.length > 0));
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(() => initEntries?.length ? new Date() : null);
 
   const [showFullMessage, setShowFullMessage] = useState(false);
   // View prefs live in TabConfig so they persist per tab across reloads.
@@ -1240,7 +1246,7 @@ export function LogsExplorer({
   const shrink = () => setTableHeight((h) => { const next = Math.max(200, h - 50); saveHeight(next); return next; });
 
   // ── Context window (±N entries around a user-selected anchor) ──
-  const [contextAnchor, setContextAnchor] = useState<number | null>(null); // index into full filteredWithIdx
+  const [contextAnchor, setContextAnchor] = useState<number | null>(() => initAnchor ?? null);
   const [contextRadius, setContextRadius] = useState(1000);
 
   // ── Transaction drill-down (from clicking inline txId in table) ──
@@ -1564,8 +1570,6 @@ export function LogsExplorer({
     return remapped;
   }, [contextActive, cxStart, dupeCounts, displayFilteredWithIdx.length]);
   const contextAnchorDisplay = contextActive ? contextAnchor - cxStart : null;
-  // Total filtered count before context slicing (for status display)
-  const fullFilteredCount = filteredWithIdx.length;
 
   const filtered = useMemo(() => displayFilteredWithIdx.map(({ e }) => e), [displayFilteredWithIdx]);
 
@@ -1661,17 +1665,17 @@ export function LogsExplorer({
     navigateToMatch(matchCursor <= 0 ? matchRows.length - 1 : matchCursor - 1);
   }
 
-  // ── Context window activation ──
-  // `displayIdx` is the index in the current display (which may already be sliced).
-  // Map back to the full `filteredWithIdx` position before storing.
+  // ── Context window activation — open ±N entries in a new tab ──
   function handleContextEntry(displayIdx: number) {
+    if (!onOpenEntryContextTab) return;
+    // Map display index back to the full filteredWithIdx space
     const originalIdx = contextActive ? cxStart + displayIdx : displayIdx;
-    if (contextAnchor === originalIdx) {
-      setContextAnchor(null); // toggle off
-    } else {
-      setContextAnchor(originalIdx);
-      setPage(1); // reset pagination when entering/changing context
-    }
+    // Slice ±contextRadius from the full filter result
+    const sliceStart = Math.max(0, originalIdx - contextRadius);
+    const sliceEnd = Math.min(filteredWithIdx.length, originalIdx + contextRadius + 1);
+    const slicedEntries = filteredWithIdx.slice(sliceStart, sliceEnd).map(({ e }) => e);
+    const anchorInSlice = originalIdx - sliceStart;
+    onOpenEntryContextTab(slicedEntries, anchorInSlice, contextRadius);
   }
 
   // ── Pagination (page 1 = oldest, last page = newest) ──
@@ -2246,7 +2250,7 @@ export function LogsExplorer({
           </div>
         </div>
 
-        {/* Context window toolbar */}
+        {/* Context anchor indicator */}
         {contextActive && (
           <div className="flex items-center justify-between px-4 py-1.5 border-t border-violet-200 bg-violet-50/80 shrink-0">
             <div className="flex items-center gap-2">
@@ -2254,44 +2258,18 @@ export function LogsExplorer({
                 <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 3.75H6A2.25 2.25 0 003.75 6v1.5M16.5 3.75H18A2.25 2.25 0 0120.25 6v1.5M16.5 20.25H18A2.25 2.25 0 0020.25 18v-1.5M7.5 20.25H6A2.25 2.25 0 013.75 18v-1.5" />
               </svg>
               <span className="text-xs text-violet-700 font-medium">
-                Context: ±{contextRadius.toLocaleString()} around entry #{contextAnchor + 1}
+                Anchor: entry #{contextAnchor! + 1} of {filtered.length.toLocaleString()}
               </span>
               <span className="text-xs text-violet-500">
-                ({filtered.length.toLocaleString()} of {fullFilteredCount.toLocaleString()})
+                Double-click an entry to open a new context tab · Click Search to re-fetch from API
               </span>
             </div>
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => setContextRadius((r) => Math.max(10, r - 500))}
-                disabled={contextRadius <= 10}
-                className="px-1.5 py-0.5 text-xs font-bold text-violet-600 bg-violet-100 rounded hover:bg-violet-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                title="Reduce context window"
-              >−</button>
-              <input
-                type="number"
-                value={contextRadius}
-                onChange={(e) => {
-                  const v = parseInt(e.target.value, 10);
-                  if (!isNaN(v) && v >= 1) setContextRadius(v);
-                }}
-                className="w-20 px-1.5 py-0.5 text-xs text-center font-mono rounded border border-violet-300 focus:outline-none focus:ring-1 focus:ring-violet-500"
-                min={1}
-                title="Number of entries before and after the anchor"
-              />
-              <button
-                type="button"
-                onClick={() => setContextRadius((r) => r + 500)}
-                className="px-1.5 py-0.5 text-xs font-bold text-violet-600 bg-violet-100 rounded hover:bg-violet-200 transition-colors"
-                title="Increase context window"
-              >+</button>
-              <button
-                type="button"
-                onClick={() => setContextAnchor(null)}
-                className="ml-1 px-2 py-0.5 text-xs font-medium text-violet-700 bg-violet-100 rounded hover:bg-violet-200 transition-colors"
-                title="Exit context mode"
-              >✕ Clear</button>
-            </div>
+            <button
+              type="button"
+              onClick={() => setContextAnchor(null)}
+              className="px-2 py-0.5 text-xs font-medium text-violet-700 bg-violet-100 rounded hover:bg-violet-200 transition-colors"
+              title="Clear anchor highlight"
+            >✕ Clear</button>
           </div>
         )}
 
@@ -2627,6 +2605,10 @@ interface TabDef {
   id: number;
   label: string;
   config: TabConfig;
+  /** Pre-loaded entries for context tabs — not persisted to localStorage */
+  initialEntries?: LogEntry[];
+  /** Index into initialEntries marking the anchor entry */
+  initialContextAnchor?: number;
 }
 
 function makeDefaultConfig(environments: EnvWithLogApi[]): TabConfig {
@@ -2707,7 +2689,7 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
     if (!mounted) return;
     try {
       const payload = {
-        tabs: tabs.map((t) => ({ ...t, config: sanitizeConfigForPersist(t.config) })),
+        tabs: tabs.map((t) => ({ id: t.id, label: t.label, config: sanitizeConfigForPersist(t.config) })),
         activeId,
         tzMode,
       };
@@ -2771,6 +2753,34 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
       searching: false,
     };
     setTabs((prev) => [...prev, { id, label, config }]);
+    setActiveId(id);
+  }
+
+  function openEntryContextTab(contextEntries: LogEntry[], anchorIdx: number, radius: number) {
+    if (contextEntries.length === 0) return;
+    const id = _nextTabId++;
+    const tabEnv = tabs.find((t) => t.id === activeId)?.config.env ?? "";
+    const tabSources = tabs.find((t) => t.id === activeId)?.config.selectedSources ?? ["am-everything", "idm-everything"];
+    const anchor = contextEntries[anchorIdx];
+    const first = contextEntries[0];
+    const last = contextEntries[contextEntries.length - 1];
+    const shortTime = new Date(anchor.timestamp).toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const label = `±${radius} @${shortTime} (${tabEnv})`;
+    const begin = toDatetimeLocal(first.timestamp, tzMode);
+    const end = toDatetimeLocal(last.timestamp, tzMode);
+    const baseConfig = makeDefaultConfig(environments);
+    const config: TabConfig = {
+      ...baseConfig,
+      env: tabEnv || baseConfig.env,
+      selectedSources: tabSources,
+      mode: "search",
+      preset: "custom",
+      customBegin: begin,
+      customEnd: end,
+      searchSeq: 0,
+      searching: false,
+    };
+    setTabs((prev) => [...prev, { id, label, config, initialEntries: contextEntries, initialContextAnchor: anchorIdx }]);
     setActiveId(id);
   }
 
@@ -2974,6 +2984,9 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
                 onFullscreenChange={setFullscreen}
                 txSearchId={tab.id === activeId ? txSearch : undefined}
                 onOpenContextTab={openContextTab}
+                onOpenEntryContextTab={openEntryContextTab}
+                initialEntries={tab.initialEntries}
+                initialContextAnchor={tab.initialContextAnchor}
               />
             </div>
           </div>
