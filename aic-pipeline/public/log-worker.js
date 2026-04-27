@@ -113,7 +113,7 @@ async function doFetch(env, sources, beginTime, endTime, queryFilter, fetchId) {
 
           // Check if paused
           if (searchPaused) {
-            self.postMessage({ type: "progress", loaded: totalLoaded, page: pageNum, done: false, paused: true });
+            self.postMessage({ type: "progress", loaded: totalLoaded, page: pageNum, done: false, paused: true, source, sourceIdx: si, sourceCount: validSources.length, chunkIdx: ci, chunkCount: chunks.length });
             await waitForResume();
             if (fetchId !== currentFetchId) return;
           }
@@ -152,7 +152,7 @@ async function doFetch(env, sources, beginTime, endTime, queryFilter, fetchId) {
             ? chunk.beginTime.slice(0, 10) + (chunk.endTime ? ' → ' + chunk.endTime.slice(0, 10) : '')
             : '';
           self.postMessage({ type: "entries", entries, append: !isVeryFirst });
-          self.postMessage({ type: "progress", loaded: totalLoaded, page: pageNum, done: isLastSource && isLastChunk && !cookie, paused: false, source, window: windowStr });
+          self.postMessage({ type: "progress", loaded: totalLoaded, page: pageNum, done: isLastSource && isLastChunk && !cookie, paused: false, source, window: windowStr, sourceIdx: si, sourceCount: validSources.length, chunkIdx: ci, chunkCount: chunks.length });
 
           if (isVeryFirst) {
             self.postMessage({ type: "status", loading: false });
