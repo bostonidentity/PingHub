@@ -380,14 +380,24 @@ function ResizableHeader({
 // Single pretty-printed JSON document over all filtered entries. Filters, level
 // filter, and dedupe are already applied by the caller; this just serializes.
 /** Recursively unescape JSON-encoded string values within an object.
- *  If a string value looks like JSON (starts with { or [), try to parse it
- *  and replace the string with the parsed structure so JSON.stringify can
- *  pretty-print it inline. */
+ *  Handles pure JSON strings and strings with a text prefix followed by
+ *  embedded JSON (e.g. "SEVERE: [uuid] Content: {\"key\":\"val\"}").
+ *  Embedded JSON is split into { _prefix, _json } so it renders cleanly. */
 function deepUnescapeJson(val: unknown): unknown {
   if (typeof val === "string") {
     const trimmed = val.trim();
+    // Pure JSON string
     if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
       try { return deepUnescapeJson(JSON.parse(trimmed)); } catch { /* not valid JSON — keep as string */ }
+    }
+    // Text prefix with embedded JSON: find the first { or [ and try to parse from there
+    const jsonStart = findJsonStart(trimmed);
+    if (jsonStart > 0) {
+      const candidate = trimmed.slice(jsonStart);
+      try {
+        const parsed = deepUnescapeJson(JSON.parse(candidate));
+        return { _prefix: trimmed.slice(0, jsonStart).trimEnd(), _json: parsed };
+      } catch { /* not valid JSON after prefix */ }
     }
     return val;
   }
@@ -400,6 +410,16 @@ function deepUnescapeJson(val: unknown): unknown {
     return out;
   }
   return val;
+}
+
+/** Find the index of the first top-level { or [ that could start embedded JSON. */
+function findJsonStart(s: string): number {
+  const braceIdx = s.indexOf("{");
+  const bracketIdx = s.indexOf("[");
+  if (braceIdx < 0 && bracketIdx < 0) return -1;
+  if (braceIdx < 0) return bracketIdx;
+  if (bracketIdx < 0) return braceIdx;
+  return Math.min(braceIdx, bracketIdx);
 }
 
 function JsonLogView({
