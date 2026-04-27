@@ -27,7 +27,7 @@ export function RecordDetailPane({ env, type, id }: { env: string; type: string 
   const content = useMemo(() => (record ? JSON.stringify(record, null, 2) : ""), [record]);
 
   return (
-    <div className="bg-white border border-slate-200 rounded-lg overflow-hidden flex flex-col min-h-[500px] max-h-[calc(100vh-280px)]">
+    <div className="bg-white border border-slate-200 rounded-lg overflow-hidden flex flex-col h-full">
       <div className="px-3 py-2 border-b border-slate-100 flex items-center gap-2 text-xs text-slate-700 shrink-0">
         {type && id
           ? <><span className="font-mono">{type} / {id}</span></>
