@@ -87,69 +87,7 @@ const TAIL_BUFFER_MAX = 500_000; // entries kept in memory; older ones are dropp
 const TERMINAL_ROW_H = 20;     // px — fixed height per row (nowrap lines)
 const TERMINAL_OVERSCAN = 15;    // extra rows rendered above/below viewport
 
-// ── IndexedDB tail session persistence ───────────────────────────────────────
-const IDB_NAME = "ky-pipeline-logs";
-const IDB_VER = 1;
-const IDB_STORE = "tail-batches";
-const IDB_MAX_SESSIONS = 10;
 
-function openLogDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(IDB_NAME, IDB_VER);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(IDB_STORE)) {
-        const s = db.createObjectStore(IDB_STORE, { keyPath: "id", autoIncrement: true });
-        s.createIndex("sessionId", "sessionId");
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-function idbWriteBatch(db: IDBDatabase, sessionId: string, entries: LogEntry[]): void {
-  try {
-    const tx = db.transaction(IDB_STORE, "readwrite");
-    tx.objectStore(IDB_STORE).add({ sessionId, entries, ts: Date.now() });
-    tx.onerror = () => { };
-  } catch { /* ignore */ }
-}
-
-function idbReadSession(db: IDBDatabase, sessionId: string): Promise<LogEntry[]> {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(IDB_STORE, "readonly");
-    const req = tx.objectStore(IDB_STORE).index("sessionId").getAll(sessionId);
-    req.onsuccess = () => {
-      const batches = (req.result as { entries: LogEntry[]; ts: number }[]).sort((a, b) => a.ts - b.ts);
-      resolve(batches.flatMap((b) => b.entries));
-    };
-    req.onerror = () => reject(req.error);
-  });
-}
-
-function idbDeleteSession(db: IDBDatabase, sessionId: string): void {
-  try {
-    const tx = db.transaction(IDB_STORE, "readwrite");
-    const req = tx.objectStore(IDB_STORE).index("sessionId").openCursor(IDBKeyRange.only(sessionId));
-    req.onsuccess = function () {
-      const cursor = (req.result as IDBCursorWithValue | null);
-      if (cursor) { cursor.delete(); cursor.continue(); }
-    };
-    tx.onerror = () => { };
-  } catch { /* ignore */ }
-}
-
-function idbRegisterSession(db: IDBDatabase, sessionId: string): void {
-  try {
-    const raw = localStorage.getItem("tail-session-ids");
-    const ids: string[] = raw ? JSON.parse(raw) : [];
-    ids.push(sessionId);
-    const toDelete = ids.splice(0, Math.max(0, ids.length - IDB_MAX_SESSIONS));
-    localStorage.setItem("tail-session-ids", JSON.stringify(ids));
-    toDelete.forEach((id) => idbDeleteSession(db, id));
-  } catch { /* ignore */ }
-}
 
 function toDatetimeLocal(iso: string): string {
   // Format in LOCAL time so <input type="datetime-local"> shows and stores the right value.
@@ -184,8 +122,7 @@ export interface TabConfig {
   wrapLines?: boolean;
   dedupe?: boolean;
   autoScroll?: boolean;
-  /** IndexedDB session id — survives reload so entries can be rehydrated */
-  sessionId?: string;
+
 }
 
 // ── Field extraction ────────────────────────────────────────────────────────
@@ -1087,32 +1024,7 @@ export function LogsExplorer({
   const [wholeWord, setWholeWord] = useState(false);
   const highlightInputRef = useRef<HTMLInputElement>(null);
 
-  // ── Auto-save helper (summary-only; entry payloads no longer persisted) ──
-  const autoSaveToHistory = useCallback((logMode: "search" | "tail" | "transaction", logEntries: unknown[], extra?: { transactionId?: string }) => {
-    if (logEntries.length === 0) return;
-    fetch("/api/history", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: "log-search",
-        environment: env,
-        scopes: [],
-        status: "success",
-        startedAt: new Date().toISOString(),
-        durationMs: 0,
-        summary: logMode === "transaction"
-          ? `${logEntries.length} entries for tx:${extra?.transactionId?.slice(0, 16) ?? ""}…`
-          : `${logEntries.length} entries from ${selectedSources.join("+")}`,
-        logSource: selectedSources.join("+"),
-        logMode,
-        logPreset: logMode === "search" ? preset : undefined,
-        logEntryCount: logEntries.length,
-      }),
-    }).then(() => {
-      setSaveFlash(true);
-      setTimeout(() => setSaveFlash(false), 10000);
-    }).catch(() => { });
-  }, [env, selectedSources, preset]);
+
 
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [error, setError] = useState("");
@@ -1163,7 +1075,7 @@ export function LogsExplorer({
     setRawSearch("");
     applySearch("");
   }
-  const [saveFlash, setSaveFlash] = useState(false);
+
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyRecords, setHistoryRecords] = useState<{ id: string; completedAt: string; environment: string; logSource?: string; logMode?: string; logEntryCount?: number; logPreset?: string; summary: string }[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -1239,8 +1151,6 @@ export function LogsExplorer({
       setLastUpdated(new Date());
       setPage(Infinity);
       onConfigChange({ loading: false });
-      // Auto-save transaction search
-      autoSaveToHistory("transaction", merged, { transactionId: txSearchId.id });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [txSearchId]);
@@ -1249,12 +1159,7 @@ export function LogsExplorer({
 
   // ── Web Worker ──
   const workerRef = useRef<Worker | null>(null);
-  const idbRef = useRef<IDBDatabase | null>(null);
-  const sessionId = config.sessionId;
-  const sessionIdRef = useRef<string | undefined>(sessionId);
-  sessionIdRef.current = sessionId;
   const [tailTotalReceived, setTailTotalReceived] = useState(0);
-  const [hydrated, setHydrated] = useState(false);
 
   const [fetchProgress, setFetchProgress] = useState<{ loaded: number; page: number; done: boolean; paused: boolean; source?: string; window?: string } | null>(null);
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1269,10 +1174,6 @@ export function LogsExplorer({
         | { type: "error"; message: string; transient?: boolean };
 
       if (msg.type === "entries") {
-        if (idbRef.current && sessionIdRef.current && msg.entries.length > 0) {
-          // Persist every incoming batch to IndexedDB (fire-and-forget)
-          idbWriteBatch(idbRef.current, sessionIdRef.current, msg.entries);
-        }
         if (msg.append) {
           setTailTotalReceived((n) => n + msg.entries.length);
         }
@@ -1314,32 +1215,6 @@ export function LogsExplorer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Open IndexedDB and rehydrate prior session entries ──
-  useEffect(() => {
-    let cancelled = false;
-    openLogDb().then(async (db) => {
-      if (cancelled) { db.close(); return; }
-      idbRef.current = db;
-      const sid = sessionIdRef.current;
-      if (sid) {
-        try {
-          const prev = await idbReadSession(db, sid);
-          if (!cancelled && prev.length > 0) {
-            const trimmed = prev.length > TAIL_BUFFER_MAX ? prev.slice(-TAIL_BUFFER_MAX) : prev;
-            startTransition(() => {
-              setEntries(trimmed);
-              setFetched(true);
-              setTailTotalReceived(prev.length);
-              setLastUpdated(new Date());
-            });
-          }
-        } catch { /* ignore */ }
-      }
-      if (!cancelled) setHydrated(true);
-    }).catch(() => { if (!cancelled) setHydrated(true); });
-    return () => { cancelled = true; idbRef.current?.close(); idbRef.current = null; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // ── Sync tab label ──
   useEffect(() => {
@@ -1362,8 +1237,7 @@ export function LogsExplorer({
     if (prevEnvRef.current === env) return;
     prevEnvRef.current = env;
     workerRef.current?.postMessage({ type: "cancel" });
-    onConfigChange({ sourcesError: "", tailing: false, sessionId: undefined });
-    if (idbRef.current && sessionIdRef.current) idbDeleteSession(idbRef.current, sessionIdRef.current);
+    onConfigChange({ sourcesError: "", tailing: false });
     setEntries([]);
     setFetched(false);
     setTailTotalReceived(0);
@@ -1381,27 +1255,16 @@ export function LogsExplorer({
       .finally(() => setHistoryLoading(false));
   }, [historyOpen]);
 
-  // ── Auto-save search results when complete ──
-  const entriesRef = useRef(entries);
-  entriesRef.current = entries;
+  // ── Clear searching flag when fetch completes ──
   const prevDone = useRef(false);
   useEffect(() => {
     const done = !!fetchProgress?.done;
     if (done && !prevDone.current) {
-      // Belt-and-suspenders: ensure searching is cleared whenever fetch completes
       onConfigChange({ searching: false });
-      if (mode === "search") {
-        // Delay slightly to ensure entries state has settled
-        setTimeout(() => {
-          if (entriesRef.current.length > 0) {
-            autoSaveToHistory("search", entriesRef.current);
-          }
-        }, 500);
-      }
     }
     prevDone.current = done;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchProgress?.done, mode, autoSaveToHistory]);
+  }, [fetchProgress?.done]);
 
   // ── Auto-scroll when tailing ──
   useEffect(() => {
@@ -1419,12 +1282,7 @@ export function LogsExplorer({
 
   useEffect(() => {
     if (tailing && !prevTailing.current) {
-      // Start tail — new session (replace any previous session for this tab)
-      if (idbRef.current && sessionIdRef.current) idbDeleteSession(idbRef.current, sessionIdRef.current);
-      const newSession = `tail-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      onConfigChange({ sessionId: newSession });
-      sessionIdRef.current = newSession;
-      if (idbRef.current) idbRegisterSession(idbRef.current, newSession);
+      // Start tail
       setTailTotalReceived(0);
       setEntries([]);
       setFetched(false);
@@ -1491,12 +1349,7 @@ export function LogsExplorer({
     setFetched(false);
     setExpandedIdx(null);
     setFetchProgress(null);
-    // New search session — replace any previously persisted entries for this tab
-    if (idbRef.current && sessionIdRef.current) idbDeleteSession(idbRef.current, sessionIdRef.current);
-    const newSession = `search-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    sessionIdRef.current = newSession;
-    if (idbRef.current) idbRegisterSession(idbRef.current, newSession);
-    onConfigChange({ searching: true, sessionId: newSession });
+    onConfigChange({ searching: true });
     workerRef.current?.postMessage({ type: "fetch", env, sources: selectedSources, beginTime, endTime, queryFilter });
     return doCleanup;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1505,22 +1358,7 @@ export function LogsExplorer({
   // Entries dropped from the in-memory circular buffer (tail mode only)
   const tailDropped = tailing ? Math.max(0, tailTotalReceived - entries.length) : 0;
 
-  // Export the full tail session (all batches) from IndexedDB as a .log text file
-  async function exportTailSession() {
-    if (!idbRef.current || !sessionIdRef.current) return;
-    try {
-      const all = await idbReadSession(idbRef.current, sessionIdRef.current);
-      const lines = all.map((e) => formatTerminalLine(e, tailSource)).join("\n");
-      const blob = new Blob([lines], { type: "text/plain" });
-      const url = URL.createObjectURL(blob);
-      const a = Object.assign(document.createElement("a"), {
-        href: url,
-        download: `tail-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.log`,
-      });
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch { /* ignore */ }
-  }
+
 
   // ── Filtered entries ──
   const levelFiltered = useMemo(() =>
@@ -1700,7 +1538,7 @@ export function LogsExplorer({
             </span>
           );
         })()}
-        {saveFlash && <span className="text-xs text-emerald-500 font-medium">Saved to history</span>}
+
         {sourcesError && <span className="text-xs text-red-500">{sourcesError}</span>}
         {error && <span className="text-xs text-red-500">{error}</span>}
       </div>
@@ -2158,17 +1996,6 @@ export function LogsExplorer({
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    autoSaveToHistory(mode as "tail" | "search", entries);
-                    setSaveFlash(true);
-                    setTimeout(() => setSaveFlash(false), 10000);
-                  }}
-                  className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
-                >
-                  {saveFlash ? "Saved!" : "Save"}
-                </button>
-                <button
-                  type="button"
                   onClick={async () => {
                     const ok = await confirm({
                       title: "Clear log entries",
@@ -2177,9 +2004,6 @@ export function LogsExplorer({
                       variant: "warning",
                     });
                     if (ok) {
-                      if (idbRef.current && sessionIdRef.current) idbDeleteSession(idbRef.current, sessionIdRef.current);
-                      sessionIdRef.current = undefined;
-                      onConfigChange({ sessionId: undefined });
                       setEntries([]); setFetched(false); setError(""); clearSearch(); setExpandedIdx(null); setFetchProgress(null); setTailTotalReceived(0);
                     }
                   }}
@@ -2446,14 +2270,25 @@ export function LogsExplorer({
                 <span className="text-xs text-slate-400 font-mono">
                   · {tailTotalReceived.toLocaleString()} total
                   {tailDropped > 0 && ` · ${entries.length.toLocaleString()} in buffer`}
-                  {" · saved to IndexedDB"}
                 </span>
               )}
             </div>
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={exportTailSession}
+                onClick={() => {
+                  try {
+                    const lines = entries.map((e) => formatTerminalLine(e, tailSource)).join("\n");
+                    const blob = new Blob([lines], { type: "text/plain" });
+                    const url = URL.createObjectURL(blob);
+                    const a = Object.assign(document.createElement("a"), {
+                      href: url,
+                      download: `tail-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.log`,
+                    });
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  } catch { /* ignore */ }
+                }}
                 className="px-2.5 py-1 text-xs font-medium bg-slate-700 text-slate-200 rounded hover:bg-slate-600 transition-colors"
               >
                 Export session
