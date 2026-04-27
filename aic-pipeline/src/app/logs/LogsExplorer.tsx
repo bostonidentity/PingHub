@@ -43,10 +43,10 @@ const LEVEL_ORDER = ["FATAL", "SEVERE", "ERROR", "WARN", "WARNING", "INFO", "INF
 
 const LEVEL_FILTERS = [
   { value: "ERROR", label: "ERROR+" },
-  { value: "WARN",  label: "WARN+" },
-  { value: "INFO",  label: "INFO+" },
+  { value: "WARN", label: "WARN+" },
+  { value: "INFO", label: "INFO+" },
   { value: "DEBUG", label: "DEBUG+" },
-  { value: "ALL",   label: "ALL" },
+  { value: "ALL", label: "ALL" },
 ];
 
 function levelPassesFilter(level: string, minLevel: string): boolean {
@@ -70,26 +70,26 @@ type LogMode = "tail" | "search";
 type Preset = "15m" | "1h" | "6h" | "24h" | "3d" | "5d" | "7d" | "30d" | "custom";
 
 const PRESETS: { label: string; value: Preset; ms: number }[] = [
-  { label: "15 min",   value: "15m",  ms: 15 * 60 * 1000 },
-  { label: "1 hour",   value: "1h",   ms: 60 * 60 * 1000 },
-  { label: "6 hours",  value: "6h",   ms: 6 * 60 * 60 * 1000 },
-  { label: "24 hours", value: "24h",  ms: 24 * 60 * 60 * 1000 },
-  { label: "3 days",   value: "3d",   ms: 3 * 24 * 60 * 60 * 1000 },
-  { label: "5 days",   value: "5d",   ms: 5 * 24 * 60 * 60 * 1000 },
-  { label: "7 days",   value: "7d",   ms: 7 * 24 * 60 * 60 * 1000 },
-  { label: "1 month",  value: "30d",  ms: 30 * 24 * 60 * 60 * 1000 },
-  { label: "Custom",   value: "custom", ms: 0 },
+  { label: "15 min", value: "15m", ms: 15 * 60 * 1000 },
+  { label: "1 hour", value: "1h", ms: 60 * 60 * 1000 },
+  { label: "6 hours", value: "6h", ms: 6 * 60 * 60 * 1000 },
+  { label: "24 hours", value: "24h", ms: 24 * 60 * 60 * 1000 },
+  { label: "3 days", value: "3d", ms: 3 * 24 * 60 * 60 * 1000 },
+  { label: "5 days", value: "5d", ms: 5 * 24 * 60 * 60 * 1000 },
+  { label: "7 days", value: "7d", ms: 7 * 24 * 60 * 60 * 1000 },
+  { label: "1 month", value: "30d", ms: 30 * 24 * 60 * 60 * 1000 },
+  { label: "Custom", value: "custom", ms: 0 },
 ];
 
 const LOG_SOURCES = ["am-everything", "idm-everything"] as const;
 
-const TAIL_BUFFER_MAX  = 50_000; // entries kept in memory; older ones are dropped
-const TERMINAL_ROW_H   = 20;     // px — fixed height per row (nowrap lines)
+const TAIL_BUFFER_MAX = 500_000; // entries kept in memory; older ones are dropped
+const TERMINAL_ROW_H = 20;     // px — fixed height per row (nowrap lines)
 const TERMINAL_OVERSCAN = 15;    // extra rows rendered above/below viewport
 
 // ── IndexedDB tail session persistence ───────────────────────────────────────
-const IDB_NAME  = "ky-pipeline-logs";
-const IDB_VER   = 1;
+const IDB_NAME = "ky-pipeline-logs";
+const IDB_VER = 1;
 const IDB_STORE = "tail-batches";
 const IDB_MAX_SESSIONS = 10;
 
@@ -104,7 +104,7 @@ function openLogDb(): Promise<IDBDatabase> {
       }
     };
     req.onsuccess = () => resolve(req.result);
-    req.onerror  = () => reject(req.error);
+    req.onerror = () => reject(req.error);
   });
 }
 
@@ -112,13 +112,13 @@ function idbWriteBatch(db: IDBDatabase, sessionId: string, entries: LogEntry[]):
   try {
     const tx = db.transaction(IDB_STORE, "readwrite");
     tx.objectStore(IDB_STORE).add({ sessionId, entries, ts: Date.now() });
-    tx.onerror = () => {};
+    tx.onerror = () => { };
   } catch { /* ignore */ }
 }
 
 function idbReadSession(db: IDBDatabase, sessionId: string): Promise<LogEntry[]> {
   return new Promise((resolve, reject) => {
-    const tx  = db.transaction(IDB_STORE, "readonly");
+    const tx = db.transaction(IDB_STORE, "readonly");
     const req = tx.objectStore(IDB_STORE).index("sessionId").getAll(sessionId);
     req.onsuccess = () => {
       const batches = (req.result as { entries: LogEntry[]; ts: number }[]).sort((a, b) => a.ts - b.ts);
@@ -136,13 +136,13 @@ function idbDeleteSession(db: IDBDatabase, sessionId: string): void {
       const cursor = (req.result as IDBCursorWithValue | null);
       if (cursor) { cursor.delete(); cursor.continue(); }
     };
-    tx.onerror = () => {};
+    tx.onerror = () => { };
   } catch { /* ignore */ }
 }
 
 function idbRegisterSession(db: IDBDatabase, sessionId: string): void {
   try {
-    const raw  = localStorage.getItem("tail-session-ids");
+    const raw = localStorage.getItem("tail-session-ids");
     const ids: string[] = raw ? JSON.parse(raw) : [];
     ids.push(sessionId);
     const toDelete = ids.splice(0, Math.max(0, ids.length - IDB_MAX_SESSIONS));
@@ -183,6 +183,7 @@ export interface TabConfig {
   terminalView?: boolean;
   wrapLines?: boolean;
   dedupe?: boolean;
+  autoScroll?: boolean;
   /** IndexedDB session id — survives reload so entries can be rehydrated */
   sessionId?: string;
 }
@@ -416,7 +417,7 @@ function JsonLogView({ entries, wrapLines = false }: { entries: LogEntry[]; wrap
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    }).catch(() => {});
+    }).catch(() => { });
   };
   return (
     <div className="relative">
@@ -458,9 +459,9 @@ function formatTerminalLine(entry: LogEntry, defaultSource: string): string {
 
 function terminalLevelClass(level: string): string {
   switch (level.toUpperCase()) {
-    case "ERROR": case "SEVERE":  return "text-red-400";
-    case "WARN":  case "WARNING": return "text-yellow-300";
-    case "INFO":  case "INFORMATION": return "text-green-300";
+    case "ERROR": case "SEVERE": return "text-red-400";
+    case "WARN": case "WARNING": return "text-yellow-300";
+    case "INFO": case "INFORMATION": return "text-green-300";
     case "DEBUG": case "FINE": case "FINER": case "FINEST": case "TRACE": return "text-slate-400";
     default: return "text-slate-300";
   }
@@ -469,7 +470,7 @@ function terminalLevelClass(level: string): string {
 function TailTerminal({
   entries, defaultSource, searchTerm, keywords, wrapLines = false,
   scrollRequest = null, activeMatchIndex = null, matchCase = false, wholeWord = false,
-  dupeCounts,
+  dupeCounts, autoScroll = true,
 }: {
   entries: LogEntry[];
   defaultSource: string;
@@ -481,9 +482,10 @@ function TailTerminal({
   activeMatchIndex?: number | null;
   matchCase?: boolean;
   wholeWord?: boolean;
+  autoScroll?: boolean;
 }) {
-  const outerRef    = useRef<HTMLDivElement>(null);
-  const [viewH, setViewH]       = useState(400);
+  const outerRef = useRef<HTMLDivElement>(null);
+  const [viewH, setViewH] = useState(400);
   const [scrollTop, setScrollTop] = useState(0);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
@@ -515,15 +517,15 @@ function TailTerminal({
 
   // Auto-scroll to bottom when new entries arrive
   useEffect(() => {
-    if (!atBottomRef.current) return;
+    if (!autoScroll || !atBottomRef.current) return;
     lastProgrammaticScrollRef.current = Date.now();
     if (wrapLines) {
       if (entries.length > 0) wrapVirtualizer.scrollToIndex(entries.length - 1, { align: "end" });
     } else if (outerRef.current) {
       outerRef.current.scrollTop = outerRef.current.scrollHeight;
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries.length, wrapLines]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries.length, wrapLines, autoScroll]);
 
   // Scroll to match index
   const scrollRequestIndex = scrollRequest?.index;
@@ -538,7 +540,7 @@ function TailTerminal({
     }
     atBottomRef.current = false;
     setAtBottom(false);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scrollRequestNonce, wrapLines]);
 
   function handleScroll(e: React.UIEvent<HTMLDivElement>) {
@@ -556,9 +558,9 @@ function TailTerminal({
   }
 
   // Virtual list window
-  const totalH   = entries.length * TERMINAL_ROW_H;
+  const totalH = entries.length * TERMINAL_ROW_H;
   const startIdx = Math.max(0, Math.floor(scrollTop / TERMINAL_ROW_H) - TERMINAL_OVERSCAN);
-  const endIdx   = Math.min(entries.length - 1, startIdx + Math.ceil(viewH / TERMINAL_ROW_H) + TERMINAL_OVERSCAN * 2);
+  const endIdx = Math.min(entries.length - 1, startIdx + Math.ceil(viewH / TERMINAL_ROW_H) + TERMINAL_OVERSCAN * 2);
 
   // Flash key: increments each time we navigate to a match, re-triggers the CSS animation
   const [flashKey, setFlashKey] = useState(0);
@@ -577,8 +579,8 @@ function TailTerminal({
       new RegExp(`(${wrapped.join("|")})`, flags),
       new RegExp(`^(?:${wrapped.join("|")})$`, matchCase ? "" : "i"),
     ];
-  // allTerms is derived from props — use the props directly as deps
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // allTerms is derived from props — use the props directly as deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchTerm, keywords, wholeWord, matchCase]);
 
   // A: active row marks use amber; other matched rows use sky-blue
@@ -592,9 +594,9 @@ function TailTerminal({
         {parts.map((part, i) =>
           hlTestRe.test(part)
             ? <mark key={i} className={isActive
-                ? "bg-amber-400 text-black rounded-sm"
-                : "bg-sky-400/50 text-white rounded-sm"
-              }>{part}</mark>
+              ? "bg-amber-400 text-black rounded-sm"
+              : "bg-sky-400/50 text-white rounded-sm"
+            }>{part}</mark>
             : part
         )}
       </>
@@ -618,7 +620,7 @@ function TailTerminal({
             {wrapVirtualizer.getVirtualItems().map((vRow) => {
               const entry = entries[vRow.index];
               const level = getLevel(entry);
-              const line  = formatTerminalLine(entry, defaultSource);
+              const line = formatTerminalLine(entry, defaultSource);
               const count = dupeCounts?.get(vRow.index) ?? 1;
               const isActive = activeMatchIndex === vRow.index;
               return (
@@ -656,7 +658,7 @@ function TailTerminal({
               {entries.slice(startIdx, endIdx + 1).map((entry, i) => {
                 const absIdx = startIdx + i;
                 const level = getLevel(entry);
-                const line  = formatTerminalLine(entry, defaultSource);
+                const line = formatTerminalLine(entry, defaultSource);
                 const count = dupeCounts?.get(absIdx) ?? 1;
                 const isActive = activeMatchIndex === absIdx;
                 return (
@@ -946,7 +948,7 @@ function TransactionDrilldown({
       setEntries(merged);
       setLoading(false);
     });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transactionId]);
 
   const sourcesQueried = sources.length;
@@ -1109,7 +1111,7 @@ export function LogsExplorer({
     }).then(() => {
       setSaveFlash(true);
       setTimeout(() => setSaveFlash(false), 10000);
-    }).catch(() => {});
+    }).catch(() => { });
   }, [env, selectedSources, preset]);
 
   const [entries, setEntries] = useState<LogEntry[]>([]);
@@ -1124,6 +1126,7 @@ export function LogsExplorer({
   const terminalView = viewMode === "terminal";
   const wrapLines = config.wrapLines ?? false;
   const dedupe = config.dedupe ?? false;
+  const autoScroll = config.autoScroll ?? true;
   const setViewMode = useCallback((v: "terminal" | "table" | "json") => {
     // Also write terminalView for backward compat with any pre-existing persisted state.
     onConfigChange({ viewMode: v, terminalView: v === "terminal" });
@@ -1134,6 +1137,9 @@ export function LogsExplorer({
   const setDedupe = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
     onConfigChange({ dedupe: typeof v === "function" ? v(dedupe) : v });
   }, [onConfigChange, dedupe]);
+  const setAutoScroll = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
+    onConfigChange({ autoScroll: typeof v === "function" ? v(autoScroll) : v });
+  }, [onConfigChange, autoScroll]);
   const [rawSearch, setRawSearch] = useState("");   // what's in the input box
   const [search, setSearch] = useState("");          // active filter (3+ chars or Enter)
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1236,16 +1242,16 @@ export function LogsExplorer({
       // Auto-save transaction search
       autoSaveToHistory("transaction", merged, { transactionId: txSearchId.id });
     });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [txSearchId]);
 
   const deferredIsActive = useDeferredValue(isActive);
 
   // ── Web Worker ──
   const workerRef = useRef<Worker | null>(null);
-  const idbRef            = useRef<IDBDatabase | null>(null);
-  const sessionId         = config.sessionId;
-  const sessionIdRef      = useRef<string | undefined>(sessionId);
+  const idbRef = useRef<IDBDatabase | null>(null);
+  const sessionId = config.sessionId;
+  const sessionIdRef = useRef<string | undefined>(sessionId);
   sessionIdRef.current = sessionId;
   const [tailTotalReceived, setTailTotalReceived] = useState(0);
   const [hydrated, setHydrated] = useState(false);
@@ -1305,7 +1311,7 @@ export function LogsExplorer({
     };
     workerRef.current = worker;
     return () => worker.terminate();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Open IndexedDB and rehydrate prior session entries ──
@@ -1332,17 +1338,17 @@ export function LogsExplorer({
       if (!cancelled) setHydrated(true);
     }).catch(() => { if (!cancelled) setHydrated(true); });
     return () => { cancelled = true; idbRef.current?.close(); idbRef.current = null; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Sync tab label ──
   useEffect(() => {
     const sourceLabel =
       selectedSources.length >= 2 ? "both"
-      : selectedSources.length === 1 ? selectedSources[0]
-      : env;
+        : selectedSources.length === 1 ? selectedSources[0]
+          : env;
     onLabelChange?.(`${sourceLabel} (${env})`);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [env, selectedSources]);
 
   // ── Reset entries when env changes (but not on the first mount, so refresh keeps prior logs) ──
@@ -1361,7 +1367,7 @@ export function LogsExplorer({
     setEntries([]);
     setFetched(false);
     setTailTotalReceived(0);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [env]);
 
   // ── Fetch search history when panel opens ──
@@ -1394,19 +1400,19 @@ export function LogsExplorer({
       }
     }
     prevDone.current = done;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchProgress?.done, mode, autoSaveToHistory]);
 
   // ── Auto-scroll when tailing ──
   useEffect(() => {
-    if (tailing && entries.length > 0 && isActive && scrollAtBottomRef.current) {
+    if (autoScroll && tailing && entries.length > 0 && isActive && scrollAtBottomRef.current) {
       const el = scrollContainerRef.current;
       if (el) {
         lastProgrammaticScrollAtRef.current = Date.now();
         el.scrollTop = el.scrollHeight;
       }
     }
-  }, [entries, tailing, isActive]);
+  }, [entries, tailing, isActive, autoScroll]);
 
   // ── React to tailing / tailSecs changes from parent config ──
   const prevTailing = useRef(false);
@@ -1432,7 +1438,7 @@ export function LogsExplorer({
       workerRef.current?.postMessage({ type: "tail-start", env, sources: tailSources, tailSecs });
     }
     prevTailing.current = tailing;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tailing, tailSecs, tailSources.join(",")]);
 
   // ── React to search mode fetch trigger ──
@@ -1475,9 +1481,9 @@ export function LogsExplorer({
     const allTerms = keywordsRawRef.current.split(",").map((k) => k.trim()).filter(Boolean);
     const queryFilter = allTerms.length > 0
       ? allTerms.map((t) => {
-          const v = escapeFilterValue(t);
-          return `(/payload co "${v}") or (/payload/message co "${v}") or (/payload/eventName co "${v}")`;
-        }).join(" or ")
+        const v = escapeFilterValue(t);
+        return `(/payload co "${v}") or (/payload/message co "${v}") or (/payload/eventName co "${v}")`;
+      }).join(" or ")
       : undefined;
 
     setError("");
@@ -1493,7 +1499,7 @@ export function LogsExplorer({
     onConfigChange({ searching: true, sessionId: newSession });
     workerRef.current?.postMessage({ type: "fetch", env, sources: selectedSources, beginTime, endTime, queryFilter });
     return doCleanup;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchSeq]);
 
   // Entries dropped from the in-memory circular buffer (tail mode only)
@@ -1503,11 +1509,11 @@ export function LogsExplorer({
   async function exportTailSession() {
     if (!idbRef.current || !sessionIdRef.current) return;
     try {
-      const all   = await idbReadSession(idbRef.current, sessionIdRef.current);
+      const all = await idbReadSession(idbRef.current, sessionIdRef.current);
       const lines = all.map((e) => formatTerminalLine(e, tailSource)).join("\n");
-      const blob  = new Blob([lines], { type: "text/plain" });
-      const url   = URL.createObjectURL(blob);
-      const a     = Object.assign(document.createElement("a"), {
+      const blob = new Blob([lines], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = Object.assign(document.createElement("a"), {
         href: url,
         download: `tail-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.log`,
       });
@@ -1521,7 +1527,7 @@ export function LogsExplorer({
     levelFilter === "ALL"
       ? entries
       : entries.filter((e) => levelPassesFilter(getLevel(e), levelFilter)),
-  [entries, levelFilter]);
+    [entries, levelFilter]);
 
   // Pre-compute searchable strings once per levelFiltered change
   const defaultSourceForNav = selectedSources[0] ?? "";
@@ -1530,7 +1536,7 @@ export function LogsExplorer({
       json: JSON.stringify(e),
       line: formatTerminalLine(e, defaultSourceForNav),
     })),
-  [levelFiltered, defaultSourceForNav]);
+    [levelFiltered, defaultSourceForNav]);
 
   const rawFilteredWithIdx = useMemo(() => {
     if (!search) return levelFiltered.map((e, i) => ({ e, i }));
@@ -1590,7 +1596,7 @@ export function LogsExplorer({
       setMatchCursor(-1);
       setActiveMatchKey(null);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keywordsActive, matchCase, wholeWord]);
 
   // When tailing adds entries, keep the current match anchored without issuing
@@ -1716,15 +1722,15 @@ export function LogsExplorer({
                 const age = Date.now() - new Date(rec.completedAt).getTime();
                 const ageStr = age < 60000 ? "just now"
                   : age < 3600000 ? `${Math.floor(age / 60000)}m ago`
-                  : age < 86400000 ? `${Math.floor(age / 3600000)}h ago`
-                  : `${Math.floor(age / 86400000)}d ago`;
+                    : age < 86400000 ? `${Math.floor(age / 3600000)}h ago`
+                      : `${Math.floor(age / 86400000)}d ago`;
                 return (
                   <div key={rec.id} className="flex items-center gap-3 px-4 py-2 hover:bg-slate-50 transition-colors text-xs">
                     <span className={cn(
                       "shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium",
                       rec.logMode === "search" ? "bg-sky-100 text-sky-700"
                         : rec.logMode === "tail" ? "bg-emerald-100 text-emerald-700"
-                        : "bg-violet-100 text-violet-700"
+                          : "bg-violet-100 text-violet-700"
                     )}>
                       {rec.logMode ?? "search"}
                     </span>
@@ -1746,516 +1752,522 @@ export function LogsExplorer({
         "bg-white border border-slate-200 flex flex-col",
         fullscreen ? "fixed inset-0 z-50 rounded-none overflow-hidden" : "rounded-lg"
       )}>
-          {/* Fullscreen tab bar */}
-          {fullscreen && tabs.length > 0 && (
-            <div className="flex items-end gap-0 border-b border-slate-200 bg-slate-50 shrink-0">
-              {tabs.map((tab) => (
+        {/* Fullscreen tab bar */}
+        {fullscreen && tabs.length > 0 && (
+          <div className="flex items-end gap-0 border-b border-slate-200 bg-slate-50 shrink-0">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => onTabSwitch?.(tab.id)}
+                className={cn(
+                  "px-3 py-2 text-xs border-b-2 transition-colors whitespace-nowrap",
+                  tab.id === activeTabId
+                    ? "border-sky-600 text-slate-900 font-medium bg-white"
+                    : "border-transparent text-slate-500 hover:text-slate-700 hover:bg-white/60"
+                )}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Toolbar */}
+        <div className="flex flex-col border-b border-slate-100 bg-slate-50/50 shrink-0">
+          {/* Row 1: mode toggle + tail/search controls + keyword highlights */}
+          <div className="flex items-center gap-2 px-4 py-2">
+            {/* Mode toggle */}
+            <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+              {(["tail", "search"] as LogMode[]).map((m) => (
                 <button
-                  key={tab.id}
+                  key={m}
                   type="button"
-                  onClick={() => onTabSwitch?.(tab.id)}
+                  onClick={() => {
+                    if (tailing) onConfigChange({ tailing: false });
+                    onConfigChange({ mode: m });
+                  }}
+                  disabled={loading || searching}
                   className={cn(
-                    "px-3 py-2 text-xs border-b-2 transition-colors whitespace-nowrap",
-                    tab.id === activeTabId
-                      ? "border-sky-600 text-slate-900 font-medium bg-white"
-                      : "border-transparent text-slate-500 hover:text-slate-700 hover:bg-white/60"
+                    "px-2 py-0.5 text-[11px] font-medium transition-colors",
+                    mode === m
+                      ? "bg-slate-900 text-white"
+                      : "bg-white text-slate-500 hover:bg-slate-50"
                   )}
                 >
-                  {tab.label}
+                  {m === "tail" ? "Tail" : "Search"}
                 </button>
               ))}
             </div>
-          )}
 
-          {/* Toolbar */}
-          <div className="flex flex-col border-b border-slate-100 bg-slate-50/50 shrink-0">
-            {/* Row 1: mode toggle + tail/search controls + keyword highlights */}
-            <div className="flex items-center gap-2 px-4 py-2">
-              {/* Mode toggle */}
-              <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
-                {(["tail", "search"] as LogMode[]).map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => {
-                      if (tailing) onConfigChange({ tailing: false });
-                      onConfigChange({ mode: m });
-                    }}
-                    disabled={loading || searching}
-                    className={cn(
-                      "px-2 py-0.5 text-[11px] font-medium transition-colors",
-                      mode === m
-                        ? "bg-slate-900 text-white"
-                        : "bg-white text-slate-500 hover:bg-slate-50"
-                    )}
-                  >
-                    {m === "tail" ? "Tail" : "Search"}
-                  </button>
-                ))}
-              </div>
-
-              {/* Tail mode controls */}
-              {mode === "tail" && (
-                <>
-                  {!tailing ? (
-                    <button
-                      type="button"
-                      onClick={() => onConfigChange({ tailing: true })}
-                      disabled={loading || searching || selectedSources.length === 0 || !!sourcesError}
-                      className="px-3 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 disabled:opacity-50 transition-colors shrink-0"
-                    >
-                      Tail Logs
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => onConfigChange({ tailing: false })}
-                      className="px-3 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors shrink-0"
-                    >
-                      Stop Tail
-                    </button>
-                  )}
-                </>
-              )}
-
-              {/* Search mode controls */}
-              {mode === "search" && (
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <select
-                    value={preset}
-                    onChange={(e) => onConfigChange({ preset: e.target.value as Preset })}
-                    disabled={searching}
-                    className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50"
-                  >
-                    {PRESETS.map((p) => (
-                      <option key={p.value} value={p.value}>{p.label}</option>
-                    ))}
-                  </select>
-                  {preset === "custom" && (
-                    <>
-                      <input
-                        type="datetime-local"
-                        value={customBegin}
-                        onChange={(e) => onConfigChange({ customBegin: e.target.value })}
-                        disabled={searching}
-                        className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-sky-500"
-                      />
-                      <span className="text-slate-400 text-[11px]">→</span>
-                      <input
-                        type="datetime-local"
-                        value={customEnd}
-                        onChange={(e) => onConfigChange({ customEnd: e.target.value })}
-                        disabled={searching}
-                        className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-sky-500"
-                      />
-                    </>
-                  )}
+            {/* Tail mode controls */}
+            {mode === "tail" && (
+              <>
+                {!tailing ? (
                   <button
                     type="button"
-                    onClick={() => onConfigChange({ searchSeq: (searchSeq ?? 0) + 1 })}
+                    onClick={() => onConfigChange({ tailing: true })}
                     disabled={loading || searching || selectedSources.length === 0 || !!sourcesError}
-                    className="px-3 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 disabled:opacity-50 transition-colors flex items-center gap-1"
+                    className="px-3 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 disabled:opacity-50 transition-colors shrink-0"
                   >
-                    {searching ? (
-                      <>
-                        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                        </svg>
-                        Running…
-                      </>
-                    ) : (
-                      "Search"
-                    )}
+                    Tail Logs
                   </button>
-                </div>
-              )}
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onConfigChange({ tailing: false })}
+                    className="px-3 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors shrink-0"
+                  >
+                    Stop Tail
+                  </button>
+                )}
+              </>
+            )}
 
-              <span className="text-slate-300 select-none shrink-0">|</span>
-              <label className="text-xs font-medium text-slate-500 shrink-0">Highlight</label>
-              <input
-                ref={highlightInputRef}
-                type="text"
-                value={keywordsRaw}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setKeywordsRaw(val);
-                  keywordsRawRef.current = val;
-                  if (keywordsDebounceRef.current) clearTimeout(keywordsDebounceRef.current);
-                  keywordsDebounceRef.current = setTimeout(() => setKeywordsActive(val), 300);
-                }}
-                onKeyDown={(e) => {
-                  if (terminalView && matchIndices.length > 0) {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      if (e.shiftKey) goPrevMatch(); else goNextMatch();
-                    }
-                  }
-                }}
-                placeholder="Keywords to highlight, comma-separated…"
-                className="flex-1 text-xs rounded border border-slate-200 px-2.5 py-1 font-mono focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-amber-400"
-              />
-              {keywordsRaw && (
-                <span className="text-xs text-amber-600 whitespace-nowrap">
-                  {keywords.length} keyword{keywords.length !== 1 ? "s" : ""}
-                </span>
-              )}
-              <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
-                <button
-                  type="button"
-                  title="Case sensitive"
-                  onClick={() => setMatchCase((v) => !v)}
-                  className={cn(
-                    "px-2 py-0.5 text-[11px] font-medium font-mono transition-colors",
-                    matchCase ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-                  )}
-                >Aa</button>
-                <button
-                  type="button"
-                  title="Whole word"
-                  onClick={() => setWholeWord((v) => !v)}
-                  className={cn(
-                    "px-2 py-0.5 text-[11px] font-medium font-mono border-l border-slate-300 transition-colors",
-                    wholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-                  )}
-                >[W]</button>
-              </div>
-              {terminalView && matchIndices.length > 0 && (
-                <>
-                  <div className="flex items-center gap-1 text-[11px] text-slate-400 whitespace-nowrap tabular-nums">
+            {/* Search mode controls */}
+            {mode === "search" && (
+              <div className="flex items-center gap-1.5 shrink-0">
+                <select
+                  value={preset}
+                  onChange={(e) => onConfigChange({ preset: e.target.value as Preset })}
+                  disabled={searching}
+                  className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50"
+                >
+                  {PRESETS.map((p) => (
+                    <option key={p.value} value={p.value}>{p.label}</option>
+                  ))}
+                </select>
+                {preset === "custom" && (
+                  <>
                     <input
-                      type="number"
-                      min={1}
-                      max={matchIndices.length}
-                      value={matchCursor >= 0 ? matchCursor + 1 : ""}
-                      placeholder="–"
-                      onChange={(e) => {
-                        const n = parseInt(e.target.value, 10);
-                        if (!isNaN(n) && n >= 1 && n <= matchRows.length) navigateToMatch(n - 1);
-                      }}
-                      className="w-12 text-center text-[11px] rounded border border-slate-300 px-1 py-0.5 font-mono focus:outline-none focus:ring-1 focus:ring-sky-400 focus:border-sky-400 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                      type="datetime-local"
+                      value={customBegin}
+                      onChange={(e) => onConfigChange({ customBegin: e.target.value })}
+                      disabled={searching}
+                      className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-sky-500"
                     />
-                    <span>/ {matchIndices.length}</span>
-                  </div>
-                  <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
-                    <button
-                      type="button"
-                      title="Previous match (Shift+Enter)"
-                      onClick={goPrevMatch}
-                      className="px-2 py-0.5 text-[11px] font-medium bg-white text-slate-500 hover:bg-slate-50 transition-colors"
-                    >↑ Prev</button>
-                    <button
-                      type="button"
-                      title="Next match (Enter)"
-                      onClick={goNextMatch}
-                      className="px-2 py-0.5 text-[11px] font-medium bg-white text-slate-500 hover:bg-slate-50 border-l border-slate-300 hover:bg-slate-50 transition-colors"
-                    >↓ Next</button>
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* Row 2: view toggle + filter + count + height controls + fullscreen */}
-            <div className="flex items-center gap-3 px-4 py-2 border-t border-slate-100">
-              {/* Terminal / Table / JSON toggle — available in all modes */}
-              <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+                    <span className="text-slate-400 text-[11px]">→</span>
+                    <input
+                      type="datetime-local"
+                      value={customEnd}
+                      onChange={(e) => onConfigChange({ customEnd: e.target.value })}
+                      disabled={searching}
+                      className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-sky-500"
+                    />
+                  </>
+                )}
                 <button
                   type="button"
-                  onClick={() => setViewMode("terminal")}
-                  className={cn(
-                    "px-2 py-0.5 text-[11px] font-medium transition-colors",
-                    viewMode === "terminal" ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-                  )}
+                  onClick={() => onConfigChange({ searchSeq: (searchSeq ?? 0) + 1 })}
+                  disabled={loading || searching || selectedSources.length === 0 || !!sourcesError}
+                  className="px-3 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 disabled:opacity-50 transition-colors flex items-center gap-1"
                 >
-                  Terminal
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setViewMode("table");
-                    if (activeMatchIndex !== null) {
-                      setHighlightedTableIdx(activeMatchIndex);
-                      setPage(Math.floor(activeMatchIndex / pageSize) + 1);
-                      setExpandedIdx(null);
-                    }
-                  }}
-                  className={cn(
-                    "px-2 py-0.5 text-[11px] font-medium border-l border-slate-300 transition-colors",
-                    viewMode === "table" ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                  {searching ? (
+                    <>
+                      <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Running…
+                    </>
+                  ) : (
+                    "Search"
                   )}
-                >
-                  Table
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setViewMode("json")}
-                  className={cn(
-                    "px-2 py-0.5 text-[11px] font-medium border-l border-slate-300 transition-colors",
-                    viewMode === "json" ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-                  )}
-                  title="Show all entries as one JSON document"
-                >
-                  JSON
                 </button>
               </div>
-              {/* Wrap toggle — available in terminal and JSON views */}
-              {(viewMode === "terminal" || viewMode === "json") && (
-                <button
-                  type="button"
-                  onClick={() => setWrapLines((w) => !w)}
-                  title={wrapLines ? "Disable line wrap" : "Wrap long lines"}
-                  className={cn(
-                    "px-2 py-0.5 text-[11px] font-medium rounded border transition-colors shrink-0",
-                    wrapLines
-                      ? "bg-slate-900 text-white border-slate-900"
-                      : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50"
-                  )}
-                >
-                  Wrap
-                </button>
-              )}
+            )}
+
+            <span className="text-slate-300 select-none shrink-0">|</span>
+            <label className="text-xs font-medium text-slate-500 shrink-0">Highlight</label>
+            <input
+              ref={highlightInputRef}
+              type="text"
+              value={keywordsRaw}
+              onChange={(e) => {
+                const val = e.target.value;
+                setKeywordsRaw(val);
+                keywordsRawRef.current = val;
+                if (keywordsDebounceRef.current) clearTimeout(keywordsDebounceRef.current);
+                keywordsDebounceRef.current = setTimeout(() => setKeywordsActive(val), 300);
+              }}
+              onKeyDown={(e) => {
+                if (terminalView && matchIndices.length > 0) {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    if (e.shiftKey) goPrevMatch(); else goNextMatch();
+                  }
+                }
+              }}
+              placeholder="Keywords to highlight, comma-separated…"
+              className="flex-1 text-xs rounded border border-slate-200 px-2.5 py-1 font-mono focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-amber-400"
+            />
+            {keywordsRaw && (
+              <span className="text-xs text-amber-600 whitespace-nowrap">
+                {keywords.length} keyword{keywords.length !== 1 ? "s" : ""}
+              </span>
+            )}
+            <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
               <button
                 type="button"
-                onClick={() => setDedupe((v) => !v)}
-                title={dedupe ? "Show all entries" : "Collapse exact-match duplicates"}
+                title="Case sensitive"
+                onClick={() => setMatchCase((v) => !v)}
+                className={cn(
+                  "px-2 py-0.5 text-[11px] font-medium font-mono transition-colors",
+                  matchCase ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                )}
+              >Aa</button>
+              <button
+                type="button"
+                title="Whole word"
+                onClick={() => setWholeWord((v) => !v)}
+                className={cn(
+                  "px-2 py-0.5 text-[11px] font-medium font-mono border-l border-slate-300 transition-colors",
+                  wholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                )}
+              >[W]</button>
+            </div>
+            {terminalView && matchIndices.length > 0 && (
+              <>
+                <div className="flex items-center gap-1 text-[11px] text-slate-400 whitespace-nowrap tabular-nums">
+                  <input
+                    type="number"
+                    min={1}
+                    max={matchIndices.length}
+                    value={matchCursor >= 0 ? matchCursor + 1 : ""}
+                    placeholder="–"
+                    onChange={(e) => {
+                      const n = parseInt(e.target.value, 10);
+                      if (!isNaN(n) && n >= 1 && n <= matchRows.length) navigateToMatch(n - 1);
+                    }}
+                    className="w-12 text-center text-[11px] rounded border border-slate-300 px-1 py-0.5 font-mono focus:outline-none focus:ring-1 focus:ring-sky-400 focus:border-sky-400 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  />
+                  <span>/ {matchIndices.length}</span>
+                </div>
+                <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+                  <button
+                    type="button"
+                    title="Previous match (Shift+Enter)"
+                    onClick={goPrevMatch}
+                    className="px-2 py-0.5 text-[11px] font-medium bg-white text-slate-500 hover:bg-slate-50 transition-colors"
+                  >↑ Prev</button>
+                  <button
+                    type="button"
+                    title="Next match (Enter)"
+                    onClick={goNextMatch}
+                    className="px-2 py-0.5 text-[11px] font-medium bg-white text-slate-500 hover:bg-slate-50 border-l border-slate-300 hover:bg-slate-50 transition-colors"
+                  >↓ Next</button>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Row 2: view toggle + filter + count + height controls + fullscreen */}
+          <div className="flex items-center gap-3 px-4 py-2 border-t border-slate-100">
+            {/* Terminal / Table / JSON toggle — available in all modes */}
+            <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+              <button
+                type="button"
+                onClick={() => setViewMode("terminal")}
+                className={cn(
+                  "px-2 py-0.5 text-[11px] font-medium transition-colors",
+                  viewMode === "terminal" ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                )}
+              >
+                Terminal
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setViewMode("table");
+                  if (activeMatchIndex !== null) {
+                    setHighlightedTableIdx(activeMatchIndex);
+                    setPage(Math.floor(activeMatchIndex / pageSize) + 1);
+                    setExpandedIdx(null);
+                  }
+                }}
+                className={cn(
+                  "px-2 py-0.5 text-[11px] font-medium border-l border-slate-300 transition-colors",
+                  viewMode === "table" ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                )}
+              >
+                Table
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("json")}
+                className={cn(
+                  "px-2 py-0.5 text-[11px] font-medium border-l border-slate-300 transition-colors",
+                  viewMode === "json" ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                )}
+                title="Show all entries as one JSON document"
+              >
+                JSON
+              </button>
+            </div>
+            {/* Wrap toggle — available in terminal and JSON views */}
+            {(viewMode === "terminal" || viewMode === "json") && (
+              <button
+                type="button"
+                onClick={() => setWrapLines((w) => !w)}
+                title={wrapLines ? "Disable line wrap" : "Wrap long lines"}
                 className={cn(
                   "px-2 py-0.5 text-[11px] font-medium rounded border transition-colors shrink-0",
-                  dedupe
+                  wrapLines
                     ? "bg-slate-900 text-white border-slate-900"
                     : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50"
                 )}
               >
-                Dedupe
+                Wrap
               </button>
-              <input
-                type="text"
-                value={rawSearch}
-                onChange={(e) => handleFilterChange(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") applySearch(rawSearch); }}
-                placeholder="Filter entries… (3+ chars or Enter)"
+            )}
+            {/* Auto-scroll toggle — visible during tailing in terminal view */}
+            {viewMode === "terminal" && (
+              <button
+                type="button"
+                onClick={() => setAutoScroll((v) => !v)}
+                title={autoScroll ? "Pause auto-scroll (stay at current position)" : "Resume auto-scroll to latest entries"}
                 className={cn(
-                  "flex-1 text-xs rounded border px-3 py-1.5 font-mono focus:outline-none focus:ring-2 focus:ring-sky-500",
-                  rawSearch && !search
-                    ? "border-amber-300 focus:ring-amber-400"   // typed but not yet active
-                    : "border-slate-300"
+                  "px-2 py-0.5 text-[11px] font-medium rounded border transition-colors shrink-0",
+                  autoScroll
+                    ? "bg-slate-900 text-white border-slate-900"
+                    : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50"
                 )}
-              />
-              {rawSearch && (
-                <button type="button" onClick={clearSearch} className="text-xs text-slate-400 hover:text-slate-600">
+              >
+                Auto-scroll
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setDedupe((v) => !v)}
+              title={dedupe ? "Show all entries" : "Collapse exact-match duplicates"}
+              className={cn(
+                "px-2 py-0.5 text-[11px] font-medium rounded border transition-colors shrink-0",
+                dedupe
+                  ? "bg-slate-900 text-white border-slate-900"
+                  : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50"
+              )}
+            >
+              Dedupe
+            </button>
+            <input
+              type="text"
+              value={rawSearch}
+              onChange={(e) => handleFilterChange(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") applySearch(rawSearch); }}
+              placeholder="Filter entries… (3+ chars or Enter)"
+              className={cn(
+                "flex-1 text-xs rounded border px-3 py-1.5 font-mono focus:outline-none focus:ring-2 focus:ring-sky-500",
+                rawSearch && !search
+                  ? "border-amber-300 focus:ring-amber-400"   // typed but not yet active
+                  : "border-slate-300"
+              )}
+            />
+            {rawSearch && (
+              <button type="button" onClick={clearSearch} className="text-xs text-slate-400 hover:text-slate-600">
+                Clear
+              </button>
+            )}
+            <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+              <button
+                type="button"
+                title="Case sensitive"
+                onClick={() => setMatchCase((v) => !v)}
+                className={cn(
+                  "px-2 py-0.5 text-[11px] font-medium font-mono transition-colors",
+                  matchCase ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                )}
+              >Aa</button>
+              <button
+                type="button"
+                title="Whole word"
+                onClick={() => setWholeWord((v) => !v)}
+                className={cn(
+                  "px-2 py-0.5 text-[11px] font-medium font-mono border-l border-slate-300 transition-colors",
+                  wholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                )}
+              >[W]</button>
+            </div>
+            {viewMode === "table" && (
+              <label className="flex items-center gap-1.5 text-xs text-slate-500 whitespace-nowrap cursor-pointer shrink-0">
+                <input
+                  type="checkbox"
+                  checked={showFullMessage}
+                  onChange={(e) => setShowFullMessage(e.target.checked)}
+                  className="rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                />
+                Full message
+              </label>
+            )}
+            <span className="text-xs text-slate-400 whitespace-nowrap">
+              {(() => {
+                const totalReceived = mode === "tail" ? Math.max(entries.length, tailTotalReceived) : entries.length;
+                const dedupeHidden = dedupe
+                  ? Array.from(dupeCounts.values()).reduce((sum, n) => sum + (n - 1), 0)
+                  : 0;
+                return (
+                  <>
+                    {filtered.length} / {totalReceived.toLocaleString()}
+                    {dedupe && dedupeHidden > 0 && (
+                      <span className="text-amber-600"> (−{dedupeHidden.toLocaleString()})</span>
+                    )}
+                  </>
+                );
+              })()}
+            </span>
+            {!fullscreen && (
+              <div className="flex items-center gap-0.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={shrink}
+                  title="Shrink"
+                  className="text-slate-400 hover:text-slate-600 transition-colors p-0.5"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={grow}
+                  title="Grow"
+                  className="text-slate-400 hover:text-slate-600 transition-colors p-0.5"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14m-7-7h14" />
+                  </svg>
+                </button>
+              </div>
+            )}
+            {fetched && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const data = JSON.stringify(filtered.map((e) => ({ timestamp: e.timestamp, source: e.source, type: e.type, payload: e.payload })), null, 2);
+                    const blob = new Blob([data], { type: "application/json" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `logs-${selectedSources.join("-")}-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.json`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
+                >
+                  Export
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    autoSaveToHistory(mode as "tail" | "search", entries);
+                    setSaveFlash(true);
+                    setTimeout(() => setSaveFlash(false), 10000);
+                  }}
+                  className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
+                >
+                  {saveFlash ? "Saved!" : "Save"}
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: "Clear log entries",
+                      message: `Clear all ${entries.length} log entries from the screen?`,
+                      confirmLabel: "Clear",
+                      variant: "warning",
+                    });
+                    if (ok) {
+                      if (idbRef.current && sessionIdRef.current) idbDeleteSession(idbRef.current, sessionIdRef.current);
+                      sessionIdRef.current = undefined;
+                      onConfigChange({ sessionId: undefined });
+                      setEntries([]); setFetched(false); setError(""); clearSearch(); setExpandedIdx(null); setFetchProgress(null); setTailTotalReceived(0);
+                    }
+                  }}
+                  className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
+                >
                   Clear
                 </button>
-              )}
-              <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
-                <button
-                  type="button"
-                  title="Case sensitive"
-                  onClick={() => setMatchCase((v) => !v)}
-                  className={cn(
-                    "px-2 py-0.5 text-[11px] font-medium font-mono transition-colors",
-                    matchCase ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-                  )}
-                >Aa</button>
-                <button
-                  type="button"
-                  title="Whole word"
-                  onClick={() => setWholeWord((v) => !v)}
-                  className={cn(
-                    "px-2 py-0.5 text-[11px] font-medium font-mono border-l border-slate-300 transition-colors",
-                    wholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-                  )}
-                >[W]</button>
-              </div>
-              {viewMode === "table" && (
-                <label className="flex items-center gap-1.5 text-xs text-slate-500 whitespace-nowrap cursor-pointer shrink-0">
-                  <input
-                    type="checkbox"
-                    checked={showFullMessage}
-                    onChange={(e) => setShowFullMessage(e.target.checked)}
-                    className="rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-                  />
-                  Full message
-                </label>
-              )}
-              <span className="text-xs text-slate-400 whitespace-nowrap">
-                {(() => {
-                  const totalReceived = mode === "tail" ? Math.max(entries.length, tailTotalReceived) : entries.length;
-                  const dedupeHidden = dedupe
-                    ? Array.from(dupeCounts.values()).reduce((sum, n) => sum + (n - 1), 0)
-                    : 0;
-                  return (
-                    <>
-                      {filtered.length} / {totalReceived.toLocaleString()}
-                      {dedupe && dedupeHidden > 0 && (
-                        <span className="text-amber-600"> (−{dedupeHidden.toLocaleString()})</span>
-                      )}
-                    </>
-                  );
-                })()}
-              </span>
-              {!fullscreen && (
-                <div className="flex items-center gap-0.5 shrink-0">
-                  <button
-                    type="button"
-                    onClick={shrink}
-                    title="Shrink"
-                    className="text-slate-400 hover:text-slate-600 transition-colors p-0.5"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14" />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={grow}
-                    title="Grow"
-                    className="text-slate-400 hover:text-slate-600 transition-colors p-0.5"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14m-7-7h14" />
-                    </svg>
-                  </button>
-                </div>
-              )}
-              {fetched && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const data = JSON.stringify(filtered.map((e) => ({ timestamp: e.timestamp, source: e.source, type: e.type, payload: e.payload })), null, 2);
-                      const blob = new Blob([data], { type: "application/json" });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement("a");
-                      a.href = url;
-                      a.download = `logs-${selectedSources.join("-")}-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.json`;
-                      a.click();
-                      URL.revokeObjectURL(url);
-                    }}
-                    className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
-                  >
-                    Export
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      autoSaveToHistory(mode as "tail" | "search", entries);
-                      setSaveFlash(true);
-                      setTimeout(() => setSaveFlash(false), 10000);
-                    }}
-                    className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
-                  >
-                    {saveFlash ? "Saved!" : "Save"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const ok = await confirm({
-                        title: "Clear log entries",
-                        message: `Clear all ${entries.length} log entries from the screen?`,
-                        confirmLabel: "Clear",
-                        variant: "warning",
-                      });
-                      if (ok) {
-                        if (idbRef.current && sessionIdRef.current) idbDeleteSession(idbRef.current, sessionIdRef.current);
-                        sessionIdRef.current = undefined;
-                        onConfigChange({ sessionId: undefined });
-                        setEntries([]); setFetched(false); setError(""); clearSearch(); setExpandedIdx(null); setFetchProgress(null); setTailTotalReceived(0);
-                      }
-                    }}
-                    className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
-                  >
-                    Clear
-                  </button>
-                </>
-              )}
-              <button
-                type="button"
-                onClick={() => setHistoryOpen((o) => !o)}
-                className={cn("text-xs transition-colors shrink-0", historyOpen ? "text-sky-600" : "text-slate-400 hover:text-slate-600")}
-                title="Search history"
-              >
-                History
-              </button>
-              <button
-                type="button"
-                onClick={() => onFullscreenChange?.(!fullscreen)}
-                title={fullscreen ? "Exit fullscreen (Esc)" : "Fullscreen"}
-                className="text-slate-400 hover:text-slate-600 transition-colors shrink-0"
-              >
-                {fullscreen ? (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" />
-                  </svg>
-                ) : (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
-                  </svg>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* Scrollable log window — CSS resize handle at bottom-right corner */}
-          <div
-            ref={scrollContainerRef}
-            onScroll={(e) => {
-              // Within ~400ms of a programmatic scroll, skip the at-bottom
-              // update so the cascade of scroll events from that scroll can't
-              // flip the flag the wrong way.
-              if (Date.now() - lastProgrammaticScrollAtRef.current < 400) return;
-              const el = e.currentTarget;
-              scrollAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-            }}
-            onMouseUp={() => {
-              if (fullscreen) return;
-              const el = scrollContainerRef.current;
-              if (!el) return;
-              const h = el.clientHeight;
-              if (h >= 200) { setTableHeight(h); saveHeight(h); }
-            }}
-            className={cn(
-              terminalView ? "overflow-hidden" : "overflow-y-auto overflow-x-auto",
-              fullscreen ? "flex-1" : "resize-y min-h-[200px]"
+              </>
             )}
-            style={fullscreen ? undefined : { height: tableHeight }}
-          >
-            {viewMode === "terminal" ? (
-              !fetched && !tailing ? (
-                <div className="flex items-center justify-center h-full min-h-[160px] bg-slate-950">
-                  <p className="text-sm text-slate-500 font-mono">Select sources and start tailing or run a search</p>
-                </div>
-              ) : deferredIsActive && filtered.length === 0 && fetched && !searching ? (
-                <div className="flex items-center justify-center h-full min-h-[160px] bg-slate-950">
-                  <p className="text-sm text-slate-500 font-mono">
-                    {entries.length === 0 ? "No log entries returned." : "No entries match the filter."}
-                  </p>
-                </div>
+            <button
+              type="button"
+              onClick={() => setHistoryOpen((o) => !o)}
+              className={cn("text-xs transition-colors shrink-0", historyOpen ? "text-sky-600" : "text-slate-400 hover:text-slate-600")}
+              title="Search history"
+            >
+              History
+            </button>
+            <button
+              type="button"
+              onClick={() => onFullscreenChange?.(!fullscreen)}
+              title={fullscreen ? "Exit fullscreen (Esc)" : "Fullscreen"}
+              className="text-slate-400 hover:text-slate-600 transition-colors shrink-0"
+            >
+              {fullscreen ? (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" />
+                </svg>
               ) : (
-                <TailTerminal
-                  entries={filtered}
-                  defaultSource={tailSource}
-                  searchTerm={search}
-                  keywords={keywords}
-                  wrapLines={wrapLines}
-                  dupeCounts={dupeCounts}
-                  scrollRequest={matchScrollRequest}
-                  activeMatchIndex={activeMatchIndex}
-                  matchCase={matchCase}
-                  wholeWord={wholeWord}
-                />
-              )
-            ) : viewMode === "json" ? (
-              !fetched ? (
-                <div className="flex items-center justify-center h-full min-h-[160px]">
-                  <p className="text-sm text-slate-400">Select at least one source and click Tail Logs or Search</p>
-                </div>
-              ) : !deferredIsActive ? null : filtered.length === 0 && !searching ? (
-                <div className="p-8 text-center text-sm text-slate-400">
-                  {entries.length === 0 ? "No log entries returned for this time range." : "No entries match the filter."}
-                </div>
-              ) : (
-                <JsonLogView entries={filtered} wrapLines={wrapLines} />
-              )
-            ) : !fetched ? (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                </svg>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Scrollable log window — CSS resize handle at bottom-right corner */}
+        <div
+          ref={scrollContainerRef}
+          onScroll={(e) => {
+            // Within ~400ms of a programmatic scroll, skip the at-bottom
+            // update so the cascade of scroll events from that scroll can't
+            // flip the flag the wrong way.
+            if (Date.now() - lastProgrammaticScrollAtRef.current < 400) return;
+            const el = e.currentTarget;
+            scrollAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+          }}
+          onMouseUp={() => {
+            if (fullscreen) return;
+            const el = scrollContainerRef.current;
+            if (!el) return;
+            const h = el.clientHeight;
+            if (h >= 200) { setTableHeight(h); saveHeight(h); }
+          }}
+          className={cn(
+            terminalView ? "overflow-hidden" : "overflow-y-auto overflow-x-auto",
+            fullscreen ? "flex-1" : "resize-y min-h-[200px]"
+          )}
+          style={fullscreen ? undefined : { height: tableHeight }}
+        >
+          {viewMode === "terminal" ? (
+            !fetched && !tailing ? (
+              <div className="flex items-center justify-center h-full min-h-[160px] bg-slate-950">
+                <p className="text-sm text-slate-500 font-mono">Select sources and start tailing or run a search</p>
+              </div>
+            ) : deferredIsActive && filtered.length === 0 && fetched && !searching ? (
+              <div className="flex items-center justify-center h-full min-h-[160px] bg-slate-950">
+                <p className="text-sm text-slate-500 font-mono">
+                  {entries.length === 0 ? "No log entries returned." : "No entries match the filter."}
+                </p>
+              </div>
+            ) : (
+              <TailTerminal
+                entries={filtered}
+                defaultSource={tailSource}
+                searchTerm={search}
+                keywords={keywords}
+                wrapLines={wrapLines}
+                dupeCounts={dupeCounts}
+                scrollRequest={matchScrollRequest}
+                activeMatchIndex={activeMatchIndex}
+                matchCase={matchCase}
+                wholeWord={wholeWord}
+                autoScroll={autoScroll}
+              />
+            )
+          ) : viewMode === "json" ? (
+            !fetched ? (
               <div className="flex items-center justify-center h-full min-h-[160px]">
                 <p className="text-sm text-slate-400">Select at least one source and click Tail Logs or Search</p>
               </div>
@@ -2264,188 +2276,199 @@ export function LogsExplorer({
                 {entries.length === 0 ? "No log entries returned for this time range." : "No entries match the filter."}
               </div>
             ) : (
-              <table className="text-xs border-collapse" style={{ tableLayout: "fixed", width: "100%", minWidth: 700 }}>
-                <thead className="sticky top-0 z-10">
-                  <tr className="bg-slate-50 border-b border-slate-200 text-left">
-                    <ResizableHeader label="Timestamp" colKey="timestamp" widths={colWidths} onResize={handleColResize} className="px-3" />
-                    <ResizableHeader label="Source" colKey="source" widths={colWidths} onResize={handleColResize} />
-                    <ResizableHeader label="Level" colKey="level" widths={colWidths} onResize={handleColResize} />
-                    <ResizableHeader label="Transaction" colKey="transaction" widths={colWidths} onResize={handleColResize} />
-                    <th className="px-2 py-2 font-semibold text-slate-500">Message</th>
-                    <th style={{ width: 24 }} />
-                  </tr>
-                </thead>
-                <tbody>
-                  {pageEntries.map((entry, i) => {
-                    const globalIdx = pageStartIdx + i;
-                    return (
-                      <EntryRow
-                        key={globalIdx}
-                        entry={entry}
-                        source={tailSource}
-                        expanded={expandedIdx === globalIdx}
-                        onToggle={() => setExpandedIdx(expandedIdx === globalIdx ? null : globalIdx)}
-                        searchTerm={search}
-                        keywords={keywords}
-                        onTransactionClick={(txId) => setDrilldown({ txId })}
-                        onTimestampClick={onOpenContextTab}
-                        fullscreen={fullscreen}
-                        showFullMessage={showFullMessage}
-                        highlighted={highlightedTableIdx === globalIdx}
-                        rowIdx={globalIdx}
-                        matchCase={matchCase}
-                        wholeWord={wholeWord}
-                        dupeCount={dupeCounts.get(globalIdx) ?? 1}
-                      />
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
+              <JsonLogView entries={filtered} wrapLines={wrapLines} />
+            )
+          ) : !fetched ? (
+            <div className="flex items-center justify-center h-full min-h-[160px]">
+              <p className="text-sm text-slate-400">Select at least one source and click Tail Logs or Search</p>
+            </div>
+          ) : !deferredIsActive ? null : filtered.length === 0 && !searching ? (
+            <div className="p-8 text-center text-sm text-slate-400">
+              {entries.length === 0 ? "No log entries returned for this time range." : "No entries match the filter."}
+            </div>
+          ) : (
+            <table className="text-xs border-collapse" style={{ tableLayout: "fixed", width: "100%", minWidth: 700 }}>
+              <thead className="sticky top-0 z-10">
+                <tr className="bg-slate-50 border-b border-slate-200 text-left">
+                  <ResizableHeader label="Timestamp" colKey="timestamp" widths={colWidths} onResize={handleColResize} className="px-3" />
+                  <ResizableHeader label="Source" colKey="source" widths={colWidths} onResize={handleColResize} />
+                  <ResizableHeader label="Level" colKey="level" widths={colWidths} onResize={handleColResize} />
+                  <ResizableHeader label="Transaction" colKey="transaction" widths={colWidths} onResize={handleColResize} />
+                  <th className="px-2 py-2 font-semibold text-slate-500">Message</th>
+                  <th style={{ width: 24 }} />
+                </tr>
+              </thead>
+              <tbody>
+                {pageEntries.map((entry, i) => {
+                  const globalIdx = pageStartIdx + i;
+                  return (
+                    <EntryRow
+                      key={globalIdx}
+                      entry={entry}
+                      source={tailSource}
+                      expanded={expandedIdx === globalIdx}
+                      onToggle={() => setExpandedIdx(expandedIdx === globalIdx ? null : globalIdx)}
+                      searchTerm={search}
+                      keywords={keywords}
+                      onTransactionClick={(txId) => setDrilldown({ txId })}
+                      onTimestampClick={onOpenContextTab}
+                      fullscreen={fullscreen}
+                      showFullMessage={showFullMessage}
+                      highlighted={highlightedTableIdx === globalIdx}
+                      rowIdx={globalIdx}
+                      matchCase={matchCase}
+                      wholeWord={wholeWord}
+                      dupeCount={dupeCounts.get(globalIdx) ?? 1}
+                    />
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
 
-          {/* Pagination controls — table view only */}
-          {viewMode === "table" && fetched && filtered.length > 0 && (
-            <div className="flex items-center justify-between px-4 py-2 border-t border-slate-100 bg-slate-50/50 shrink-0">
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-slate-500">
-                  Showing {pageStartIdx + 1}–{pageEndIdx} of {filtered.length}
-                  {currentPage === totalPages && " (latest)"}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <select
-                  value={pageSize}
-                  onChange={(e) => { setPageSize(Number(e.target.value)); setPage(Infinity); setExpandedIdx(null); }}
-                  className="text-xs rounded border border-slate-300 px-2 py-1 focus:outline-none focus:ring-2 focus:ring-sky-500"
-                >
-                  {[50, 100, 200, 500].map((s) => (
-                    <option key={s} value={s}>{s} / page</option>
-                  ))}
-                </select>
-                <div className="flex items-center gap-1">
-                  <button type="button" onClick={() => { setPage(1); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Oldest (page 1)">Oldest</button>
-                  <button type="button" onClick={() => { setPage((p) => Math.max(1, p - 1)); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Older entries">← Older</button>
-                  <span className="text-xs text-slate-500 px-2 tabular-nums">{currentPage} / {totalPages}</span>
-                  <button type="button" onClick={() => { setPage((p) => Math.min(totalPages, p + 1)); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Newer entries">Newer →</button>
-                  <button type="button" onClick={() => { setPage(totalPages); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Latest (last page)">Latest</button>
-                </div>
+        {/* Pagination controls — table view only */}
+        {viewMode === "table" && fetched && filtered.length > 0 && (
+          <div className="flex items-center justify-between px-4 py-2 border-t border-slate-100 bg-slate-50/50 shrink-0">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">
+                Showing {pageStartIdx + 1}–{pageEndIdx} of {filtered.length}
+                {currentPage === totalPages && " (latest)"}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <select
+                value={pageSize}
+                onChange={(e) => { setPageSize(Number(e.target.value)); setPage(Infinity); setExpandedIdx(null); }}
+                className="text-xs rounded border border-slate-300 px-2 py-1 focus:outline-none focus:ring-2 focus:ring-sky-500"
+              >
+                {[50, 100, 200, 500].map((s) => (
+                  <option key={s} value={s}>{s} / page</option>
+                ))}
+              </select>
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={() => { setPage(1); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Oldest (page 1)">Oldest</button>
+                <button type="button" onClick={() => { setPage((p) => Math.max(1, p - 1)); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Older entries">← Older</button>
+                <span className="text-xs text-slate-500 px-2 tabular-nums">{currentPage} / {totalPages}</span>
+                <button type="button" onClick={() => { setPage((p) => Math.min(totalPages, p + 1)); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Newer entries">Newer →</button>
+                <button type="button" onClick={() => { setPage(totalPages); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Latest (last page)">Latest</button>
               </div>
             </div>
-          )}
+          </div>
+        )}
 
-          {/* Search completed indicator */}
-          {mode === "search" && fetchProgress && fetchProgress.done && (
-            <div className={cn("flex items-center gap-2 px-4 py-2 border-t border-slate-100 shrink-0", fetchProgress.loaded > 0 ? "bg-emerald-50/50" : "bg-slate-50/50")}>
-              {fetchProgress.loaded > 0 ? (
-                <svg className="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                </svg>
+        {/* Search completed indicator */}
+        {mode === "search" && fetchProgress && fetchProgress.done && (
+          <div className={cn("flex items-center gap-2 px-4 py-2 border-t border-slate-100 shrink-0", fetchProgress.loaded > 0 ? "bg-emerald-50/50" : "bg-slate-50/50")}>
+            {fetchProgress.loaded > 0 ? (
+              <svg className="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            ) : (
+              <svg className="w-3.5 h-3.5 text-slate-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" />
+              </svg>
+            )}
+            <span className="text-xs text-slate-600">
+              {fetchProgress.loaded > 0
+                ? `Search complete — ${fetchProgress.loaded.toLocaleString()} entries loaded`
+                : "Search complete — no entries found for this time range"}
+            </span>
+          </div>
+        )}
+
+        {/* Search progress indicator */}
+        {(searching || (fetchProgress && !fetchProgress.done)) && (
+          <div className="flex items-center justify-between px-4 py-2 border-t border-slate-100 bg-sky-50/50 shrink-0">
+            <div className="flex items-center gap-2">
+              {fetchProgress?.paused ? (
+                <span className="inline-block w-2 h-2 rounded-full bg-amber-400 shrink-0" />
               ) : (
-                <svg className="w-3.5 h-3.5 text-slate-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" />
+                <svg className="w-3 h-3 animate-spin text-sky-600 shrink-0" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
               )}
               <span className="text-xs text-slate-600">
-                {fetchProgress.loaded > 0
-                  ? `Search complete — ${fetchProgress.loaded.toLocaleString()} entries loaded`
-                  : "Search complete — no entries found for this time range"}
-              </span>
-            </div>
-          )}
-
-          {/* Search progress indicator */}
-          {(searching || (fetchProgress && !fetchProgress.done)) && (
-            <div className="flex items-center justify-between px-4 py-2 border-t border-slate-100 bg-sky-50/50 shrink-0">
-              <div className="flex items-center gap-2">
-                {fetchProgress?.paused ? (
-                  <span className="inline-block w-2 h-2 rounded-full bg-amber-400 shrink-0" />
-                ) : (
-                  <svg className="w-3 h-3 animate-spin text-sky-600 shrink-0" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                )}
-                <span className="text-xs text-slate-600">
-                  {!fetchProgress
-                    ? "Starting search…"
-                    : fetchProgress.paused
+                {!fetchProgress
+                  ? "Starting search…"
+                  : fetchProgress.paused
                     ? `Paused — ${fetchProgress.loaded.toLocaleString()} entries loaded`
                     : [
-                        fetchProgress.source && `[${fetchProgress.source}]`,
-                        fetchProgress.window && fetchProgress.window,
-                        fetchProgress.loaded > 0 && `${fetchProgress.loaded.toLocaleString()} entries`,
-                      ].filter(Boolean).join(' · ')}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                {fetchProgress?.paused ? (
-                  <button
-                    type="button"
-                    onClick={() => workerRef.current?.postMessage({ type: "fetch-resume" })}
-                    className="px-2.5 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 transition-colors"
-                  >
-                    Resume
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => workerRef.current?.postMessage({ type: "fetch-pause" })}
-                    className="px-2.5 py-1 text-xs font-medium bg-amber-100 text-amber-700 rounded hover:bg-amber-200 transition-colors"
-                  >
-                    Pause
-                  </button>
-                )}
+                      fetchProgress.source && `[${fetchProgress.source}]`,
+                      fetchProgress.window && fetchProgress.window,
+                      fetchProgress.loaded > 0 && `${fetchProgress.loaded.toLocaleString()} entries`,
+                    ].filter(Boolean).join(' · ')}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              {fetchProgress?.paused ? (
                 <button
                   type="button"
-                  onClick={() => workerRef.current?.postMessage({ type: "fetch-stop" })}
-                  className="px-2.5 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+                  onClick={() => workerRef.current?.postMessage({ type: "fetch-resume" })}
+                  className="px-2.5 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 transition-colors"
                 >
-                  Stop
+                  Resume
                 </button>
-              </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => workerRef.current?.postMessage({ type: "fetch-pause" })}
+                  className="px-2.5 py-1 text-xs font-medium bg-amber-100 text-amber-700 rounded hover:bg-amber-200 transition-colors"
+                >
+                  Pause
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => workerRef.current?.postMessage({ type: "fetch-stop" })}
+                className="px-2.5 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+              >
+                Stop
+              </button>
             </div>
-          )}
+          </div>
+        )}
 
-          {/* Tail status indicator */}
-          {tailing && (
-            <div className="flex items-center justify-between px-4 py-2 border-t border-slate-700 bg-slate-900 shrink-0">
-              <div className="flex items-center gap-2">
-                <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-                <span className="text-xs text-slate-300 font-mono">
-                  {loading
-                    ? `Fetching…`
-                    : lastUpdated
+        {/* Tail status indicator */}
+        {tailing && (
+          <div className="flex items-center justify-between px-4 py-2 border-t border-slate-700 bg-slate-900 shrink-0">
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+              <span className="text-xs text-slate-300 font-mono">
+                {loading
+                  ? `Fetching…`
+                  : lastUpdated
                     ? `Updated ${lastUpdated.toLocaleTimeString()}`
                     : `Starting…`}
+              </span>
+              {tailTotalReceived > 0 && (
+                <span className="text-xs text-slate-400 font-mono">
+                  · {tailTotalReceived.toLocaleString()} total
+                  {tailDropped > 0 && ` · ${entries.length.toLocaleString()} in buffer`}
+                  {" · saved to IndexedDB"}
                 </span>
-                {tailTotalReceived > 0 && (
-                  <span className="text-xs text-slate-400 font-mono">
-                    · {tailTotalReceived.toLocaleString()} total
-                    {tailDropped > 0 && ` · ${entries.length.toLocaleString()} in buffer`}
-                    {" · saved to IndexedDB"}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={exportTailSession}
-                  className="px-2.5 py-1 text-xs font-medium bg-slate-700 text-slate-200 rounded hover:bg-slate-600 transition-colors"
-                >
-                  Export session
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onConfigChange({ tailing: false })}
-                  className="px-2.5 py-1 text-xs font-medium bg-red-900/60 text-red-300 rounded hover:bg-red-900 transition-colors"
-                >
-                  Stop
-                </button>
-              </div>
+              )}
             </div>
-          )}
-        </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={exportTailSession}
+                className="px-2.5 py-1 text-xs font-medium bg-slate-700 text-slate-200 rounded hover:bg-slate-600 transition-colors"
+              >
+                Export session
+              </button>
+              <button
+                type="button"
+                onClick={() => onConfigChange({ tailing: false })}
+                className="px-2.5 py-1 text-xs font-medium bg-red-900/60 text-red-300 rounded hover:bg-red-900 transition-colors"
+              >
+                Stop
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* ── Transaction drill-down modal ── */}
       {drilldown && (
@@ -2581,7 +2604,7 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
     const id = _nextTabId++;
     const ts = new Date(timestamp).getTime();
     const begin = toDatetimeLocal(new Date(ts - 60000).toISOString());
-    const end   = toDatetimeLocal(new Date(ts + 60000).toISOString());
+    const end = toDatetimeLocal(new Date(ts + 60000).toISOString());
     const isIDM = source.startsWith("idm-");
     const contextSources = isIDM ? ["idm-everything"] : ["am-everything"];
     const shortTime = new Date(timestamp).toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
