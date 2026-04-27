@@ -1116,8 +1116,7 @@ export function LogsExplorer({
   txSearchId,
   onOpenContextTab,
   onOpenEntryContextTab,
-  initialEntries: initEntries,
-  initialContextAnchor: initAnchor,
+  anchorTimestamp,
 }: {
   environments: EnvWithLogApi[];
   config: TabConfig;
@@ -1131,9 +1130,8 @@ export function LogsExplorer({
   onFullscreenChange?: (v: boolean) => void;
   txSearchId?: { id: string; seq: number };
   onOpenContextTab?: (timestamp: string, source: string) => void;
-  onOpenEntryContextTab?: (entries: LogEntry[], anchorIdx: number, radius: number) => void;
-  initialEntries?: LogEntry[];
-  initialContextAnchor?: number;
+  onOpenEntryContextTab?: (anchorTimestamp: string, beginTimestamp: string, endTimestamp: string, radius: number) => void;
+  anchorTimestamp?: string;
 }) {
   const { env, selectedSources, sourcesError, levelFilter, mode, tailSecs, tailing, loading, preset, customBegin, customEnd, searchSeq, searching } = config;
   const { confirm } = useDialog();
@@ -1161,10 +1159,10 @@ export function LogsExplorer({
 
 
 
-  const [entries, setEntries] = useState<LogEntry[]>(() => initEntries ?? []);
+  const [entries, setEntries] = useState<LogEntry[]>([]);
   const [error, setError] = useState("");
-  const [fetched, setFetched] = useState(() => !!(initEntries && initEntries.length > 0));
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(() => initEntries?.length ? new Date() : null);
+  const [fetched, setFetched] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const [showFullMessage, setShowFullMessage] = useState(false);
   // View prefs live in TabConfig so they persist per tab across reloads.
@@ -1246,7 +1244,7 @@ export function LogsExplorer({
   const shrink = () => setTableHeight((h) => { const next = Math.max(200, h - 50); saveHeight(next); return next; });
 
   // ── Context window (±N entries around a user-selected anchor) ──
-  const [contextAnchor, setContextAnchor] = useState<number | null>(() => initAnchor ?? null);
+  const [contextAnchor, setContextAnchor] = useState<number | null>(null);
   const [contextRadius, setContextRadius] = useState(1000);
 
   // ── Transaction drill-down (from clicking inline txId in table) ──
@@ -1404,6 +1402,25 @@ export function LogsExplorer({
     prevDone.current = done;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchProgress?.done]);
+
+  // ── Auto-set context anchor in context tabs after fetch completes ──
+  const pendingAnchorTs = useRef<string | undefined>(anchorTimestamp);
+  useEffect(() => {
+    if (!pendingAnchorTs.current || !fetchProgress?.done || entries.length === 0) return;
+    const targetTs = new Date(pendingAnchorTs.current).getTime();
+    let bestIdx = 0;
+    let bestDiff = Infinity;
+    for (let i = 0; i < entries.length; i++) {
+      const diff = Math.abs(new Date(entries[i].timestamp).getTime() - targetTs);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestIdx = i;
+      }
+    }
+    setContextAnchor(bestIdx);
+    pendingAnchorTs.current = undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchProgress?.done, entries.length]);
 
   // ── Auto-scroll when tailing ──
   useEffect(() => {
@@ -1677,12 +1694,15 @@ export function LogsExplorer({
     // Find this entry's position in the raw entries array
     const rawIdx = entries.indexOf(clickedEntry);
     if (rawIdx < 0) return;
-    // Slice ±contextRadius from the raw entries
+    // Compute a time window from nearby entries' timestamps.
+    // Even though entries may be server-filtered (keyword search), their
+    // timestamps define a reasonable window. The new context tab will re-fetch
+    // ALL entries (no _queryFilter) within this window from the API.
     const sliceStart = Math.max(0, rawIdx - contextRadius);
-    const sliceEnd = Math.min(entries.length, rawIdx + contextRadius + 1);
-    const slicedEntries = entries.slice(sliceStart, sliceEnd);
-    const anchorInSlice = rawIdx - sliceStart;
-    onOpenEntryContextTab(slicedEntries, anchorInSlice, contextRadius);
+    const sliceEnd = Math.min(entries.length - 1, rawIdx + contextRadius);
+    const beginTimestamp = entries[sliceStart].timestamp;
+    const endTimestamp = entries[sliceEnd].timestamp;
+    onOpenEntryContextTab(clickedEntry.timestamp, beginTimestamp, endTimestamp, contextRadius);
   }
 
   // ── Pagination (page 1 = oldest, last page = newest) ──
@@ -2612,10 +2632,8 @@ interface TabDef {
   id: number;
   label: string;
   config: TabConfig;
-  /** Pre-loaded entries for context tabs — not persisted to localStorage */
-  initialEntries?: LogEntry[];
-  /** Index into initialEntries marking the anchor entry */
-  initialContextAnchor?: number;
+  /** Timestamp of the anchor entry — context tabs highlight after API fetch */
+  anchorTimestamp?: string;
 }
 
 function makeDefaultConfig(environments: EnvWithLogApi[]): TabConfig {
@@ -2763,18 +2781,14 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
     setActiveId(id);
   }
 
-  function openEntryContextTab(contextEntries: LogEntry[], anchorIdx: number, radius: number) {
-    if (contextEntries.length === 0) return;
+  function openEntryContextTab(anchorTs: string, beginTs: string, endTs: string, radius: number) {
     const id = _nextTabId++;
     const tabEnv = tabs.find((t) => t.id === activeId)?.config.env ?? "";
     const tabSources = tabs.find((t) => t.id === activeId)?.config.selectedSources ?? ["am-everything", "idm-everything"];
-    const anchor = contextEntries[anchorIdx];
-    const first = contextEntries[0];
-    const last = contextEntries[contextEntries.length - 1];
-    const shortTime = new Date(anchor.timestamp).toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const shortTime = new Date(anchorTs).toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
     const label = `±${radius} @${shortTime} (${tabEnv})`;
-    const begin = toDatetimeLocal(first.timestamp, tzMode);
-    const end = toDatetimeLocal(last.timestamp, tzMode);
+    const begin = toDatetimeLocal(beginTs, tzMode);
+    const end = toDatetimeLocal(endTs, tzMode);
     const baseConfig = makeDefaultConfig(environments);
     const config: TabConfig = {
       ...baseConfig,
@@ -2784,10 +2798,10 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
       preset: "custom",
       customBegin: begin,
       customEnd: end,
-      searchSeq: 0,
+      searchSeq: 1,
       searching: false,
     };
-    setTabs((prev) => [...prev, { id, label, config, initialEntries: contextEntries, initialContextAnchor: anchorIdx }]);
+    setTabs((prev) => [...prev, { id, label, config, anchorTimestamp: anchorTs }]);
     setActiveId(id);
   }
 
@@ -2992,8 +3006,7 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
                 txSearchId={tab.id === activeId ? txSearch : undefined}
                 onOpenContextTab={openContextTab}
                 onOpenEntryContextTab={openEntryContextTab}
-                initialEntries={tab.initialEntries}
-                initialContextAnchor={tab.initialContextAnchor}
+                anchorTimestamp={tab.anchorTimestamp}
               />
             </div>
           </div>
