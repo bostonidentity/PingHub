@@ -21,6 +21,25 @@ function pickIndexFields(record: Record<string, unknown>): Record<string, string
   return out;
 }
 
+/** Recursively extract all `_ref` values matching `managed/{type}/{id}` from a record. */
+function extractRefs(obj: unknown): string[] {
+  const refs: string[] = [];
+  if (obj == null || typeof obj !== "object") return refs;
+  if (Array.isArray(obj)) {
+    for (const item of obj) refs.push(...extractRefs(item));
+    return refs;
+  }
+  const rec = obj as Record<string, unknown>;
+  if (typeof rec._ref === "string" && rec._ref.startsWith("managed/")) {
+    refs.push(rec._ref);
+  }
+  for (const [key, val] of Object.entries(rec)) {
+    if (key === "_ref") continue;
+    refs.push(...extractRefs(val));
+  }
+  return refs;
+}
+
 /**
  * Rename with retry for transient Windows locks.
  *
@@ -138,6 +157,7 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
     fs.mkdirSync(typePullingDir, { recursive: true });
 
     const indexEntries: { id: string; f: Record<string, string> }[] = [];
+    const refsIndex: Record<string, string[]> = {};
 
     let cookie: string | null = null;
     let total: number | null = await preflightCount(type, token);
@@ -214,6 +234,8 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
                 : String(fetched + 1);
             fs.writeFileSync(path.join(typePullingDir, `${id}.json`), JSON.stringify(item, null, 2));
             indexEntries.push({ id, f: pickIndexFields(item) });
+            const itemRefs = extractRefs(item);
+            if (itemRefs.length > 0) refsIndex[id] = itemRefs;
             fetched++;
           }
           // Only accept a non-negative total. Default tenant behavior returns
@@ -279,6 +301,10 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
       fs.writeFileSync(
         path.join(currentDir, "_index.json"),
         JSON.stringify(indexEntries),
+      );
+      fs.writeFileSync(
+        path.join(currentDir, "_refs.json"),
+        JSON.stringify(refsIndex),
       );
       if (fs.existsSync(backupDir)) fs.rmSync(backupDir, { recursive: true, force: true });
 

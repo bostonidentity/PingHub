@@ -9,7 +9,7 @@ export { CONFIG_SCOPES, FILENAME_FILTER_SCOPES, NAME_FLAG_SCOPES } from "./fr-co
 import type { Environment, RunOptions, ScopeSelection } from "./fr-config-types";
 import { FILENAME_FILTER_SCOPES, NAME_FLAG_SCOPES } from "./fr-config-types";
 
-const ENVIRONMENTS_DIR = path.join(process.cwd(), "environments");
+import { ENVIRONMENTS_DIR } from "./paths";
 
 // Benign non-zero exit patterns — "nothing to pull" rather than real failure.
 // Shared across fr-config, frodo, and iga-api runners.

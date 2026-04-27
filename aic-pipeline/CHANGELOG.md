@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3.0] - 2026-04-27
+
+### Added
+
+- **Logs context tabs**: double-click any log entry to open a new tab showing a ±5 second window of surrounding entries, with the anchor entry highlighted in violet. Tabs preserve their state across navigation and tab switches.
+- **Logs match navigation across all views**: unified "previous/next match" stepper with counter (`N / M`) works in terminal, table, and JSON views; jumps to the right page in table view and scrolls the right entry block in JSON view. Active match flashes amber and auto-expands.
+- **Logs JSON view auto-unescape**: deeply unescapes JSON-encoded strings inside log payloads, including embedded JSON inside text-prefixed messages (e.g. `SEVERE: [uuid] Content: {…}`), so nested objects render as readable JSON instead of escaped strings.
+- **Logs auto-scroll toggle** and a tail buffer increased to 500K entries; **stop button** for in-flight searches; time-based search **progress bar** with percentage.
+- **Logs timezone selector** (local / UTC / epoch); datetime-local inputs now include seconds (`step=1`) for precise ±5s context ranges.
+- **Data browse — dependencies panel**: shows outgoing and incoming references for the selected record, with a `_index.json` ref index built at pull time and lazy-loaded on demand.
+- **Data browse — draggable splitter** between record list and detail pane (matches the search page).
+- **Data pull freshness check**: probe counts are validated before a pull starts so stale snapshots aren't silently overwritten.
+- **Search page**: draggable split and fast-path tooltips.
+
+### Changed
+
+- **Logs terminal styling**: zebra striping with darker dividers, color-coded fields (timestamp, source, level, message), neutral text colors for log messages, and line-clamp ellipsis instead of hard vertical cut in wrap mode. Wrap-mode entries gained a copy button and truncation for long payloads.
+- **Logs persistence**: removed IndexedDB persistence and auto-save — tabs now hold logs in memory only, eliminating storage growth and reload latency.
+- **Dev server**: switched to Webpack dev mode and excluded `environments/` from the watcher; the `environments/` directory was moved outside the project root for fast Turbopack/Webpack compilation.
+- **Promotion internals**: extracted promotion dependency expansion and selection helpers into reusable modules; expanded journey tree report tests and added compare-route + journey-graph navigation regression coverage.
+
+### Fixed
+
+- **Logs match navigation key collision**: in nowrap terminal mode, the active match row's React key (`flashKey`, an incrementing integer) could collide with another row's index key (`absIdx`), causing deduped rows to appear duplicated or with wrong content/badges after a few next/prev clicks. The flash key is now a string (`flash-N`).
+- **Logs lost on tab switch**: `txSearch` effect re-fired on tab switch and wiped fetched entries; now guarded with a sequence ref and per-tab config updaters are stabilized so inactive tabs keep their state.
+- **Logs match navigation during tailing**: stabilized so the active match no longer drifts as new entries stream in.
+- **Logs context tab fetch**: simplified to a ±5s time window after several iterations on the entry-count approach (server-filtered prefetch was incorrect, then sliced incorrectly, then unfiltered with too many entries).
+- **JSON view embedded JSON**: `findJsonStart` now matches the opening delimiter to the string's ending delimiter, so trailing `}` correctly anchors to the first `{`.
+- **Inner journey diff graph**: corrected node statuses for nested journeys.
+- **Journey dependencies report**: missing dependencies are now reported instead of silently dropped.
+
 ## [0.2.2.1] - 2026-04-23
 
 ### Added

@@ -17,7 +17,7 @@ function mkFile(scope: string, status: FileDiff["status"], name = `${scope}/x`):
     scope,
     status,
     relativePath: name,
-  } as FileDiff;
+  };
 }
 
 describe("summarizeReport", () => {
@@ -54,9 +54,9 @@ describe("summarizeReport", () => {
 
   it("derives scope from relativePath when scope field is absent", () => {
     const report = mkReport([
-      { relativePath: "journeys/Login.json", status: "modified" } as any as FileDiff,
-      { relativePath: "scripts/foo.js",     status: "added" }    as any as FileDiff,
-      { relativePath: "scripts/bar.js",     status: "removed" }  as any as FileDiff,
+      { relativePath: "journeys/Login.json", status: "modified" },
+      { relativePath: "scripts/foo.js", status: "added" },
+      { relativePath: "scripts/bar.js", status: "removed" },
     ]);
     const result = summarizeReport(report);
     expect(result).toEqual([

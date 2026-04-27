@@ -33,6 +33,8 @@ let tmpDir: string;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "data-int-"));
+  // Point ENVIRONMENTS_DIR at our temp dir so paths.ts picks it up on re-import.
+  process.env.PINGHUB_DATA_DIR = path.join(tmpDir, "environments");
   // Seed a minimal env with .env file.
   const envDir = path.join(tmpDir, "environments", "test-env");
   fs.mkdirSync(envDir, { recursive: true });
@@ -51,6 +53,7 @@ beforeEach(() => {
 
 afterEach(() => {
   process.chdir(origCwd);
+  delete process.env.PINGHUB_DATA_DIR;
   globalThis.fetch = origFetch;
   fs.rmSync(tmpDir, { recursive: true, force: true });
   // Clear the globalThis registry singleton so it doesn't leak between tests.
@@ -90,7 +93,7 @@ describe("data API lifecycle", () => {
 
     const typeDir = path.join(tmpDir, "environments", "test-env", "managed-data", "alpha_user");
     expect(fs.readdirSync(typeDir).sort()).toEqual([
-      "_index.json", "_manifest.json", "u1.json", "u2.json", "u3.json",
+      "_index.json", "_manifest.json", "_refs.json", "u1.json", "u2.json", "u3.json",
     ]);
   });
 

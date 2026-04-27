@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Runtime tenant snapshots and vendored upstream JS are not app source.
+    "src/vendor/fr-config-manager/**",
   ]),
 ]);
 

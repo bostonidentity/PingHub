@@ -1,7 +1,7 @@
 // src/app/data/browse/BrowsePanel.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import type { Environment } from "@/lib/fr-config";
 import type { SnapshotType } from "@/lib/data/types";
 import type { GlobalSearchHit, GlobalSearchResponse } from "@/app/api/data/search/[env]/route";
@@ -26,16 +26,59 @@ function saveTitlePrefs(prefs: Record<string, string>): void {
 }
 const prefKey = (env: string, type: string) => `${env}::${type}`;
 
+// Splitter width persistence
+const SPLIT_PREF_KEY = "data-browse-split-pct";
+function loadSplitPct(): number {
+  if (typeof window === "undefined") return 40;
+  try {
+    const v = localStorage.getItem(SPLIT_PREF_KEY);
+    return v ? Math.max(15, Math.min(85, Number(v))) : 40;
+  } catch { return 40; }
+}
+function saveSplitPct(pct: number): void {
+  try { localStorage.setItem(SPLIT_PREF_KEY, String(pct)); } catch { /* quota */ }
+}
+
 export function BrowsePanel({ environments }: { environments: Environment[] }) {
   const { env, setEnv } = useDataEnv(environments);
   const [types, setTypes] = useState<SnapshotType[]>([]);
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [titlePrefs, setTitlePrefs] = useState<Record<string, string>>({});
+  const [typeFilter, setTypeFilter] = useState("");
 
   // Rehydrate display-attribute preferences after mount. Kept out of the
   // useState initializer so server and client renders agree before hydration.
   useEffect(() => { setTitlePrefs(loadTitlePrefs()); }, []);
+
+  // ── Draggable splitter ───────────────────────────────────────────────────
+  const [splitPct, setSplitPct] = useState(40);
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+  useEffect(() => { setSplitPct(loadSplitPct()); }, []);
+  const onDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    draggingRef.current = true;
+    const onMove = (ev: MouseEvent) => {
+      if (!draggingRef.current || !splitContainerRef.current) return;
+      const rect = splitContainerRef.current.getBoundingClientRect();
+      const pct = ((ev.clientX - rect.left) / rect.width) * 100;
+      const clamped = Math.max(15, Math.min(85, pct));
+      setSplitPct(clamped);
+    };
+    const onUp = () => {
+      draggingRef.current = false;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      setSplitPct((v) => { saveSplitPct(v); return v; });
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, []);
 
   useEffect(() => {
     if (!env) return;
@@ -134,6 +177,20 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
 
   const globalActive = globalQ.trim().length > 0;
 
+  const filteredTypes = useMemo(() => {
+    const needle = typeFilter.trim().toLowerCase();
+    if (!needle) return types;
+    return types.filter((t) => t.name.toLowerCase().includes(needle));
+  }, [types, typeFilter]);
+
+  // Suppress the row click if the user just released a text selection on it.
+  // Lets them drag-select record text without navigating.
+  function handleRowClick(action: () => void) {
+    const sel = typeof window !== "undefined" ? window.getSelection() : null;
+    if (sel && sel.toString().length > 0) return;
+    action();
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-end gap-3 flex-wrap">
@@ -158,7 +215,7 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
         </div>
         <div className="flex-1 min-w-[240px] flex flex-col gap-1">
           <label className="text-xs text-slate-500 font-medium">
-            Search all types
+            Search All Records in All Managed Objects
             {globalLoading && <span className="ml-2 text-slate-400">loading…</span>}
             {globalError && <span className="ml-2 text-rose-600">{globalError}</span>}
             {!globalError && globalActive && !globalLoading && (
@@ -207,17 +264,20 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
                   </div>
                   <div className="divide-y divide-slate-100">
                     {hits.map((h) => (
-                      <button
+                      <div
                         key={`${h.type}/${h.id}`}
-                        type="button"
-                        onClick={() => jumpTo(h.type, h.id)}
-                        className="w-full text-left px-3 py-1.5 hover:bg-sky-50 transition-colors"
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => handleRowClick(() => jumpTo(h.type, h.id))}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); jumpTo(h.type, h.id); } }}
+                        title={`${h.id}\n${h.preview}`}
+                        className="w-full text-left px-3 py-1.5 hover:bg-sky-50 transition-colors cursor-pointer select-text"
                       >
                         <div className="flex items-center gap-2">
                           <span className="text-xs font-medium text-slate-800 truncate font-mono">{h.id}</span>
                         </div>
                         <div className="text-[11px] text-slate-500 font-mono truncate">{h.preview}</div>
-                      </button>
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -234,26 +294,53 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
         </div>
       ) : (
         <>
-          <div className="flex flex-wrap gap-1 border-b border-slate-200 pb-2">
-            {types.map((t) => (
-              <button
-                key={t.name}
-                type="button"
-                onClick={() => { setSelectedType(t.name); setSelectedId(null); setPage(1); }}
-                className={cn(
-                  "px-3 py-1 text-xs rounded transition-colors",
-                  selectedType === t.name
-                    ? "bg-sky-600 text-white"
-                    : "bg-slate-100 text-slate-700 hover:bg-slate-200",
-                )}
-              >
-                {t.name} <span className="opacity-70">({t.count})</span>
-              </button>
-            ))}
+          <div className="flex flex-col gap-2 border-b border-slate-200 pb-2">
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={typeFilter}
+                onChange={(e) => setTypeFilter(e.target.value)}
+                placeholder="Filter managed objects…"
+                className="flex-1 max-w-xs text-xs rounded border border-slate-300 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-sky-400"
+              />
+              {typeFilter && (
+                <button
+                  type="button"
+                  onClick={() => setTypeFilter("")}
+                  className="text-xs text-slate-400 hover:text-slate-600"
+                  title="Clear"
+                >
+                  ✕
+                </button>
+              )}
+              <span className="text-[11px] text-slate-400">
+                {filteredTypes.length} / {types.length}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {filteredTypes.map((t) => (
+                <button
+                  key={t.name}
+                  type="button"
+                  onClick={() => { setSelectedType(t.name); setSelectedId(null); setPage(1); }}
+                  className={cn(
+                    "px-3 py-1 text-xs rounded transition-colors",
+                    selectedType === t.name
+                      ? "bg-sky-600 text-white"
+                      : "bg-slate-100 text-slate-700 hover:bg-slate-200",
+                  )}
+                >
+                  {t.name} <span className="opacity-70">({t.count})</span>
+                </button>
+              ))}
+              {filteredTypes.length === 0 && (
+                <span className="text-[11px] text-slate-400 italic px-1 py-1">No managed objects match.</span>
+              )}
+            </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] gap-4">
-            <div className="bg-white border border-slate-200 rounded-lg overflow-hidden flex flex-col min-h-[500px] max-h-[calc(100vh-280px)]">
+          <div ref={splitContainerRef} className="flex flex-col lg:flex-row min-h-[500px] max-h-[calc(100vh-280px)]">
+            <div style={{ flex: `0 0 ${splitPct}%` }} className="min-w-0 bg-white border border-slate-200 rounded-lg overflow-hidden flex flex-col">
               <div className="px-3 py-2 border-b border-slate-100 flex items-center gap-2 flex-wrap">
                 <input
                   type="text"
@@ -289,17 +376,20 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
               <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
                 {loading && !data && <div className="p-4 text-xs text-slate-400">Loading…</div>}
                 {data?.records.map((r) => (
-                  <button
+                  <div
                     key={r.id}
-                    type="button"
-                    onClick={() => setSelectedId(r.id)}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => handleRowClick(() => setSelectedId(r.id))}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedId(r.id); } }}
+                    title={`${r.id}\n${r.title}`}
                     className={cn(
-                      "w-full text-left px-3 py-2 hover:bg-slate-50 transition-colors",
+                      "w-full text-left px-3 py-2 hover:bg-slate-50 transition-colors cursor-pointer select-text",
                       selectedId === r.id && "bg-sky-50",
                     )}
                   >
                     <div className="text-xs font-medium text-slate-800 truncate">{r.title}</div>
-                  </button>
+                  </div>
                 ))}
                 {data && data.records.length === 0 && (
                   <div className="p-4 text-xs text-slate-400 italic">No matches.</div>
@@ -318,7 +408,19 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
               )}
             </div>
 
-            <RecordDetailPane env={env} type={selectedType} id={selectedId} />
+            {/* Draggable divider — hidden on mobile (stacked layout) */}
+            <div
+              role="separator"
+              onMouseDown={onDragStart}
+              className="hidden lg:flex items-center justify-center w-2 cursor-col-resize group shrink-0 select-none"
+              title="Drag to resize panels"
+            >
+              <div className="w-0.5 h-8 rounded-full bg-slate-300 group-hover:bg-sky-400 group-active:bg-sky-500 transition-colors" />
+            </div>
+
+            <div className="flex-1 min-w-0">
+              <RecordDetailPane env={env} type={selectedType} id={selectedId} onNavigate={jumpTo} />
+            </div>
           </div>
         </>
       )}

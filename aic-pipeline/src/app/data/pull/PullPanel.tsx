@@ -11,7 +11,8 @@ import { cn } from "@/lib/utils";
 
 // Probe results persist across reloads, keyed by "<env>::<type>".
 const PROBE_STORE_KEY = "data-probe-counts-v1";
-type ProbedEntry = { count: number | null; reason?: string };
+type ProbedEntry = { count: number | null; reason?: string; probedAt?: number };
+const PROBE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 1 week
 function loadProbes(): Record<string, ProbedEntry> {
   if (typeof window === "undefined") return {};
   try {
@@ -65,7 +66,8 @@ export function PullPanel({
 
   function recordProbe(t: string, count: number | null, reason?: string): void {
     setAllProbes((prev) => {
-      const next = { ...prev, [probeKey(env, t)]: reason ? { count, reason } : { count } };
+      const now = Date.now();
+      const next = { ...prev, [probeKey(env, t)]: reason ? { count, reason, probedAt: now } : { count, probedAt: now } };
       saveProbes(next);
       return next;
     });
@@ -76,6 +78,7 @@ export function PullPanel({
   const [currentlyProbing, setCurrentlyProbing] = useState<string | null>(null);
   // Live pagination progress per type (ephemeral, only populated during active probe).
   const [probeProgress, setProbeProgress] = useState<Record<string, { fetched: number; pages: number }>>({});
+  const [prePullChecking, setPrePullChecking] = useState(false);
 
   const { jobs, start, abort } = useDataPullJobs({ pollMs: 2000, includeFinished: true });
   const types = useMemo(() => typesByEnv[env] ?? [], [typesByEnv, env]);
@@ -132,12 +135,11 @@ export function PullPanel({
     | { event: "fatal"; error: string }
     | { event: "end" };
 
-  const probeCounts = async () => {
-    if (!env || selected.size === 0 || probing) return;
-    const typesToProbe = [...selected];
+  /** Run a probe for the given types. Returns true on success, false on error. */
+  const runProbe = async (typesToProbe: string[]): Promise<boolean> => {
+    if (!env || typesToProbe.length === 0) return true;
     setProbing(true);
     setProbeError(null);
-    // Drop stale progress for the types we're about to re-probe.
     setProbeProgress((prev) => {
       const next = { ...prev };
       for (const t of typesToProbe) delete next[t];
@@ -152,7 +154,7 @@ export function PullPanel({
       });
       if (!res.ok || !res.body) {
         setProbeError(`Probe failed (${res.status}).`);
-        return;
+        return false;
       }
 
       const reader = res.body.getReader();
@@ -177,23 +179,43 @@ export function PullPanel({
               recordProbe(ev.type, ev.count, ev.reason);
             } else if (ev.event === "fatal") {
               setProbeError(ev.error);
+              return false;
             }
           } catch { /* ignore malformed line */ }
         }
       }
+      return true;
     } catch (e) {
       setProbeError((e as Error).message);
+      return false;
     } finally {
       setProbing(false);
       setCurrentlyProbing(null);
     }
   };
 
-  const canStart = !active && selected.size > 0;
+  const probeCounts = async () => {
+    if (!env || selected.size === 0 || probing) return;
+    await runProbe([...selected]);
+  };
+
+  const canStart = !active && selected.size > 0 && !prePullChecking;
 
   const onStart = async () => {
     setError(null);
+    setPrePullChecking(true);
     try {
+      // Determine which selected types have stale or missing probe counts.
+      const staleTypes = [...selected].filter((t) => {
+        const entry = allProbes[probeKey(env, t)];
+        return !entry || entry.probedAt == null || Date.now() - entry.probedAt > PROBE_MAX_AGE_MS;
+      });
+
+      // Re-probe stale types before starting the pull.
+      if (staleTypes.length > 0) {
+        await runProbe(staleTypes);
+      }
+
       const res = await start(env, [...selected]);
       if (!res.ok) {
         setError(res.status === 409
@@ -202,6 +224,8 @@ export function PullPanel({
       }
     } catch (e) {
       setError((e as Error).message || "Failed to start pull.");
+    } finally {
+      setPrePullChecking(false);
     }
   };
 
@@ -248,7 +272,7 @@ export function PullPanel({
             <button
               type="button"
               onClick={probeCounts}
-              disabled={probing || selected.size === 0}
+              disabled={probing || prePullChecking || selected.size === 0}
               title={
                 selected.size === 0
                   ? "Check one or more types above to probe"
@@ -266,7 +290,7 @@ export function PullPanel({
             title={active ? `Job ${active.id} already running` : undefined}
             className="ml-auto px-4 py-1.5 text-sm bg-sky-600 text-white rounded hover:bg-sky-700 disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {active ? "Pull in progress…" : "Start pull"}
+            {prePullChecking ? "Checking counts…" : active ? "Pull in progress…" : "Start pull"}
           </button>
         </div>
 

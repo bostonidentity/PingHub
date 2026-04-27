@@ -14,7 +14,7 @@ import { parseEnvFile } from "./env-parser";
 import { dispatchFrConfig } from "./fr-config-dispatch";
 import { getAccessToken } from "./iga-api";
 
-const ENVIRONMENTS_DIR = path.join(process.cwd(), "environments");
+import { ENVIRONMENTS_DIR } from "./paths";
 
 // ── Scope → frodo command mapping ─────────────────────────────────────────────
 

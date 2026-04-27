@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { spawnFrConfig, getConfigDir, getEnvFileContent } from "@/lib/fr-config";
+import { ENVIRONMENTS_DIR } from "@/lib/paths";
 
 // Long-running streaming response. Force the Node.js runtime, opt out of
 // route-level caching, and bump the per-request max duration to 10 min so
@@ -14,208 +15,10 @@ import { dispatchFrConfig } from "@/lib/fr-config-dispatch";
 import { parseEnvFile } from "@/lib/env-parser";
 import type { ScopeSelection } from "@/lib/fr-config-types";
 import { resolveJourneyDeps } from "@/lib/resolve-journey-deps";
-import { getRealmRoots } from "@/lib/realm-paths";
+import { buildNameToIdMap, copyDirSync, remapIds, resolveScopeDirs, stagingRelPath } from "@/lib/promotion-selection";
+import { addJourneyDepsToSelections, getSelectedJourneyNames } from "@/lib/promotion-deps";
 import { pullManagedObjects, pushManagedObjects, pullScripts, pushScripts, pullJourneys, pushJourneys, isIdmFlatScope, pullIdmFlatScope, pushIdmFlatScope, pullPasswordPolicy, pushPasswordPolicy, pullOrgPrivileges, pushOrgPrivileges, pullCookieDomains, pushCookieDomains, pullCors, pushCors, pullCsp, pushCsp, pullLocales, pushLocales, pullEndpoints, pushEndpoints, pullInternalRoles, pushInternalRoles, pullEmailTemplates, pushEmailTemplates, pullCustomNodes, pushCustomNodes, pullThemes, pushThemes, pullEmailProvider, pushEmailProvider, pullSchedules, pushSchedules, pullIgaWorkflows, pushIgaWorkflows, pullTermsAndConditions, pushTermsAndConditions, pullServiceObjects, pushServiceObjects, pullRawConfig, pushRawConfig, pullAuthzPolicies, pushAuthzPolicies, pullOauth2Agents, pushOauth2Agents, pullServices, pushServices, pullTelemetry, pushTelemetry, pullConnectorDefinitions, pushConnectorDefinitions, pullConnectorMappings, pushConnectorMappings, pullRemoteServers, pushRemoteServers, pullSecrets, pushSecrets, pullSecretMappings, pushSecretMappings } from "@/vendor/fr-config-manager";
 import { getAccessToken } from "@/lib/iga-api";
-
-// ── Scope → directory mapping (mirrors push/audit route) ─────────────────────
-
-const SCOPE_DIR: Record<string, string> = {
-  "access-config": "access-config", "audit": "audit",
-  "connector-definitions": "sync/connectors", "connector-mappings": "sync/mappings",
-  "cookie-domains": "cookie-domains", "cors": "cors", "csp": "csp",
-  "custom-nodes": "custom-nodes", "email-provider": "email-provider",
-  "email-templates": "email-templates", "endpoints": "endpoints",
-  "idm-authentication": "idm-authentication-config", "iga-workflows": "iga/workflows",
-  "internal-roles": "internal-roles", "kba": "kba", "locales": "locales",
-  "managed-objects": "managed-objects", "org-privileges": "org-privileges",
-  "raw": "raw", "remote-servers": "sync/rcs", "schedules": "schedules",
-  "secrets": "esvs/secrets", "service-objects": "service-objects",
-  "telemetry": "telemetry", "terms-and-conditions": "terms-conditions",
-  "ui-config": "ui", "variables": "esvs/variables",
-};
-
-const REALM_SCOPE_SUBDIR: Record<string, string> = {
-  "authz-policies": "authorization", "journeys": "journeys",
-  "oauth2-agents": "realm-config/agents", "password-policy": "password-policy",
-  "saml": "realm-config/saml", "scripts": "scripts",
-  "secret-mappings": "secret-mappings", "services": "services", "themes": "themes",
-};
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-function copyDirSync(src: string, dest: string) {
-  if (!fs.existsSync(src)) return;
-  fs.mkdirSync(dest, { recursive: true });
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    const s = path.join(src, entry.name);
-    const d = path.join(dest, entry.name);
-    if (entry.isDirectory()) copyDirSync(s, d);
-    else fs.copyFileSync(s, d);
-  }
-}
-
-/**
- * Rel path under the temp staging dir for a source scope dir. The vendored
- * fr-config-manager push modules expect `realms/<realm>/<scope>/…`, so when
- * the source was pulled in the vendored-pull layout (`<realm>/<scope>/…`
- * without the `realms/` prefix), this prepends `realms/` for realm-scoped
- * scopes. Global scopes are left as-is.
- */
-function stagingRelPath(configDir: string, srcDir: string, scope: string): string {
-  const rel = path.relative(configDir, srcDir).split(path.sep).join("/");
-  if ((scope in REALM_SCOPE_SUBDIR) && !rel.startsWith("realms/")) {
-    return `realms/${rel}`;
-  }
-  return rel;
-}
-
-/** Resolve scope to absolute directory paths within a config dir. */
-function resolveScopeDirs(configDir: string, scope: string): string[] {
-  if (scope in REALM_SCOPE_SUBDIR) {
-    const subdir = REALM_SCOPE_SUBDIR[scope];
-    return getRealmRoots(configDir, subdir).map((root) => path.join(root, subdir));
-  }
-  const dirName = SCOPE_DIR[scope] ?? scope;
-  const d = path.join(configDir, dirName);
-  return fs.existsSync(d) ? [d] : [];
-}
-
-/**
- * Build a name → _id map by scanning JSON files in the given directories.
- * Works for scripts (scripts-config/*.json), journeys (journeyName/journeyName.json),
- * endpoints (endpointName/endpointName.js → same dir has .json), and generic JSON.
- */
-function buildNameToIdMap(dirs: string[], scope: string): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const dir of dirs) {
-    if (scope === "scripts") {
-      // Scripts: scripts-config/{uuid}.json → { name, _id }
-      const configDir = path.join(dir, "scripts-config");
-      if (!fs.existsSync(configDir)) continue;
-      for (const f of fs.readdirSync(configDir)) {
-        if (!f.endsWith(".json")) continue;
-        try {
-          const json = JSON.parse(fs.readFileSync(path.join(configDir, f), "utf-8"));
-          if (json.name && json._id) map.set(json.name, json._id);
-        } catch { /* skip */ }
-      }
-    } else if (scope === "journeys") {
-      // Journeys: {journeyName}/{journeyName}.json — journeys are matched by directory name
-      // No _id remapping needed for journeys — they use directory names
-    } else {
-      // Generic: scan for JSON files with _id and name fields
-      const scanDir = (d: string) => {
-        if (!fs.existsSync(d)) return;
-        for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
-          if (entry.isDirectory()) {
-            // Check for a JSON file inside with the same name
-            const inner = path.join(d, entry.name, `${entry.name}.json`);
-            if (fs.existsSync(inner)) {
-              try {
-                const json = JSON.parse(fs.readFileSync(inner, "utf-8"));
-                if (json._id) map.set(entry.name, json._id);
-              } catch { /* skip */ }
-            }
-          } else if (entry.name.endsWith(".json")) {
-            try {
-              const json = JSON.parse(fs.readFileSync(path.join(d, entry.name), "utf-8"));
-              const name = json.name ?? path.basename(entry.name, ".json");
-              if (json._id) map.set(name, json._id);
-            } catch { /* skip */ }
-          }
-        }
-      };
-      scanDir(dir);
-    }
-  }
-  return map;
-}
-
-/**
- * Remap _id fields in the temp config directory to match target IDs.
- * Only processes JSON files that have an _id field.
- */
-function remapIds(tempDirs: string[], scope: string, sourceNameToId: Map<string, string>, targetNameToId: Map<string, string>, logs: string[]) {
-  if (scope === "scripts") {
-    // Remap script configs
-    for (const dir of tempDirs) {
-      const configDir = path.join(dir, "scripts-config");
-      if (!fs.existsSync(configDir)) continue;
-      for (const f of fs.readdirSync(configDir)) {
-        if (!f.endsWith(".json")) continue;
-        const fp = path.join(configDir, f);
-        try {
-          const json = JSON.parse(fs.readFileSync(fp, "utf-8"));
-          if (!json.name || !json._id) continue;
-          const targetId = targetNameToId.get(json.name);
-          if (targetId && targetId !== json._id) {
-            const oldId = json._id;
-            json._id = targetId;
-            fs.writeFileSync(fp, JSON.stringify(json, null, 2));
-            // Rename the file to match the new UUID
-            const newFp = path.join(configDir, `${targetId}.json`);
-            if (fp !== newFp) fs.renameSync(fp, newFp);
-            logs.push(`Remapped script "${json.name}": ${oldId} → ${targetId}`);
-          } else if (!targetId) {
-            logs.push(`Script "${json.name}" not found on target — will be created with ID ${json._id}`);
-          }
-        } catch { /* skip */ }
-      }
-    }
-  } else if (scope === "journeys") {
-    // Journeys match by directory name — no _id remapping needed
-    logs.push("Journeys matched by directory name — no ID remapping needed");
-  } else {
-    // Generic: remap _id in JSON files. Mirror buildNameToIdMap's key logic so
-    // dir-based scopes (email-templates, connector-mappings) key on directory
-    // name — the stable identity that matches `_id`'s suffix. Using
-    // `json.name` would miscollide when a copy inherits the original's name
-    // field (e.g. tenantEmailOtpCopy has json.name "tenantEmailOtp", same as the
-    // original template — so the old code remapped the copy onto the original
-    // and overwrote it on the target).
-    for (const dir of tempDirs) {
-      if (!fs.existsSync(dir)) continue;
-      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (entry.isDirectory()) {
-          // Dir-based entry: <dir>/<name>/<name>.json
-          const inner = path.join(dir, entry.name, `${entry.name}.json`);
-          if (!fs.existsSync(inner)) continue;
-          try {
-            const json = JSON.parse(fs.readFileSync(inner, "utf-8"));
-            if (!json._id) continue;
-            const targetId = targetNameToId.get(entry.name);
-            if (targetId && targetId !== json._id) {
-              const oldId = json._id;
-              json._id = targetId;
-              fs.writeFileSync(inner, JSON.stringify(json, null, 2));
-              logs.push(`Remapped "${entry.name}": ${oldId} → ${targetId}`);
-            } else if (!targetId) {
-              logs.push(`"${entry.name}" not found on target — will be created`);
-            }
-          } catch { /* skip */ }
-        } else if (entry.name.endsWith(".json")) {
-          // Flat entry: <dir>/<name>.json
-          const fp = path.join(dir, entry.name);
-          try {
-            const json = JSON.parse(fs.readFileSync(fp, "utf-8"));
-            if (!json._id) continue;
-            const name = json.name ?? path.basename(entry.name, ".json");
-            const targetId = targetNameToId.get(name);
-            if (targetId && targetId !== json._id) {
-              const oldId = json._id;
-              json._id = targetId;
-              fs.writeFileSync(fp, JSON.stringify(json, null, 2));
-              logs.push(`Remapped "${name}": ${oldId} → ${targetId}`);
-            } else if (!targetId) {
-              logs.push(`"${name}" not found on target — will be created`);
-            }
-          } catch { /* skip */ }
-        }
-      }
-    }
-  }
-}
 
 // ── Route ────────────────────────────────────────────────────────────────────
 
@@ -285,43 +88,24 @@ export async function POST(req: NextRequest) {
 
         // Step 0b: Resolve journey dependencies if includeDeps is enabled
         if (includeDeps) {
-          const journeyScopes = scopeSelections.filter((s) => s.scope === "journeys" && s.items?.length);
-          if (journeyScopes.length > 0) {
+          const journeyNames = getSelectedJourneyNames(scopeSelections);
+          if (journeyNames.length > 0) {
             emit({ type: "scope-start", scope: "resolve-deps", ts: Date.now() });
             emit({ type: "stdout", data: "Resolving journey dependencies...\n", ts: Date.now() });
 
-            const journeyNames = journeyScopes.flatMap((s) => s.items!);
             const deps = resolveJourneyDeps(sourceConfigDir, journeyNames);
-
-            // Add sub-journeys to scopeSelections
-            if (deps.subJourneys.length > 0) {
-              const journeySel = scopeSelections.find((s) => s.scope === "journeys");
-              if (journeySel?.items) {
-                for (const sub of deps.subJourneys) {
-                  if (!journeySel.items.includes(sub)) {
-                    journeySel.items.push(sub);
-                    emit({ type: "stdout", data: `  + Sub-journey: ${sub}\n`, ts: Date.now() });
-                  }
-                }
-              }
+            const depsUpdate = addJourneyDepsToSelections(scopeSelections, deps);
+            for (const sub of depsUpdate.addedSubJourneys) {
+              emit({ type: "stdout", data: `  + Sub-journey: ${sub}\n`, ts: Date.now() });
             }
-
-            // Add scripts to scopeSelections
-            if (deps.scriptUuids.length > 0) {
-              let scriptSel = scopeSelections.find((s) => s.scope === "scripts");
-              if (!scriptSel) {
-                scriptSel = { scope: "scripts" as any, items: [] };
-                scopeSelections.push(scriptSel);
-              }
-              if (!scriptSel.items) scriptSel.items = [];
-              for (const uuid of deps.scriptUuids) {
-                const configFile = uuid + ".json";
-                if (!scriptSel.items.includes(configFile)) {
-                  const name = deps.scriptNames.get(uuid) ?? uuid;
-                  scriptSel.items.push(configFile);
-                  emit({ type: "stdout", data: `  + Script: ${name}\n`, ts: Date.now() });
-                }
-              }
+            for (const script of depsUpdate.addedScripts) {
+              emit({ type: "stdout", data: `  + Script: ${script.name}\n`, ts: Date.now() });
+            }
+            for (const sub of deps.missingSubJourneys) {
+              emit({ type: "stdout", data: `  ! Missing journey dependency: ${sub}\n`, ts: Date.now() });
+            }
+            for (const uuid of deps.missingScriptUuids) {
+              emit({ type: "stdout", data: `  ! Missing script dependency: ${uuid}\n`, ts: Date.now() });
             }
 
             emit({ type: "stdout", data: `  Total: ${deps.subJourneys.length} sub-journeys, ${deps.scriptUuids.length} scripts\n`, ts: Date.now() });
@@ -509,7 +293,7 @@ export async function POST(req: NextRequest) {
             if (!fs.existsSync(cfgDir)) continue;
             for (const f of fs.readdirSync(cfgDir)) {
               if (!f.endsWith(".json")) continue;
-              try { const j = JSON.parse(fs.readFileSync(path.join(cfgDir, f), "utf-8")); if (j.name && j._id) sourceScriptNameToUuid.set(j.name, j._id); } catch {}
+              try { const j = JSON.parse(fs.readFileSync(path.join(cfgDir, f), "utf-8")); if (j.name && j._id) sourceScriptNameToUuid.set(j.name, j._id); } catch { }
             }
           }
           for (const dir of resolveScopeDirs(targetConfigDir!, "scripts")) {
@@ -517,7 +301,7 @@ export async function POST(req: NextRequest) {
             if (!fs.existsSync(cfgDir)) continue;
             for (const f of fs.readdirSync(cfgDir)) {
               if (!f.endsWith(".json")) continue;
-              try { const j = JSON.parse(fs.readFileSync(path.join(cfgDir, f), "utf-8")); if (j.name && j._id) targetScriptNameToUuid.set(j.name, j._id); } catch {}
+              try { const j = JSON.parse(fs.readFileSync(path.join(cfgDir, f), "utf-8")); if (j.name && j._id) targetScriptNameToUuid.set(j.name, j._id); } catch { }
             }
           }
 
@@ -1296,7 +1080,7 @@ export async function POST(req: NextRequest) {
           const { spawn: spawnProc } = await import("child_process");
           const pullEnvVars = parseEnvFile(getEnvFileContent(targetEnvironment));
           const pullEnv = { ...process.env, ...pullEnvVars };
-          const pullCwd = path.join(process.cwd(), "environments", targetEnvironment);
+          const pullCwd = path.join(ENVIRONMENTS_DIR, targetEnvironment);
 
           for (const sel of scopeSelections) {
             if (sel.scope === "journeys" && sel.items && sel.items.length > 0) {

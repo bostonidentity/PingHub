@@ -1,61 +1,156 @@
-import { describe, it, expect } from "vitest";
-import path from "path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "fs";
+import os from "os";
+import path from "path";
 import { loadCanonicalEnv } from "@/lib/semantic-compare/loader";
 import { journeysEqual } from "@/lib/semantic-compare/journey-equal";
 
-const IDE  = path.resolve(__dirname, "../../../environments/ide/config");
-const IDE3 = path.resolve(__dirname, "../../../environments/ide3/config/ide3");
+let tmp: string;
 
-const describeIf = (cond: boolean) => cond ? describe : describe.skip;
+beforeEach(() => {
+  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-integration-"));
+});
 
-describeIf(fs.existsSync(IDE) && fs.existsSync(IDE3))(
-  "semantic-compare integration (ide vs ide3)",
-  () => {
-    it("loads journeys from both envs", () => {
-      const a = loadCanonicalEnv(IDE);
-      const b = loadCanonicalEnv(IDE3);
-      expect(a.journeys.size).toBeGreaterThan(0);
-      expect(b.journeys.size).toBeGreaterThan(0);
+afterEach(() => {
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+function writeJson(file: string, value: unknown): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(value, null, 2));
+}
+
+function writeText(file: string, value: string): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, value);
+}
+
+function writeScript(configDir: string, id: string, name: string, body: string): void {
+  writeJson(path.join(configDir, "alpha", "scripts", "scripts-config", `${id}.json`), {
+    _id: id,
+    name,
+    context: "AUTHENTICATION_TREE_DECISION_NODE",
+    language: "JAVASCRIPT",
+    script: { file: `scripts-content/AUTHENTICATION_TREE_DECISION_NODE/${name}.js` },
+  });
+  writeText(
+    path.join(configDir, "alpha", "scripts", "scripts-content", "AUTHENTICATION_TREE_DECISION_NODE", `${name}.js`),
+    body,
+  );
+}
+
+function writeJourney(configDir: string, name: string, scriptId: string, scriptNodeValue = "outcome = 'true';"): void {
+  const journeyDir = path.join(configDir, "alpha", "journeys", name);
+  writeJson(path.join(journeyDir, `${name}.json`), {
+    _id: name,
+    entryNodeId: "script-node",
+    identityResource: "managed/alpha_user",
+    nodes: {
+      "script-node": {
+        nodeType: "ScriptedDecisionNode",
+        displayName: "Check",
+        connections: { true: "success" },
+        x: 10,
+        y: 20,
+      },
+      success: {
+        nodeType: "SuccessNode",
+        displayName: "Success",
+        x: 20,
+        y: 30,
+      },
+    },
+    staticNodes: { startNode: { x: 0, y: 0 } },
+  });
+  writeJson(path.join(journeyDir, "nodes", "Scripted_Decision_-_script-node.json"), {
+    _id: "script-node",
+    _type: { _id: "ScriptedDecisionNode", name: "Scripted Decision" },
+    nodeType: "ScriptedDecisionNode",
+    displayName: "Check",
+    script: scriptId,
+    scriptInputs: {},
+    scriptOutputs: {},
+    _outcomes: [{ id: "true", displayName: "True" }],
+    value: scriptNodeValue,
+  });
+  writeJson(path.join(journeyDir, "nodes", "Success_-_success.json"), {
+    _id: "success",
+    _type: { _id: "SuccessNode", name: "Success" },
+    nodeType: "SuccessNode",
+    displayName: "Success",
+  });
+}
+
+describe("semantic-compare integration", () => {
+  it("loads deterministic scripts and journeys from two config dirs", () => {
+    const source = path.join(tmp, "source");
+    const target = path.join(tmp, "target");
+    writeScript(source, "script-source", "CheckScript", "outcome = 'true';\n");
+    writeScript(target, "script-target", "CheckScript", "outcome = 'true';\n");
+    writeJourney(source, "Login", "script-source");
+    writeJourney(target, "Login", "script-target");
+
+    const a = loadCanonicalEnv(source);
+    const b = loadCanonicalEnv(target);
+
+    expect(a.scripts.size).toBe(1);
+    expect(b.scripts.size).toBe(1);
+    expect(a.journeys.size).toBe(1);
+    expect(b.journeys.size).toBe(1);
+  });
+
+  it("compares same-name journeys across dirs without treating stable script UUID drift as a change", () => {
+    const source = path.join(tmp, "source");
+    const target = path.join(tmp, "target");
+    writeScript(source, "script-source", "CheckScript", "outcome = 'true';\n");
+    writeScript(target, "script-target", "CheckScript", "outcome = 'true';\n");
+    writeJourney(source, "Login", "script-source");
+    writeJourney(target, "Login", "script-target");
+
+    const a = loadCanonicalEnv(source);
+    const b = loadCanonicalEnv(target);
+    const result = journeysEqual(a.journeys.get("Login")!, b.journeys.get("Login")!, {
+      scriptsA: a.scripts,
+      scriptsB: b.scripts,
+      journeysA: a.journeys,
+      journeysB: b.journeys,
     });
 
-    it("a journey compared to itself is equal", () => {
-      const a = loadCanonicalEnv(IDE);
-      const [firstName] = a.journeys.keys();
-      const j = a.journeys.get(firstName)!;
-      const r = journeysEqual(j, j, {
-        scriptsA: a.scripts, scriptsB: a.scripts,
-        journeysA: a.journeys, journeysB: a.journeys,
-      });
-      expect(r.equal).toBe(true);
+    expect(result.equal).toBe(true);
+  });
+
+  it("reports a structured script reason when referenced script content changes", () => {
+    const source = path.join(tmp, "source");
+    const target = path.join(tmp, "target");
+    writeScript(source, "script-source", "CheckScript", "outcome = 'true';\n");
+    writeScript(target, "script-target", "CheckScript", "outcome = 'false';\n");
+    writeJourney(source, "Login", "script-source");
+    writeJourney(target, "Login", "script-target");
+
+    const a = loadCanonicalEnv(source);
+    const b = loadCanonicalEnv(target);
+    const result = journeysEqual(a.journeys.get("Login")!, b.journeys.get("Login")!, {
+      scriptsA: a.scripts,
+      scriptsB: b.scripts,
+      journeysA: a.journeys,
+      journeysB: b.journeys,
     });
 
-    it("cross-env compare of same-name journey produces reasons (not a crash)", () => {
-      const a = loadCanonicalEnv(IDE);
-      const b = loadCanonicalEnv(IDE3);
-      const common = [...a.journeys.keys()].find((n) => b.journeys.has(n));
-      if (!common) return;
-      const r = journeysEqual(a.journeys.get(common)!, b.journeys.get(common)!, {
-        scriptsA: a.scripts, scriptsB: b.scripts,
-        journeysA: a.journeys, journeysB: b.journeys,
-      });
-      // We don't assert equal/not-equal — the point is the function returns a structured result.
-      expect(r.reasons).toBeInstanceOf(Array);
-    });
+    expect(result.equal).toBe(false);
+    expect(result.reasons).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: "script-body" })]),
+    );
+  });
 
-    it("unknown script UUIDs manifest as <missing:…> markers, not crashes", () => {
-      const a = loadCanonicalEnv(IDE);
-      for (const j of a.journeys.values()) {
-        for (const n of j.nodes.values()) {
-          const script = n.payload.script;
-          if (typeof script === "string" && script.startsWith("<missing:")) {
-            // At least one marker implies the canonicalizer handles missing refs gracefully.
-            expect(script).toMatch(/^<missing:[0-9a-f-]+>$/);
-            return;
-          }
-        }
-      }
-      // If no missing scripts in this fixture, that's fine too.
-    });
-  },
-);
+  it("surfaces missing script UUIDs as missing markers instead of crashing", () => {
+    const source = path.join(tmp, "source");
+    writeJourney(source, "Login", "missing-script");
+
+    const env = loadCanonicalEnv(source);
+    const nodePayloads = [...env.journeys.get("Login")!.nodes.values()].map((node) => node.payload);
+
+    expect(nodePayloads).toEqual(
+      expect.arrayContaining([expect.objectContaining({ script: "<missing:missing-script>" })]),
+    );
+  });
+});

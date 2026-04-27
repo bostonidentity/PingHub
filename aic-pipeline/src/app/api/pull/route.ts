@@ -3,6 +3,7 @@ import path from "path";
 import { spawnFrConfig, ConfigScope, getEnvFileContent } from "@/lib/fr-config";
 import { parseEnvFile } from "@/lib/env-parser";
 import { autoCommit, analyzeChanges, pruneScopeDirs, scopeLabel as getScopeLabel } from "@/lib/git";
+import { ENVIRONMENTS_DIR } from "@/lib/paths";
 import { appendOpLog, type OpMetadata } from "@/lib/op-history";
 import { CONFIG_SCOPES } from "@/lib/fr-config-types";
 import { spawnFrodo, FRODO_SCOPES } from "@/lib/frodo";
@@ -101,7 +102,7 @@ export async function POST(req: NextRequest) {
 
   // Prune: delete on-disk scope directories so the pull mirrors remote deletions.
   // Safe because the pre-pull auto-commit above just snapshotted any local changes.
-  const configDirAbs = path.resolve(process.cwd(), "environments", environment, configDirRel);
+  const configDirAbs = path.resolve(ENVIRONMENTS_DIR, environment, configDirRel);
   let prunedDirs: string[] = [];
   let pruneError: string | null = null;
   try {
@@ -111,14 +112,14 @@ export async function POST(req: NextRequest) {
   }
 
   const frodoScopes = allScopes.filter((s) => FRODO_SCOPES.includes(s));
-  const igaScopes   = allScopes.filter((s) => IGA_API_SCOPES.includes(s));
-  const frScopes    = allScopes.filter((s) => !FRODO_SCOPES.includes(s) && !IGA_API_SCOPES.includes(s)) as ConfigScope[];
+  const igaScopes = allScopes.filter((s) => IGA_API_SCOPES.includes(s));
+  const frScopes = allScopes.filter((s) => !FRODO_SCOPES.includes(s) && !IGA_API_SCOPES.includes(s)) as ConfigScope[];
 
   // Build a combined stream from all runners
   const streams: ReadableStream<string>[] = [];
-  if (frScopes.length)   streams.push(spawnFrConfig({ command: "fr-config-pull", environment, scopes: frScopes }).stream);
+  if (frScopes.length) streams.push(spawnFrConfig({ command: "fr-config-pull", environment, scopes: frScopes }).stream);
   if (frodoScopes.length) streams.push(spawnFrodo({ command: "fr-config-pull", environment, scopes: frodoScopes }).stream);
-  if (igaScopes.length)   streams.push(runIgaApi({ command: "fr-config-pull", environment, scopes: igaScopes }).stream);
+  if (igaScopes.length) streams.push(runIgaApi({ command: "fr-config-pull", environment, scopes: igaScopes }).stream);
 
   const pullStream = mergeStreams(streams);
 

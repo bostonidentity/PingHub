@@ -10,58 +10,60 @@ import {
 } from "@/lib/rcs/watchlist";
 
 let tmp: string;
+let envsDir: string;
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rcs-watch-"));
-  fs.mkdirSync(path.join(tmp, "environments/dev"), { recursive: true });
+  envsDir = path.join(tmp, "environments");
+  fs.mkdirSync(path.join(envsDir, "dev"), { recursive: true });
 });
 afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
 describe("readWatchlist", () => {
   it("returns {} when the file does not exist", () => {
-    expect(readWatchlist("dev", { rootDir: tmp })).toEqual({});
+    expect(readWatchlist("dev", { rootDir: envsDir })).toEqual({});
   });
 
   it("parses and returns a stored watchlist", () => {
     fs.writeFileSync(
-      path.join(tmp, "environments/dev/rcs-watchlist.json"),
+      path.join(envsDir, "dev/rcs-watchlist.json"),
       JSON.stringify({ "rcs-cluster-external": ["ad-hr", "oracle-hr"] }),
     );
-    expect(readWatchlist("dev", { rootDir: tmp })).toEqual({
+    expect(readWatchlist("dev", { rootDir: envsDir })).toEqual({
       "rcs-cluster-external": ["ad-hr", "oracle-hr"],
     });
   });
 
   it("returns {} on malformed JSON instead of throwing", () => {
-    fs.writeFileSync(path.join(tmp, "environments/dev/rcs-watchlist.json"), "{ bad json");
-    expect(readWatchlist("dev", { rootDir: tmp })).toEqual({});
+    fs.writeFileSync(path.join(envsDir, "dev/rcs-watchlist.json"), "{ bad json");
+    expect(readWatchlist("dev", { rootDir: envsDir })).toEqual({});
   });
 });
 
 describe("writeWatchlistEntry", () => {
   it("creates the file and writes a single cluster entry", () => {
-    writeWatchlistEntry("dev", "rcs-cluster-external", ["ad-hr"], { rootDir: tmp });
-    expect(readWatchlist("dev", { rootDir: tmp })).toEqual({ "rcs-cluster-external": ["ad-hr"] });
+    writeWatchlistEntry("dev", "rcs-cluster-external", ["ad-hr"], { rootDir: envsDir });
+    expect(readWatchlist("dev", { rootDir: envsDir })).toEqual({ "rcs-cluster-external": ["ad-hr"] });
   });
 
   it("updates an existing entry without losing the other clusters", () => {
-    writeWatchlistEntry("dev", "rcs-cluster-a", ["a1"], { rootDir: tmp });
-    writeWatchlistEntry("dev", "rcs-cluster-b", ["b1", "b2"], { rootDir: tmp });
-    writeWatchlistEntry("dev", "rcs-cluster-a", ["a1", "a2"], { rootDir: tmp });
-    expect(readWatchlist("dev", { rootDir: tmp })).toEqual({
+    writeWatchlistEntry("dev", "rcs-cluster-a", ["a1"], { rootDir: envsDir });
+    writeWatchlistEntry("dev", "rcs-cluster-b", ["b1", "b2"], { rootDir: envsDir });
+    writeWatchlistEntry("dev", "rcs-cluster-a", ["a1", "a2"], { rootDir: envsDir });
+    expect(readWatchlist("dev", { rootDir: envsDir })).toEqual({
       "rcs-cluster-a": ["a1", "a2"],
       "rcs-cluster-b": ["b1", "b2"],
     });
   });
 
   it("removes the cluster entry entirely when include is null", () => {
-    writeWatchlistEntry("dev", "rcs-cluster-a", ["a1"], { rootDir: tmp });
-    writeWatchlistEntry("dev", "rcs-cluster-a", null, { rootDir: tmp });
-    expect(readWatchlist("dev", { rootDir: tmp })).toEqual({});
+    writeWatchlistEntry("dev", "rcs-cluster-a", ["a1"], { rootDir: envsDir });
+    writeWatchlistEntry("dev", "rcs-cluster-a", null, { rootDir: envsDir });
+    expect(readWatchlist("dev", { rootDir: envsDir })).toEqual({});
   });
 
   it("deduplicates and preserves insertion order within a cluster", () => {
-    writeWatchlistEntry("dev", "rcs-cluster-a", ["b", "a", "b", "c"], { rootDir: tmp });
-    expect(readWatchlist("dev", { rootDir: tmp })["rcs-cluster-a"]).toEqual(["b", "a", "c"]);
+    writeWatchlistEntry("dev", "rcs-cluster-a", ["b", "a", "b", "c"], { rootDir: envsDir });
+    expect(readWatchlist("dev", { rootDir: envsDir })["rcs-cluster-a"]).toEqual(["b", "a", "c"]);
   });
 });
 

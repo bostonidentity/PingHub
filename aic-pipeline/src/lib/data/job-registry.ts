@@ -117,9 +117,9 @@ export function createRegistry(envsRoot: string): Registry {
 // Stored on globalThis so it survives Next.js HMR in dev mode; a plain
 // module-level variable is reset on every hot-reload, which orphans
 // in-flight runPull promises and can leave jobs stuck as "running".
-import { cwd } from "process";
+import { ENVIRONMENTS_DIR } from "../paths";
 const _global = globalThis as typeof globalThis & { __dataJobRegistry?: Registry };
 export function getRegistry(): Registry {
-  if (!_global.__dataJobRegistry) _global.__dataJobRegistry = createRegistry(path.join(cwd(), "environments"));
+  if (!_global.__dataJobRegistry) _global.__dataJobRegistry = createRegistry(ENVIRONMENTS_DIR);
   return _global.__dataJobRegistry;
 }
