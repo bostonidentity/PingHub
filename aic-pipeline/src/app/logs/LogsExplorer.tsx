@@ -712,7 +712,8 @@ function TailTerminal({
                     onClick={() => toggleRow(vRow.index)}
                     onDoubleClick={() => onEntryDoubleClick?.(vRow.index)}
                     className={cn(
-                      "px-3 py-px font-mono text-[11px] select-text leading-snug border-b border-slate-100 cursor-pointer",
+                      "px-3 py-px font-mono text-[11px] select-text leading-snug border-b border-slate-200 cursor-pointer",
+                      vRow.index % 2 === 0 && "bg-slate-50/30",
                       terminalLevelClass(level),
                       isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
                       isCtxAnchor && !isActive && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
@@ -751,7 +752,8 @@ function TailTerminal({
                     onDoubleClick={() => onEntryDoubleClick?.(absIdx)}
                     style={{ height: TERMINAL_ROW_H, lineHeight: `${TERMINAL_ROW_H}px` }}
                     className={cn(
-                      "px-3 font-mono text-[11px] whitespace-nowrap select-text border-b border-slate-100",
+                      "px-3 font-mono text-[11px] whitespace-nowrap select-text border-b border-slate-200",
+                      absIdx % 2 === 0 && "bg-slate-50/30",
                       terminalLevelClass(level),
                       isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
                       isCtxAnchor && !isActive && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
@@ -867,7 +869,8 @@ const EntryRow = memo(function EntryRow({
         onDoubleClick={(e) => { e.stopPropagation(); onContextClick?.(); }}
         data-row-idx={rowIdx}
         className={cn(
-          "cursor-pointer text-xs border-b border-slate-100 hover:bg-slate-50 transition-colors",
+          "cursor-pointer text-xs border-b border-slate-200 hover:bg-slate-100/60 transition-colors",
+          !expanded && !highlighted && !isContextAnchor && rowIdx != null && rowIdx % 2 === 0 && "bg-slate-50/30",
           expanded && "bg-slate-50",
           highlighted && "ring-1 ring-inset ring-sky-400 bg-sky-50",
           isContextAnchor && !highlighted && "ring-1 ring-inset ring-violet-400 bg-violet-50",
