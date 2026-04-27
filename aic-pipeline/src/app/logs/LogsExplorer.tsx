@@ -388,6 +388,8 @@ function JsonLogView({
   matchIndices = [],
   matchCase = false,
   wholeWord = false,
+  onEntryDoubleClick,
+  contextAnchorIdx = -1,
 }: {
   entries: LogEntry[];
   wrapLines?: boolean;
@@ -397,6 +399,8 @@ function JsonLogView({
   matchIndices?: number[];
   matchCase?: boolean;
   wholeWord?: boolean;
+  onEntryDoubleClick?: (idx: number) => void;
+  contextAnchorIdx?: number;
 }) {
   const text = useMemo(() => JSON.stringify(entries, null, 2), [entries]);
   const [copied, setCopied] = useState(false);
@@ -462,13 +466,16 @@ function JsonLogView({
         {entryTexts.map((etxt, i) => {
           const isMatch = matchSet.has(i);
           const isActive = i === activeEntryIdx;
+          const isCtxAnchor = i === contextAnchorIdx;
           return (
             <div
               key={i}
               data-entry-idx={i}
+              onDoubleClick={() => onEntryDoubleClick?.(i)}
               className={cn(
                 isActive && "bg-amber-50 ring-1 ring-inset ring-amber-300 rounded",
                 isMatch && !isActive && "bg-yellow-50/60",
+                isCtxAnchor && !isActive && "bg-violet-50 ring-1 ring-inset ring-violet-300 rounded",
               )}
             >
               {isMatch ? highlightText(etxt, isActive) : etxt}
@@ -512,7 +519,7 @@ function terminalLevelClass(level: string): string {
 function TailTerminal({
   entries, defaultSource, searchTerm, keywords, wrapLines = false,
   scrollRequest = null, activeMatchIndex = null, matchCase = false, wholeWord = false,
-  dupeCounts, autoScroll = true,
+  dupeCounts, autoScroll = true, onEntryDoubleClick, contextAnchorIdx = null,
 }: {
   entries: LogEntry[];
   defaultSource: string;
@@ -525,6 +532,8 @@ function TailTerminal({
   matchCase?: boolean;
   wholeWord?: boolean;
   autoScroll?: boolean;
+  onEntryDoubleClick?: (idx: number) => void;
+  contextAnchorIdx?: number | null;
 }) {
   const outerRef = useRef<HTMLDivElement>(null);
   const [viewH, setViewH] = useState(400);
@@ -665,6 +674,7 @@ function TailTerminal({
               const line = formatTerminalLine(entry, defaultSource);
               const count = dupeCounts?.get(vRow.index) ?? 1;
               const isActive = activeMatchIndex === vRow.index;
+              const isCtxAnchor = contextAnchorIdx === vRow.index;
               return (
                 // Outer div: stable key + measureElement for virtualizer
                 <div
@@ -676,10 +686,12 @@ function TailTerminal({
                   {/* Inner div: re-keyed on flashKey so CSS animation re-fires on each navigation */}
                   <div
                     key={isActive ? flashKey : undefined}
+                    onDoubleClick={() => onEntryDoubleClick?.(vRow.index)}
                     className={cn(
                       "px-3 py-px font-mono text-[11px] whitespace-pre-wrap break-all select-text leading-snug border-b border-slate-100",
                       terminalLevelClass(level),
                       isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
+                      isCtxAnchor && !isActive && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
                     )}
                   >
                     {highlightLine(line, isActive)}
@@ -703,14 +715,17 @@ function TailTerminal({
                 const line = formatTerminalLine(entry, defaultSource);
                 const count = dupeCounts?.get(absIdx) ?? 1;
                 const isActive = activeMatchIndex === absIdx;
+                const isCtxAnchor = contextAnchorIdx === absIdx;
                 return (
                   <div
                     key={isActive ? flashKey : absIdx}
+                    onDoubleClick={() => onEntryDoubleClick?.(absIdx)}
                     style={{ height: TERMINAL_ROW_H, lineHeight: `${TERMINAL_ROW_H}px` }}
                     className={cn(
                       "px-3 font-mono text-[11px] whitespace-nowrap select-text border-b border-slate-100",
                       terminalLevelClass(level),
                       isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
+                      isCtxAnchor && !isActive && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
                     )}
                   >
                     {highlightLine(line, isActive)}
@@ -753,9 +768,11 @@ const EntryRow = memo(function EntryRow({
   keywords,
   onTransactionClick,
   onTimestampClick,
+  onContextClick,
   fullscreen = false,
   showFullMessage = false,
   highlighted = false,
+  isContextAnchor = false,
   rowIdx,
   matchCase = false,
   wholeWord = false,
@@ -769,9 +786,11 @@ const EntryRow = memo(function EntryRow({
   keywords: string[];
   onTransactionClick: (txId: string) => void;
   onTimestampClick?: (timestamp: string, source: string) => void;
+  onContextClick?: () => void;
   fullscreen?: boolean;
   showFullMessage?: boolean;
   highlighted?: boolean;
+  isContextAnchor?: boolean;
   rowIdx?: number;
   matchCase?: boolean;
   wholeWord?: boolean;
@@ -816,11 +835,13 @@ const EntryRow = memo(function EntryRow({
     <Fragment>
       <tr
         onClick={onToggle}
+        onDoubleClick={(e) => { e.stopPropagation(); onContextClick?.(); }}
         data-row-idx={rowIdx}
         className={cn(
           "cursor-pointer text-xs border-b border-slate-100 hover:bg-slate-50 transition-colors",
           expanded && "bg-slate-50",
-          highlighted && "ring-1 ring-inset ring-sky-400 bg-sky-50"
+          highlighted && "ring-1 ring-inset ring-sky-400 bg-sky-50",
+          isContextAnchor && !highlighted && "ring-1 ring-inset ring-violet-400 bg-violet-50",
         )}
       >
         <td className="px-3 py-2 font-mono text-slate-400 whitespace-nowrap align-top">
@@ -1218,6 +1239,10 @@ export function LogsExplorer({
   const grow = () => setTableHeight((h) => { const next = Math.min(window.innerHeight - 100, h + 50); saveHeight(next); return next; });
   const shrink = () => setTableHeight((h) => { const next = Math.max(200, h - 50); saveHeight(next); return next; });
 
+  // ── Context window (±N entries around a user-selected anchor) ──
+  const [contextAnchor, setContextAnchor] = useState<number | null>(null); // index into full filteredWithIdx
+  const [contextRadius, setContextRadius] = useState(1000);
+
   // ── Transaction drill-down (from clicking inline txId in table) ──
   const [drilldown, setDrilldown] = useState<{ txId: string } | null>(null);
 
@@ -1278,7 +1303,7 @@ export function LogsExplorer({
       const msg = e.data as
         | { type: "entries"; entries: LogEntry[]; append: boolean }
         | { type: "status"; loading: boolean }
-        | { type: "progress"; loaded: number; page: number; done: boolean; paused: boolean; source?: string; window?: string }
+        | { type: "progress"; loaded: number; page: number; done: boolean; paused: boolean; source?: string; window?: string; sourceIdx?: number; sourceCount?: number; lastTimestamp?: string; overallBegin?: string; overallEnd?: string }
         | { type: "error"; message: string; transient?: boolean };
 
       if (msg.type === "entries") {
@@ -1395,6 +1420,7 @@ export function LogsExplorer({
       setEntries([]);
       setFetched(false);
       setError("");
+      setContextAnchor(null);
       workerRef.current?.postMessage({ type: "tail-start", env, sources: tailSources, tailSecs });
     } else if (!tailing && prevTailing.current) {
       // Stop tail
@@ -1457,6 +1483,7 @@ export function LogsExplorer({
     setFetched(false);
     setExpandedIdx(null);
     setFetchProgress(null);
+    setContextAnchor(null);
     onConfigChange({ searching: true });
     workerRef.current?.postMessage({ type: "fetch", env, sources: selectedSources, beginTime, endTime, queryFilter });
     return doCleanup;
@@ -1518,18 +1545,40 @@ export function LogsExplorer({
     return { filteredWithIdx: result, dupeCounts: counts };
   }, [rawFilteredWithIdx, dedupe]);
 
-  const filtered = useMemo(() => filteredWithIdx.map(({ e }) => e), [filteredWithIdx]);
+  // ── Context window — slice filteredWithIdx to ±N around anchor ──
+  const contextActive = contextAnchor !== null;
+  const cxStart = contextActive ? Math.max(0, contextAnchor - contextRadius) : 0;
+  const cxEnd = contextActive ? Math.min(filteredWithIdx.length, contextAnchor + contextRadius + 1) : filteredWithIdx.length;
+  const displayFilteredWithIdx = useMemo(() =>
+    contextActive ? filteredWithIdx.slice(cxStart, cxEnd) : filteredWithIdx,
+    [filteredWithIdx, contextActive, cxStart, cxEnd]);
+  const displayDupeCounts = useMemo(() => {
+    if (!contextActive) return dupeCounts;
+    const remapped = new Map<number, number>();
+    for (const [key, count] of dupeCounts) {
+      const adj = key - cxStart;
+      if (adj >= 0 && adj < displayFilteredWithIdx.length) {
+        remapped.set(adj, count);
+      }
+    }
+    return remapped;
+  }, [contextActive, cxStart, dupeCounts, displayFilteredWithIdx.length]);
+  const contextAnchorDisplay = contextActive ? contextAnchor - cxStart : null;
+  // Total filtered count before context slicing (for status display)
+  const fullFilteredCount = filteredWithIdx.length;
+
+  const filtered = useMemo(() => displayFilteredWithIdx.map(({ e }) => e), [displayFilteredWithIdx]);
 
   // ── Match navigation (terminal view, keyword highlighting) ──
   // Compute indices into `filtered` where any keyword matches the formatted line.
   const matchRows = useMemo(() => findKeywordMatchRows(
-    filteredWithIdx.map(({ e, i }) => ({
+    displayFilteredWithIdx.map(({ e, i }) => ({
       key: logEntryMatchKey(e, i),
       line: entryStrings[i].line,
     })),
     keywords,
     { matchCase, wholeWord },
-  ), [filteredWithIdx, entryStrings, keywords, matchCase, wholeWord]);
+  ), [displayFilteredWithIdx, entryStrings, keywords, matchCase, wholeWord]);
   const matchIndices = useMemo(() => matchRows.map((m) => m.index), [matchRows]);
 
   // Jump to first match when keywords/options change; reset when no matches
@@ -1610,6 +1659,19 @@ export function LogsExplorer({
   function goPrevMatch() {
     if (matchRows.length === 0) return;
     navigateToMatch(matchCursor <= 0 ? matchRows.length - 1 : matchCursor - 1);
+  }
+
+  // ── Context window activation ──
+  // `displayIdx` is the index in the current display (which may already be sliced).
+  // Map back to the full `filteredWithIdx` position before storing.
+  function handleContextEntry(displayIdx: number) {
+    const originalIdx = contextActive ? cxStart + displayIdx : displayIdx;
+    if (contextAnchor === originalIdx) {
+      setContextAnchor(null); // toggle off
+    } else {
+      setContextAnchor(originalIdx);
+      setPage(1); // reset pagination when entering/changing context
+    }
   }
 
   // ── Pagination (page 1 = oldest, last page = newest) ──
@@ -2184,6 +2246,55 @@ export function LogsExplorer({
           </div>
         </div>
 
+        {/* Context window toolbar */}
+        {contextActive && (
+          <div className="flex items-center justify-between px-4 py-1.5 border-t border-violet-200 bg-violet-50/80 shrink-0">
+            <div className="flex items-center gap-2">
+              <svg className="w-3.5 h-3.5 text-violet-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 3.75H6A2.25 2.25 0 003.75 6v1.5M16.5 3.75H18A2.25 2.25 0 0120.25 6v1.5M16.5 20.25H18A2.25 2.25 0 0020.25 18v-1.5M7.5 20.25H6A2.25 2.25 0 013.75 18v-1.5" />
+              </svg>
+              <span className="text-xs text-violet-700 font-medium">
+                Context: ±{contextRadius.toLocaleString()} around entry #{contextAnchor + 1}
+              </span>
+              <span className="text-xs text-violet-500">
+                ({filtered.length.toLocaleString()} of {fullFilteredCount.toLocaleString()})
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setContextRadius((r) => Math.max(10, r - 500))}
+                disabled={contextRadius <= 10}
+                className="px-1.5 py-0.5 text-xs font-bold text-violet-600 bg-violet-100 rounded hover:bg-violet-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                title="Reduce context window"
+              >−</button>
+              <input
+                type="number"
+                value={contextRadius}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  if (!isNaN(v) && v >= 1) setContextRadius(v);
+                }}
+                className="w-20 px-1.5 py-0.5 text-xs text-center font-mono rounded border border-violet-300 focus:outline-none focus:ring-1 focus:ring-violet-500"
+                min={1}
+                title="Number of entries before and after the anchor"
+              />
+              <button
+                type="button"
+                onClick={() => setContextRadius((r) => r + 500)}
+                className="px-1.5 py-0.5 text-xs font-bold text-violet-600 bg-violet-100 rounded hover:bg-violet-200 transition-colors"
+                title="Increase context window"
+              >+</button>
+              <button
+                type="button"
+                onClick={() => setContextAnchor(null)}
+                className="ml-1 px-2 py-0.5 text-xs font-medium text-violet-700 bg-violet-100 rounded hover:bg-violet-200 transition-colors"
+                title="Exit context mode"
+              >✕ Clear</button>
+            </div>
+          </div>
+        )}
+
         {/* Scrollable log window — CSS resize handle at bottom-right corner */}
         <div
           ref={scrollContainerRef}
@@ -2226,12 +2337,14 @@ export function LogsExplorer({
                 searchTerm={search}
                 keywords={keywords}
                 wrapLines={wrapLines}
-                dupeCounts={dupeCounts}
+                dupeCounts={displayDupeCounts}
                 scrollRequest={matchScrollRequest}
                 activeMatchIndex={activeMatchIndex}
                 matchCase={matchCase}
                 wholeWord={wholeWord}
                 autoScroll={autoScroll}
+                onEntryDoubleClick={handleContextEntry}
+                contextAnchorIdx={contextAnchorDisplay}
               />
             )
           ) : viewMode === "json" ? (
@@ -2253,6 +2366,8 @@ export function LogsExplorer({
                 matchIndices={matchIndices}
                 matchCase={matchCase}
                 wholeWord={wholeWord}
+                onEntryDoubleClick={handleContextEntry}
+                contextAnchorIdx={contextAnchorDisplay ?? -1}
               />
             )
           ) : !fetched ? (
@@ -2289,13 +2404,15 @@ export function LogsExplorer({
                       keywords={keywords}
                       onTransactionClick={(txId) => setDrilldown({ txId })}
                       onTimestampClick={onOpenContextTab}
+                      onContextClick={() => handleContextEntry(globalIdx)}
                       fullscreen={fullscreen}
                       showFullMessage={showFullMessage}
                       highlighted={highlightedTableIdx === globalIdx || activeMatchIndex === globalIdx}
+                      isContextAnchor={contextAnchorDisplay === globalIdx}
                       rowIdx={globalIdx}
                       matchCase={matchCase}
                       wholeWord={wholeWord}
-                      dupeCount={dupeCounts.get(globalIdx) ?? 1}
+                      dupeCount={displayDupeCounts.get(globalIdx) ?? 1}
                     />
                   );
                 })}
