@@ -2435,72 +2435,71 @@ export function LogsExplorer({
                 </div>
               </div>
             </div>
-          </div>
-      );
+          );
         })()}
 
-      {/* Tail status indicator */}
-      {tailing && (
-        <div className="flex items-center justify-between px-4 py-2 border-t border-slate-200 bg-slate-50 shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-            <span className="text-xs text-slate-600 font-mono">
-              {loading
-                ? `Fetching…`
-                : lastUpdated
-                  ? `Updated ${lastUpdated.toLocaleTimeString()}`
-                  : `Starting…`}
-            </span>
-            {tailTotalReceived > 0 && (
-              <span className="text-xs text-slate-400 font-mono">
-                · {tailTotalReceived.toLocaleString()} total
-                {tailDropped > 0 && ` · ${entries.length.toLocaleString()} in buffer`}
+        {/* Tail status indicator */}
+        {tailing && (
+          <div className="flex items-center justify-between px-4 py-2 border-t border-slate-200 bg-slate-50 shrink-0">
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+              <span className="text-xs text-slate-600 font-mono">
+                {loading
+                  ? `Fetching…`
+                  : lastUpdated
+                    ? `Updated ${lastUpdated.toLocaleTimeString()}`
+                    : `Starting…`}
               </span>
-            )}
+              {tailTotalReceived > 0 && (
+                <span className="text-xs text-slate-400 font-mono">
+                  · {tailTotalReceived.toLocaleString()} total
+                  {tailDropped > 0 && ` · ${entries.length.toLocaleString()} in buffer`}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  try {
+                    const lines = entries.map((e) => formatTerminalLine(e, tailSource)).join("\n");
+                    const blob = new Blob([lines], { type: "text/plain" });
+                    const url = URL.createObjectURL(blob);
+                    const a = Object.assign(document.createElement("a"), {
+                      href: url,
+                      download: `tail-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.log`,
+                    });
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  } catch { /* ignore */ }
+                }}
+                className="px-2.5 py-1 text-xs font-medium bg-slate-200 text-slate-700 rounded hover:bg-slate-300 transition-colors"
+              >
+                Export session
+              </button>
+              <button
+                type="button"
+                onClick={() => onConfigChange({ tailing: false })}
+                className="px-2.5 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+              >
+                Stop
+              </button>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                try {
-                  const lines = entries.map((e) => formatTerminalLine(e, tailSource)).join("\n");
-                  const blob = new Blob([lines], { type: "text/plain" });
-                  const url = URL.createObjectURL(blob);
-                  const a = Object.assign(document.createElement("a"), {
-                    href: url,
-                    download: `tail-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.log`,
-                  });
-                  a.click();
-                  URL.revokeObjectURL(url);
-                } catch { /* ignore */ }
-              }}
-              className="px-2.5 py-1 text-xs font-medium bg-slate-200 text-slate-700 rounded hover:bg-slate-300 transition-colors"
-            >
-              Export session
-            </button>
-            <button
-              type="button"
-              onClick={() => onConfigChange({ tailing: false })}
-              className="px-2.5 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
-            >
-              Stop
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
 
-      {/* ── Transaction drill-down modal ── */ }
-  {
-    drilldown && (
-      <TransactionDrilldown
-        transactionId={drilldown.txId}
-        env={env}
-        availableSources={[...LOG_SOURCES]}
-        onClose={() => setDrilldown(null)}
-      />
-    )
-  }
+      {/* ── Transaction drill-down modal ── */}
+      {
+        drilldown && (
+          <TransactionDrilldown
+            transactionId={drilldown.txId}
+            env={env}
+            availableSources={[...LOG_SOURCES]}
+            onClose={() => setDrilldown(null)}
+          />
+        )
+      }
     </div >
   );
 }
