@@ -86,6 +86,7 @@ async function doFetch(env, sources, beginTime, endTime, queryFilter, fetchId) {
   let totalLoaded = 0;
   let pageNum = 0;
   let isVeryFirst = true;
+  let lastTimestamp = null; // track latest entry timestamp for progress
 
   if (!sources || sources.length === 0) {
     self.postMessage({ type: "error", message: "No log source selected." });
@@ -113,7 +114,7 @@ async function doFetch(env, sources, beginTime, endTime, queryFilter, fetchId) {
 
           // Check if paused
           if (searchPaused) {
-            self.postMessage({ type: "progress", loaded: totalLoaded, page: pageNum, done: false, paused: true });
+            self.postMessage({ type: "progress", loaded: totalLoaded, page: pageNum, done: false, paused: true, source, sourceIdx: si, sourceCount: validSources.length, lastTimestamp, overallBegin: beginTime, overallEnd: endTime });
             await waitForResume();
             if (fetchId !== currentFetchId) return;
           }
@@ -143,16 +144,22 @@ async function doFetch(env, sources, beginTime, endTime, queryFilter, fetchId) {
           cookie = data.pagedResultsCookie ?? null;
           totalLoaded += entries.length;
 
+          // Track latest timestamp for progress reporting
+          if (entries.length > 0) {
+            const last = entries[entries.length - 1];
+            if (last && last.timestamp) lastTimestamp = last.timestamp;
+          }
+
           // Store for resume
           searchCookie = cookie;
           searchParams = { env, sources, beginTime: chunk.beginTime, endTime: chunk.endTime, queryFilter };
 
           const isLastChunk = ci === chunks.length - 1;
           const windowStr = chunk.beginTime
-            ? chunk.beginTime.slice(0, 10) + (chunk.endTime ? ' → ' + chunk.endTime.slice(0, 10) : '')
+            ? chunk.beginTime.slice(0, 10) + (chunk.endTime ? ' \u2192 ' + chunk.endTime.slice(0, 10) : '')
             : '';
           self.postMessage({ type: "entries", entries, append: !isVeryFirst });
-          self.postMessage({ type: "progress", loaded: totalLoaded, page: pageNum, done: isLastSource && isLastChunk && !cookie, paused: false, source, window: windowStr });
+          self.postMessage({ type: "progress", loaded: totalLoaded, page: pageNum, done: isLastSource && isLastChunk && !cookie, paused: false, source, window: windowStr, sourceIdx: si, sourceCount: validSources.length, lastTimestamp, overallBegin: beginTime, overallEnd: endTime });
 
           if (isVeryFirst) {
             self.postMessage({ type: "status", loading: false });

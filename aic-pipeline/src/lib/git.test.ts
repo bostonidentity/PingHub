@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import path from "node:path";
 
 // Stub op-history so git.ts can resolve the history git root without touching
 // the filesystem. Tests that need a real git cwd override this per-test.
@@ -69,7 +70,7 @@ describe("getScopePruneTargets", () => {
   it("returns the global scope dir for a known scope", async () => {
     const { getScopePruneTargets } = await import("./git");
     const targets = getScopePruneTargets("/tmp/fake-config", "audit");
-    expect(targets.some((t) => t.endsWith("/audit"))).toBe(true);
+    expect(targets.some((t) => path.basename(t) === "audit")).toBe(true);
   });
 
   it("returns an empty list for an unknown scope", async () => {

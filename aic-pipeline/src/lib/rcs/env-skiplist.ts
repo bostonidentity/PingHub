@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { ENVIRONMENTS_DIR } from "../paths";
+
 export interface SkiplistOpts {
   rootDir?: string;
 }
@@ -8,8 +10,8 @@ export interface SkiplistOpts {
 const FILE = "rcs-env-skiplist.json";
 
 function filePath(opts?: SkiplistOpts): string {
-  const root = opts?.rootDir ?? process.cwd();
-  return path.join(root, "environments", FILE);
+  const root = opts?.rootDir ?? ENVIRONMENTS_DIR;
+  return path.join(root, FILE);
 }
 
 export function readSkiplist(opts?: SkiplistOpts): string[] {

@@ -1,11 +1,24 @@
 "use client";
 
-import { useState, useEffect, useRef, Fragment, startTransition, useDeferredValue, useCallback, useMemo, memo } from "react";
+import { useState, useEffect, useRef, Fragment, startTransition, useDeferredValue, useCallback, useMemo, memo, createContext, useContext } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Environment } from "@/lib/fr-config-types";
 import { EnvironmentBadge } from "@/components/EnvironmentBadge";
 import { useDialog } from "@/components/ConfirmDialog";
 import { cn } from "@/lib/utils";
+import { findKeywordMatchRows, logEntryMatchKey } from "@/lib/log-match-navigation";
+
+// ── Timezone ──────────────────────────────────────────────────────────────────
+
+type TzMode = "local" | "utc" | "epoch";
+
+const TZ_OPTIONS: { value: TzMode; label: string }[] = [
+  { value: "local", label: "Local" },
+  { value: "utc", label: "UTC / Zulu" },
+  { value: "epoch", label: "Epoch (ms)" },
+];
+
+const TzContext = createContext<TzMode>("local");
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -42,10 +55,10 @@ const LEVEL_ORDER = ["FATAL", "SEVERE", "ERROR", "WARN", "WARNING", "INFO", "INF
 
 const LEVEL_FILTERS = [
   { value: "ERROR", label: "ERROR+" },
-  { value: "WARN",  label: "WARN+" },
-  { value: "INFO",  label: "INFO+" },
+  { value: "WARN", label: "WARN+" },
+  { value: "INFO", label: "INFO+" },
   { value: "DEBUG", label: "DEBUG+" },
-  { value: "ALL",   label: "ALL" },
+  { value: "ALL", label: "ALL" },
 ];
 
 function levelPassesFilter(level: string, minLevel: string): boolean {
@@ -69,95 +82,48 @@ type LogMode = "tail" | "search";
 type Preset = "15m" | "1h" | "6h" | "24h" | "3d" | "5d" | "7d" | "30d" | "custom";
 
 const PRESETS: { label: string; value: Preset; ms: number }[] = [
-  { label: "15 min",   value: "15m",  ms: 15 * 60 * 1000 },
-  { label: "1 hour",   value: "1h",   ms: 60 * 60 * 1000 },
-  { label: "6 hours",  value: "6h",   ms: 6 * 60 * 60 * 1000 },
-  { label: "24 hours", value: "24h",  ms: 24 * 60 * 60 * 1000 },
-  { label: "3 days",   value: "3d",   ms: 3 * 24 * 60 * 60 * 1000 },
-  { label: "5 days",   value: "5d",   ms: 5 * 24 * 60 * 60 * 1000 },
-  { label: "7 days",   value: "7d",   ms: 7 * 24 * 60 * 60 * 1000 },
-  { label: "1 month",  value: "30d",  ms: 30 * 24 * 60 * 60 * 1000 },
-  { label: "Custom",   value: "custom", ms: 0 },
+  { label: "15 min", value: "15m", ms: 15 * 60 * 1000 },
+  { label: "1 hour", value: "1h", ms: 60 * 60 * 1000 },
+  { label: "6 hours", value: "6h", ms: 6 * 60 * 60 * 1000 },
+  { label: "24 hours", value: "24h", ms: 24 * 60 * 60 * 1000 },
+  { label: "3 days", value: "3d", ms: 3 * 24 * 60 * 60 * 1000 },
+  { label: "5 days", value: "5d", ms: 5 * 24 * 60 * 60 * 1000 },
+  { label: "7 days", value: "7d", ms: 7 * 24 * 60 * 60 * 1000 },
+  { label: "1 month", value: "30d", ms: 30 * 24 * 60 * 60 * 1000 },
+  { label: "Custom", value: "custom", ms: 0 },
 ];
 
 const LOG_SOURCES = ["am-everything", "idm-everything"] as const;
 
-const TAIL_BUFFER_MAX  = 50_000; // entries kept in memory; older ones are dropped
-const TERMINAL_ROW_H   = 20;     // px — fixed height per row (nowrap lines)
+const TAIL_BUFFER_MAX = 500_000; // entries kept in memory; older ones are dropped
+const TERMINAL_ROW_H = 20;     // px — fixed height per row (nowrap lines)
 const TERMINAL_OVERSCAN = 15;    // extra rows rendered above/below viewport
 
-// ── IndexedDB tail session persistence ───────────────────────────────────────
-const IDB_NAME  = "ky-pipeline-logs";
-const IDB_VER   = 1;
-const IDB_STORE = "tail-batches";
-const IDB_MAX_SESSIONS = 10;
 
-function openLogDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(IDB_NAME, IDB_VER);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(IDB_STORE)) {
-        const s = db.createObjectStore(IDB_STORE, { keyPath: "id", autoIncrement: true });
-        s.createIndex("sessionId", "sessionId");
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror  = () => reject(req.error);
-  });
-}
 
-function idbWriteBatch(db: IDBDatabase, sessionId: string, entries: LogEntry[]): void {
-  try {
-    const tx = db.transaction(IDB_STORE, "readwrite");
-    tx.objectStore(IDB_STORE).add({ sessionId, entries, ts: Date.now() });
-    tx.onerror = () => {};
-  } catch { /* ignore */ }
-}
-
-function idbReadSession(db: IDBDatabase, sessionId: string): Promise<LogEntry[]> {
-  return new Promise((resolve, reject) => {
-    const tx  = db.transaction(IDB_STORE, "readonly");
-    const req = tx.objectStore(IDB_STORE).index("sessionId").getAll(sessionId);
-    req.onsuccess = () => {
-      const batches = (req.result as { entries: LogEntry[]; ts: number }[]).sort((a, b) => a.ts - b.ts);
-      resolve(batches.flatMap((b) => b.entries));
-    };
-    req.onerror = () => reject(req.error);
-  });
-}
-
-function idbDeleteSession(db: IDBDatabase, sessionId: string): void {
-  try {
-    const tx = db.transaction(IDB_STORE, "readwrite");
-    const req = tx.objectStore(IDB_STORE).index("sessionId").openCursor(IDBKeyRange.only(sessionId));
-    req.onsuccess = function () {
-      const cursor = (req.result as IDBCursorWithValue | null);
-      if (cursor) { cursor.delete(); cursor.continue(); }
-    };
-    tx.onerror = () => {};
-  } catch { /* ignore */ }
-}
-
-function idbRegisterSession(db: IDBDatabase, sessionId: string): void {
-  try {
-    const raw  = localStorage.getItem("tail-session-ids");
-    const ids: string[] = raw ? JSON.parse(raw) : [];
-    ids.push(sessionId);
-    const toDelete = ids.splice(0, Math.max(0, ids.length - IDB_MAX_SESSIONS));
-    localStorage.setItem("tail-session-ids", JSON.stringify(ids));
-    toDelete.forEach((id) => idbDeleteSession(db, id));
-  } catch { /* ignore */ }
-}
-
-function toDatetimeLocal(iso: string): string {
-  // Format in LOCAL time so <input type="datetime-local"> shows and stores the right value.
-  // Slicing a UTC ISO string directly would be off by the local UTC offset.
+function toDatetimeLocal(iso: string, tz: TzMode = "local"): string {
   const d = new Date(iso);
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (tz === "epoch") {
+    // datetime-local input can't show epoch; fall back to UTC representation
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+  }
+  if (tz === "utc") {
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+  }
+  // local
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
-function fromDatetimeLocal(val: string): string { return val ? new Date(val).toISOString() : ""; }
+
+function fromDatetimeLocal(val: string, tz: TzMode = "local"): string {
+  if (!val) return "";
+  if (tz === "utc" || tz === "epoch") {
+    // The input value is in UTC; append Z so Date parses it as UTC
+    return new Date(val + "Z").toISOString();
+  }
+  // local — browser interprets the value as local time
+  return new Date(val).toISOString();
+}
 
 export interface TabConfig {
   env: string;
@@ -182,8 +148,8 @@ export interface TabConfig {
   terminalView?: boolean;
   wrapLines?: boolean;
   dedupe?: boolean;
-  /** IndexedDB session id — survives reload so entries can be rehydrated */
-  sessionId?: string;
+  autoScroll?: boolean;
+
 }
 
 // ── Field extraction ────────────────────────────────────────────────────────
@@ -332,12 +298,17 @@ function SourceBadge({ source }: { source: string }) {
 
 // ── Timestamp formatting ────────────────────────────────────────────────────
 
-function formatTs(ts: string): { date: string; time: string } {
+function formatTs(ts: string, tz: TzMode = "local"): { date: string; time: string } {
   try {
     const d = new Date(ts);
-    const date = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-    const time = d.toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" })
-      + "." + String(d.getMilliseconds()).padStart(3, "0");
+    if (tz === "epoch") {
+      return { date: "", time: String(d.getTime()) };
+    }
+    const tzOpt: Intl.DateTimeFormatOptions["timeZone"] = tz === "utc" ? "UTC" : undefined;
+    const date = d.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: tzOpt });
+    const time = d.toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: tzOpt })
+      + "." + String(d.getMilliseconds()).padStart(3, "0")
+      + (tz === "utc" ? "Z" : "");
     return { date, time };
   } catch {
     return { date: "", time: ts };
@@ -408,15 +379,118 @@ function ResizableHeader({
 // ── JSON view ─────────────────────────────────────────────────────────────────
 // Single pretty-printed JSON document over all filtered entries. Filters, level
 // filter, and dedupe are already applied by the caller; this just serializes.
-function JsonLogView({ entries, wrapLines = false }: { entries: LogEntry[]; wrapLines?: boolean }) {
-  const text = useMemo(() => JSON.stringify(entries, null, 2), [entries]);
+/** Recursively unescape JSON-encoded string values within an object.
+ *  Handles pure JSON strings and strings with a text prefix followed by
+ *  embedded JSON (e.g. "SEVERE: [uuid] Content: {\"key\":\"val\"}").
+ *  Embedded JSON is split into { _prefix, _json } so it renders cleanly. */
+function deepUnescapeJson(val: unknown): unknown {
+  if (typeof val === "string") {
+    const trimmed = val.trim();
+    // Pure JSON string
+    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+      try { return deepUnescapeJson(JSON.parse(trimmed)); } catch { /* not valid JSON — keep as string */ }
+    }
+    // Text prefix with embedded JSON: find the first { or [ and try to parse from there
+    const jsonStart = findJsonStart(trimmed);
+    if (jsonStart > 0) {
+      const candidate = trimmed.slice(jsonStart);
+      try {
+        const parsed = deepUnescapeJson(JSON.parse(candidate));
+        return { _prefix: trimmed.slice(0, jsonStart).trimEnd(), _json: parsed };
+      } catch { /* not valid JSON after prefix */ }
+    }
+    return val;
+  }
+  if (Array.isArray(val)) return val.map(deepUnescapeJson);
+  if (val !== null && typeof val === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+      out[k] = deepUnescapeJson(v);
+    }
+    return out;
+  }
+  return val;
+}
+
+/** Find the index of the first opening delimiter that matches the string's
+ *  closing delimiter. If the string ends with }, look for the first {.
+ *  If it ends with ], look for the first [. This avoids false positives
+ *  like "[uuid]" appearing before the actual JSON object. */
+function findJsonStart(s: string): number {
+  const t = s.trimEnd();
+  if (t.endsWith("}")) { const i = s.indexOf("{"); return i > 0 ? i : -1; }
+  if (t.endsWith("]")) { const i = s.indexOf("["); return i > 0 ? i : -1; }
+  return -1;
+}
+
+function JsonLogView({
+  entries,
+  wrapLines = false,
+  keywords = [],
+  searchTerm = "",
+  activeEntryIdx = -1,
+  matchIndices = [],
+  matchCase = false,
+  wholeWord = false,
+  onEntryDoubleClick,
+  contextAnchorIdx = -1,
+}: {
+  entries: LogEntry[];
+  wrapLines?: boolean;
+  keywords?: string[];
+  searchTerm?: string;
+  activeEntryIdx?: number;
+  matchIndices?: number[];
+  matchCase?: boolean;
+  wholeWord?: boolean;
+  onEntryDoubleClick?: (idx: number) => void;
+  contextAnchorIdx?: number;
+}) {
+  const unescaped = useMemo(() => entries.map(deepUnescapeJson), [entries]);
+  const text = useMemo(() => JSON.stringify(unescaped, null, 2), [unescaped]);
   const [copied, setCopied] = useState(false);
   const onCopy = () => {
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    }).catch(() => {});
+    }).catch(() => { });
   };
+
+  // Build highlight regex once
+  const allTerms = [searchTerm, ...keywords].filter(Boolean);
+  const [hlRegex, hlTestRe] = useMemo(() => {
+    if (allTerms.length === 0) return [null, null] as const;
+    const escaped = allTerms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const wrapped = wholeWord ? escaped.map((k) => `\\b${k}\\b`) : escaped;
+    const flags = matchCase ? "g" : "gi";
+    return [
+      new RegExp(`(${wrapped.join("|")})`, flags),
+      new RegExp(`^(?:${wrapped.join("|")})$`, matchCase ? "" : "i"),
+    ] as const;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchTerm, keywords, matchCase, wholeWord]);
+
+  const matchSet = useMemo(() => new Set(matchIndices), [matchIndices]);
+
+  function highlightText(str: string, isActiveEntry: boolean) {
+    if (!hlRegex || !hlTestRe) return <>{str}</>;
+    hlRegex.lastIndex = 0;
+    const parts = str.split(hlRegex);
+    if (parts.length === 1) return <>{str}</>;
+    return (
+      <>
+        {parts.map((part, i) =>
+          hlTestRe.test(part)
+            ? <mark key={i} className={isActiveEntry ? "bg-amber-400 text-black rounded-sm" : "bg-yellow-200 text-inherit rounded-sm"}>{part}</mark>
+            : part
+        )}
+      </>
+    );
+  }
+
+  // Render each entry as its own block so we can scroll to matched entries
+  const entryTexts = useMemo(() => unescaped.map((e) => JSON.stringify(e, null, 2)), [unescaped]);
+
   return (
     <div className="relative">
       <button
@@ -427,14 +501,36 @@ function JsonLogView({ entries, wrapLines = false }: { entries: LogEntry[]; wrap
       >
         {copied ? "Copied" : "Copy JSON"}
       </button>
-      <pre
+      <div
         className={cn(
           "p-4 pt-2 font-mono text-[12px] leading-5 text-slate-700",
           wrapLines ? "whitespace-pre-wrap break-all" : "whitespace-pre",
         )}
       >
-        {text}
-      </pre>
+        {"[\n"}
+        {entryTexts.map((etxt, i) => {
+          const isMatch = matchSet.has(i);
+          const isActive = i === activeEntryIdx;
+          const isCtxAnchor = i === contextAnchorIdx;
+          return (
+            <div
+              key={i}
+              data-entry-idx={i}
+              onDoubleClick={() => onEntryDoubleClick?.(i)}
+              className={cn(
+                isActive && "bg-amber-50 ring-1 ring-inset ring-amber-300 rounded",
+                isMatch && !isActive && "bg-yellow-50/60",
+                isCtxAnchor && !isActive && "bg-violet-50 ring-1 ring-inset ring-violet-300 rounded",
+              )}
+            >
+              {isMatch ? highlightText(etxt, isActive) : etxt}
+              {i < entryTexts.length - 1 ? "," : ""}
+              {"\n"}
+            </div>
+          );
+        })}
+        {"]"}
+      </div>
     </div>
   );
 }
@@ -457,18 +553,26 @@ function formatTerminalLine(entry: LogEntry, defaultSource: string): string {
 
 function terminalLevelClass(level: string): string {
   switch (level.toUpperCase()) {
-    case "ERROR": case "SEVERE":  return "text-red-400";
-    case "WARN":  case "WARNING": return "text-yellow-300";
-    case "INFO":  case "INFORMATION": return "text-green-300";
+    case "ERROR": case "SEVERE": return "text-red-600 font-semibold";
+    case "WARN": case "WARNING": return "text-amber-600 font-medium";
+    case "INFO": case "INFORMATION": return "text-emerald-600";
     case "DEBUG": case "FINE": case "FINER": case "FINEST": case "TRACE": return "text-slate-400";
-    default: return "text-slate-300";
+    default: return "text-slate-500";
   }
 }
 
-function TailTerminal({
+function terminalMsgClass(level: string): string {
+  switch (level.toUpperCase()) {
+    case "ERROR": case "SEVERE": return "text-slate-800 font-medium";
+    case "WARN": case "WARNING": return "text-slate-700";
+    default: return "text-slate-600";
+  }
+}
+
+const TailTerminal = memo(function TailTerminal({
   entries, defaultSource, searchTerm, keywords, wrapLines = false,
-  scrollToIndex = null, activeMatchIndex = null, matchCase = false, wholeWord = false,
-  dupeCounts,
+  scrollRequest = null, activeMatchIndex = null, matchCase = false, wholeWord = false,
+  dupeCounts, autoScroll = true, onEntryDoubleClick, contextAnchorIdx = null,
 }: {
   entries: LogEntry[];
   defaultSource: string;
@@ -476,21 +580,49 @@ function TailTerminal({
   keywords: string[];
   dupeCounts?: Map<number, number>;
   wrapLines?: boolean;
-  scrollToIndex?: number | null;
+  scrollRequest?: { index: number; nonce: number } | null;
   activeMatchIndex?: number | null;
   matchCase?: boolean;
   wholeWord?: boolean;
+  autoScroll?: boolean;
+  onEntryDoubleClick?: (idx: number) => void;
+  contextAnchorIdx?: number | null;
 }) {
-  const outerRef    = useRef<HTMLDivElement>(null);
-  const [viewH, setViewH]       = useState(400);
-  const [scrollTop, setScrollTop] = useState(0);
+  const outerRef = useRef<HTMLDivElement>(null);
+  const [viewH, setViewH] = useState(400);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
+  // Nowrap virtual list: track only the computed startIdx to avoid re-renders
+  // on every scroll pixel.  Raw scrollTop is kept in a ref.
+  const scrollTopRef = useRef(0);
+  const [startIdx, setStartIdx] = useState(0);
   // Timestamp of the most recent programmatic scroll (auto-tail, match-nav).
   // handleScroll skips its at-bottom flip for ~400ms after that so the
   // programmatic scroll's cascade of scroll events doesn't flip auto-tail
   // back on and yank the user off a match they're inspecting.
   const lastProgrammaticScrollRef = useRef(0);
+
+  // Wrap mode: track which rows are manually expanded (click-to-expand)
+  const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
+  const toggleRow = useCallback((idx: number) => {
+    setExpandedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  }, []);
+
+  // Auto-expand active match row, auto-collapse previous
+  const prevActiveRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (prevActiveRef.current != null && prevActiveRef.current !== activeMatchIndex) {
+      setExpandedRows((prev) => { const next = new Set(prev); next.delete(prevActiveRef.current!); return next; });
+    }
+    if (activeMatchIndex != null && activeMatchIndex >= 0) {
+      setExpandedRows((prev) => { const next = new Set(prev); next.add(activeMatchIndex); return next; });
+    }
+    prevActiveRef.current = activeMatchIndex ?? null;
+  }, [activeMatchIndex]);
 
   // Track container height for virtual list calculations
   useEffect(() => {
@@ -514,33 +646,40 @@ function TailTerminal({
 
   // Auto-scroll to bottom when new entries arrive
   useEffect(() => {
-    if (!atBottomRef.current) return;
+    if (!autoScroll || !atBottomRef.current) return;
     lastProgrammaticScrollRef.current = Date.now();
     if (wrapLines) {
       if (entries.length > 0) wrapVirtualizer.scrollToIndex(entries.length - 1, { align: "end" });
     } else if (outerRef.current) {
       outerRef.current.scrollTop = outerRef.current.scrollHeight;
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries.length, wrapLines]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries.length, wrapLines, autoScroll]);
 
   // Scroll to match index
+  const scrollRequestIndex = scrollRequest?.index;
+  const scrollRequestNonce = scrollRequest?.nonce;
   useEffect(() => {
-    if (scrollToIndex === null || scrollToIndex < 0) return;
+    if (scrollRequestIndex == null || scrollRequestIndex < 0) return;
     lastProgrammaticScrollRef.current = Date.now();
     if (wrapLines) {
-      wrapVirtualizer.scrollToIndex(scrollToIndex, { align: "center" });
+      wrapVirtualizer.scrollToIndex(scrollRequestIndex, { align: "center" });
     } else if (outerRef.current) {
-      outerRef.current.scrollTop = scrollToIndex * TERMINAL_ROW_H - outerRef.current.clientHeight / 2 + TERMINAL_ROW_H / 2;
+      outerRef.current.scrollTop = scrollRequestIndex * TERMINAL_ROW_H - outerRef.current.clientHeight / 2 + TERMINAL_ROW_H / 2;
     }
     atBottomRef.current = false;
     setAtBottom(false);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scrollToIndex, wrapLines]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollRequestNonce, wrapLines]);
 
   function handleScroll(e: React.UIEvent<HTMLDivElement>) {
     const el = e.currentTarget;
-    setScrollTop(el.scrollTop);
+    scrollTopRef.current = el.scrollTop;
+    // Only re-render when the visible row window actually shifts
+    if (!wrapLines) {
+      const newStart = Math.max(0, Math.floor(el.scrollTop / TERMINAL_ROW_H) - TERMINAL_OVERSCAN);
+      setStartIdx((prev) => (prev === newStart ? prev : newStart));
+    }
     // Within ~400ms of a programmatic scroll, skip the at-bottom flip so
     // the cascade of scroll events from that programmatic scroll can't
     // re-enable auto-tail and drag the user off a match they're inspecting.
@@ -552,16 +691,15 @@ function TailTerminal({
     }
   }
 
-  // Virtual list window
-  const totalH   = entries.length * TERMINAL_ROW_H;
-  const startIdx = Math.max(0, Math.floor(scrollTop / TERMINAL_ROW_H) - TERMINAL_OVERSCAN);
-  const endIdx   = Math.min(entries.length - 1, startIdx + Math.ceil(viewH / TERMINAL_ROW_H) + TERMINAL_OVERSCAN * 2);
+  // Virtual list window — startIdx is now state-driven (only updates when visible range shifts)
+  const totalH = entries.length * TERMINAL_ROW_H;
+  const endIdx = Math.min(entries.length - 1, startIdx + Math.ceil(viewH / TERMINAL_ROW_H) + TERMINAL_OVERSCAN * 2);
 
   // Flash key: increments each time we navigate to a match, re-triggers the CSS animation
   const [flashKey, setFlashKey] = useState(0);
   useEffect(() => {
-    if (scrollToIndex !== null && scrollToIndex >= 0) setFlashKey((k) => k + 1);
-  }, [scrollToIndex]);
+    if (scrollRequestIndex != null && scrollRequestIndex >= 0) setFlashKey((k) => k + 1);
+  }, [scrollRequestNonce, scrollRequestIndex]);
 
   // Highlight search / keyword terms — compile regexes once, not per row
   const allTerms = [searchTerm, ...keywords].filter(Boolean);
@@ -574,8 +712,8 @@ function TailTerminal({
       new RegExp(`(${wrapped.join("|")})`, flags),
       new RegExp(`^(?:${wrapped.join("|")})$`, matchCase ? "" : "i"),
     ];
-  // allTerms is derived from props — use the props directly as deps
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // allTerms is derived from props — use the props directly as deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchTerm, keywords, wholeWord, matchCase]);
 
   // A: active row marks use amber; other matched rows use sky-blue
@@ -589,17 +727,42 @@ function TailTerminal({
         {parts.map((part, i) =>
           hlTestRe.test(part)
             ? <mark key={i} className={isActive
-                ? "bg-amber-400 text-black rounded-sm"
-                : "bg-sky-400/50 text-white rounded-sm"
-              }>{part}</mark>
+              ? "bg-amber-400 text-black rounded-sm"
+              : "bg-yellow-200 text-inherit rounded-sm"
+            }>{part}</mark>
             : part
         )}
       </>
     );
   }
 
+  function renderStructuredLine(entry: LogEntry, isActive: boolean) {
+    const src = entry.source ?? defaultSource;
+    const lvl = getLevel(entry);
+    const msg = getMessage(entry);
+    let ts: string;
+    try {
+      const d = new Date(entry.timestamp);
+      const pad = (n: number) => String(n).padStart(2, "0");
+      ts = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, "0")}`;
+    } catch {
+      ts = entry.timestamp;
+    }
+    return (
+      <>
+        <span className="text-slate-400 select-text">{ts}</span>
+        <span className="text-slate-400 select-none">{"  "}</span>
+        <span className="text-sky-600/80 select-text">{src.padEnd(15)}</span>
+        <span className="text-slate-400 select-none">{"  "}</span>
+        <span className={cn("select-text", terminalLevelClass(lvl))}>{lvl.padEnd(5)}</span>
+        <span className="text-slate-400 select-none">{"  "}</span>
+        <span className={cn("select-text", terminalMsgClass(lvl))}>{highlightLine(msg, isActive)}</span>
+      </>
+    );
+  }
+
   return (
-    <div className="relative h-full flex flex-col bg-slate-950">
+    <div className="relative h-full flex flex-col bg-white">
       <div
         ref={outerRef}
         onScroll={handleScroll}
@@ -607,17 +770,17 @@ function TailTerminal({
       >
         {entries.length === 0 ? (
           <div className="flex items-center justify-center h-full min-h-[120px]">
-            <span className="text-slate-500 text-xs font-mono animate-pulse">Waiting for log entries…</span>
+            <span className="text-slate-400 text-xs font-mono animate-pulse">Waiting for log entries…</span>
           </div>
         ) : wrapLines ? (
           /* Wrap mode: variable-height virtual list via @tanstack/react-virtual */
           <div style={{ height: wrapVirtualizer.getTotalSize(), position: "relative" }}>
             {wrapVirtualizer.getVirtualItems().map((vRow) => {
               const entry = entries[vRow.index];
-              const level = getLevel(entry);
-              const line  = formatTerminalLine(entry, defaultSource);
               const count = dupeCounts?.get(vRow.index) ?? 1;
               const isActive = activeMatchIndex === vRow.index;
+              const isCtxAnchor = contextAnchorIdx === vRow.index;
+              const isRowExpanded = expandedRows.has(vRow.index);
               return (
                 // Outer div: stable key + measureElement for virtualizer
                 <div
@@ -629,15 +792,23 @@ function TailTerminal({
                   {/* Inner div: re-keyed on flashKey so CSS animation re-fires on each navigation */}
                   <div
                     key={isActive ? flashKey : undefined}
+                    onClick={() => toggleRow(vRow.index)}
+                    onDoubleClick={() => onEntryDoubleClick?.(vRow.index)}
                     className={cn(
-                      "px-3 py-px font-mono text-[11px] whitespace-pre-wrap break-all select-text leading-snug",
-                      terminalLevelClass(level),
-                      isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-400/15 ring-1 ring-inset ring-amber-400/40 shadow-[0_0_0_1px_rgba(251,191,36,0.25)] animate-match-flash",
+                      "px-3 py-px font-mono text-[11px] select-text leading-snug border-b border-slate-200 cursor-pointer",
+                      vRow.index % 2 === 0 && "bg-slate-100/60",
+                      isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
+                      isCtxAnchor && !isActive && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
                     )}
                   >
-                    {highlightLine(line, isActive)}
+                    <span className={cn(
+                      "whitespace-pre-wrap break-all",
+                      !isRowExpanded && "line-clamp-3",
+                    )}>
+                      {renderStructuredLine(entry, isActive)}
+                    </span>
                     {count > 1 && (
-                      <span className="ml-2 inline-block px-1.5 py-0 rounded bg-amber-900/60 text-amber-300 text-[10px] font-semibold align-middle">
+                      <span className="ml-2 inline-block px-1.5 py-0 rounded bg-amber-100 text-amber-700 text-[10px] font-semibold align-middle">
                         ×{count}
                       </span>
                     )}
@@ -652,23 +823,24 @@ function TailTerminal({
             <div style={{ position: "absolute", top: startIdx * TERMINAL_ROW_H, left: 0, right: 0 }}>
               {entries.slice(startIdx, endIdx + 1).map((entry, i) => {
                 const absIdx = startIdx + i;
-                const level = getLevel(entry);
-                const line  = formatTerminalLine(entry, defaultSource);
                 const count = dupeCounts?.get(absIdx) ?? 1;
                 const isActive = activeMatchIndex === absIdx;
+                const isCtxAnchor = contextAnchorIdx === absIdx;
                 return (
                   <div
-                    key={isActive ? flashKey : absIdx}
+                    key={isActive ? `flash-${flashKey}` : absIdx}
+                    onDoubleClick={() => onEntryDoubleClick?.(absIdx)}
                     style={{ height: TERMINAL_ROW_H, lineHeight: `${TERMINAL_ROW_H}px` }}
                     className={cn(
-                      "px-3 font-mono text-[11px] whitespace-nowrap select-text",
-                      terminalLevelClass(level),
-                      isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-400/15 ring-1 ring-inset ring-amber-400/40 shadow-[0_0_0_1px_rgba(251,191,36,0.25)] animate-match-flash",
+                      "px-3 font-mono text-[11px] whitespace-nowrap select-text border-b border-slate-200",
+                      absIdx % 2 === 0 && "bg-slate-100/60",
+                      isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
+                      isCtxAnchor && !isActive && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
                     )}
                   >
-                    {highlightLine(line, isActive)}
+                    {renderStructuredLine(entry, isActive)}
                     {count > 1 && (
-                      <span className="ml-2 inline-block px-1.5 rounded bg-amber-900/60 text-amber-300 text-[10px] font-semibold align-middle">
+                      <span className="ml-2 inline-block px-1.5 rounded bg-amber-100 text-amber-700 text-[10px] font-semibold align-middle">
                         ×{count}
                       </span>
                     )}
@@ -686,14 +858,14 @@ function TailTerminal({
             const el = outerRef.current;
             if (el) { el.scrollTop = el.scrollHeight; atBottomRef.current = true; setAtBottom(true); }
           }}
-          className="absolute bottom-4 right-4 px-3 py-1.5 text-xs bg-sky-700 text-white rounded-full shadow-lg hover:bg-sky-600 transition-colors z-10"
+          className="absolute bottom-4 right-4 px-3 py-1.5 text-xs bg-sky-600 text-white rounded-full shadow-lg hover:bg-sky-700 transition-colors z-10"
         >
           ↓ Jump to bottom
         </button>
       )}
     </div>
   );
-}
+});
 
 // ── Entry row ────────────────────────────────────────────────────────────────
 
@@ -706,9 +878,11 @@ const EntryRow = memo(function EntryRow({
   keywords,
   onTransactionClick,
   onTimestampClick,
+  onContextClick,
   fullscreen = false,
   showFullMessage = false,
   highlighted = false,
+  isContextAnchor = false,
   rowIdx,
   matchCase = false,
   wholeWord = false,
@@ -722,15 +896,18 @@ const EntryRow = memo(function EntryRow({
   keywords: string[];
   onTransactionClick: (txId: string) => void;
   onTimestampClick?: (timestamp: string, source: string) => void;
+  onContextClick?: () => void;
   fullscreen?: boolean;
   showFullMessage?: boolean;
   highlighted?: boolean;
+  isContextAnchor?: boolean;
   rowIdx?: number;
   matchCase?: boolean;
   wholeWord?: boolean;
   dupeCount?: number;
 }) {
   const [txCopied, setTxCopied] = useState(false);
+  const tz = useContext(TzContext);
   const effectiveSource = entry.source ?? source;
   const level = getLevel(entry);
   const message = getMessage(entry);
@@ -738,7 +915,7 @@ const EntryRow = memo(function EntryRow({
   const transactionId = getTransactionId(entry);
   const userId = getUserId(entry);
   const status = getStatus(entry);
-  const { date, time } = formatTs(entry.timestamp);
+  const { date, time } = formatTs(entry.timestamp, tz);
   const isText = isTextEntry(entry);
 
   function highlight(text: string) {
@@ -768,11 +945,14 @@ const EntryRow = memo(function EntryRow({
     <Fragment>
       <tr
         onClick={onToggle}
+        onDoubleClick={(e) => { e.stopPropagation(); onContextClick?.(); }}
         data-row-idx={rowIdx}
         className={cn(
-          "cursor-pointer text-xs border-b border-slate-100 hover:bg-slate-50 transition-colors",
+          "cursor-pointer text-xs border-b border-slate-200 hover:bg-slate-100/60 transition-colors",
+          !expanded && !highlighted && !isContextAnchor && rowIdx != null && rowIdx % 2 === 0 && "bg-slate-100/60",
           expanded && "bg-slate-50",
-          highlighted && "ring-1 ring-inset ring-sky-400 bg-sky-50"
+          highlighted && "ring-1 ring-inset ring-sky-400 bg-sky-50",
+          isContextAnchor && !highlighted && "ring-1 ring-inset ring-violet-400 bg-violet-50",
         )}
       >
         <td className="px-3 py-2 font-mono text-slate-400 whitespace-nowrap align-top">
@@ -902,6 +1082,7 @@ function TransactionDrilldown({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const tz = useContext(TzContext);
 
   // Prefer aggregate sources for full coverage; fall back to individual sources
   const AM_INDIVIDUAL = ["am-access", "am-authentication", "am-core"];
@@ -943,7 +1124,7 @@ function TransactionDrilldown({
       setEntries(merged);
       setLoading(false);
     });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transactionId]);
 
   const sourcesQueried = sources.length;
@@ -986,7 +1167,7 @@ function TransactionDrilldown({
                 {entries.map((entry, i) => {
                   const level = getLevel(entry);
                   const message = getMessage(entry);
-                  const { date, time } = formatTs(entry.timestamp);
+                  const { date, time } = formatTs(entry.timestamp, tz);
                   return (
                     <Fragment key={i}>
                       <tr
@@ -1045,6 +1226,8 @@ export function LogsExplorer({
   onFullscreenChange,
   txSearchId,
   onOpenContextTab,
+  onOpenEntryContextTab,
+  anchorTimestamp,
 }: {
   environments: EnvWithLogApi[];
   config: TabConfig;
@@ -1058,9 +1241,12 @@ export function LogsExplorer({
   onFullscreenChange?: (v: boolean) => void;
   txSearchId?: { id: string; seq: number };
   onOpenContextTab?: (timestamp: string, source: string) => void;
+  onOpenEntryContextTab?: (anchorTimestamp: string, beginTimestamp: string, endTimestamp: string) => void;
+  anchorTimestamp?: string;
 }) {
   const { env, selectedSources, sourcesError, levelFilter, mode, tailSecs, tailing, loading, preset, customBegin, customEnd, searchSeq, searching } = config;
   const { confirm } = useDialog();
+  const tz = useContext(TzContext);
   // Derived: sources used for tail mode — all selected sources are tailed concurrently.
   // `tailSource` (singular) is kept as the first for UI affordances that still expect one.
   const tailSources = selectedSources;
@@ -1074,38 +1260,15 @@ export function LogsExplorer({
     .split(",")
     .map((k) => k.trim())
     .filter(Boolean);
-  const [matchCursor, setMatchCursor] = useState(-1); // index into matchIndices; -1 = none selected
+  const [matchCursor, setMatchCursor] = useState(-1); // index into matchRows; -1 = none selected
+  const [activeMatchKey, setActiveMatchKey] = useState<string | null>(null);
+  const [matchScrollNonce, setMatchScrollNonce] = useState(0);
   const [highlightedTableIdx, setHighlightedTableIdx] = useState<number | null>(null); // filtered idx to highlight in table view
   const [matchCase, setMatchCase] = useState(false);
   const [wholeWord, setWholeWord] = useState(false);
   const highlightInputRef = useRef<HTMLInputElement>(null);
 
-  // ── Auto-save helper (summary-only; entry payloads no longer persisted) ──
-  const autoSaveToHistory = useCallback((logMode: "search" | "tail" | "transaction", logEntries: unknown[], extra?: { transactionId?: string }) => {
-    if (logEntries.length === 0) return;
-    fetch("/api/history", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: "log-search",
-        environment: env,
-        scopes: [],
-        status: "success",
-        startedAt: new Date().toISOString(),
-        durationMs: 0,
-        summary: logMode === "transaction"
-          ? `${logEntries.length} entries for tx:${extra?.transactionId?.slice(0, 16) ?? ""}…`
-          : `${logEntries.length} entries from ${selectedSources.join("+")}`,
-        logSource: selectedSources.join("+"),
-        logMode,
-        logPreset: logMode === "search" ? preset : undefined,
-        logEntryCount: logEntries.length,
-      }),
-    }).then(() => {
-      setSaveFlash(true);
-      setTimeout(() => setSaveFlash(false), 10000);
-    }).catch(() => {});
-  }, [env, selectedSources, preset]);
+
 
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [error, setError] = useState("");
@@ -1119,6 +1282,7 @@ export function LogsExplorer({
   const terminalView = viewMode === "terminal";
   const wrapLines = config.wrapLines ?? false;
   const dedupe = config.dedupe ?? false;
+  const autoScroll = config.autoScroll ?? true;
   const setViewMode = useCallback((v: "terminal" | "table" | "json") => {
     // Also write terminalView for backward compat with any pre-existing persisted state.
     onConfigChange({ viewMode: v, terminalView: v === "terminal" });
@@ -1129,6 +1293,9 @@ export function LogsExplorer({
   const setDedupe = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
     onConfigChange({ dedupe: typeof v === "function" ? v(dedupe) : v });
   }, [onConfigChange, dedupe]);
+  const setAutoScroll = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
+    onConfigChange({ autoScroll: typeof v === "function" ? v(autoScroll) : v });
+  }, [onConfigChange, autoScroll]);
   const [rawSearch, setRawSearch] = useState("");   // what's in the input box
   const [search, setSearch] = useState("");          // active filter (3+ chars or Enter)
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1152,7 +1319,7 @@ export function LogsExplorer({
     setRawSearch("");
     applySearch("");
   }
-  const [saveFlash, setSaveFlash] = useState(false);
+
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyRecords, setHistoryRecords] = useState<{ id: string; completedAt: string; environment: string; logSource?: string; logMode?: string; logEntryCount?: number; logPreset?: string; summary: string }[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -1168,6 +1335,9 @@ export function LogsExplorer({
   // Tracks whether we've already jumped to the first keyword/search match for the current filter.
   // While true, page is not auto-advanced so the user can browse.
   const firstMatchJumpedRef = useRef(false);
+
+  // ── Copy to clipboard ──
+  const [copied, setCopied] = useState(false);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   // Tail auto-scroll only kicks in when the user is already pinned to the
@@ -1191,8 +1361,11 @@ export function LogsExplorer({
   const [drilldown, setDrilldown] = useState<{ txId: string } | null>(null);
 
   // ── Transaction search from control section → load into main table ──
+  const prevTxSeq = useRef(0);
   useEffect(() => {
     if (!txSearchId || !env) return;
+    if (txSearchId.seq <= prevTxSeq.current) return;
+    prevTxSeq.current = txSearchId.seq;
 
     // Stop any active tail
     onConfigChange({ tailing: false });
@@ -1228,24 +1401,17 @@ export function LogsExplorer({
       setLastUpdated(new Date());
       setPage(Infinity);
       onConfigChange({ loading: false });
-      // Auto-save transaction search
-      autoSaveToHistory("transaction", merged, { transactionId: txSearchId.id });
     });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [txSearchId]);
 
   const deferredIsActive = useDeferredValue(isActive);
 
   // ── Web Worker ──
   const workerRef = useRef<Worker | null>(null);
-  const idbRef            = useRef<IDBDatabase | null>(null);
-  const sessionId         = config.sessionId;
-  const sessionIdRef      = useRef<string | undefined>(sessionId);
-  sessionIdRef.current = sessionId;
   const [tailTotalReceived, setTailTotalReceived] = useState(0);
-  const [hydrated, setHydrated] = useState(false);
 
-  const [fetchProgress, setFetchProgress] = useState<{ loaded: number; page: number; done: boolean; paused: boolean; source?: string; window?: string } | null>(null);
+  const [fetchProgress, setFetchProgress] = useState<{ loaded: number; page: number; done: boolean; paused: boolean; source?: string; window?: string; sourceIdx?: number; sourceCount?: number; lastTimestamp?: string; overallBegin?: string; overallEnd?: string } | null>(null);
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -1254,14 +1420,10 @@ export function LogsExplorer({
       const msg = e.data as
         | { type: "entries"; entries: LogEntry[]; append: boolean }
         | { type: "status"; loading: boolean }
-        | { type: "progress"; loaded: number; page: number; done: boolean; paused: boolean; source?: string; window?: string }
+        | { type: "progress"; loaded: number; page: number; done: boolean; paused: boolean; source?: string; window?: string; sourceIdx?: number; sourceCount?: number; lastTimestamp?: string; overallBegin?: string; overallEnd?: string }
         | { type: "error"; message: string; transient?: boolean };
 
       if (msg.type === "entries") {
-        if (idbRef.current && sessionIdRef.current && msg.entries.length > 0) {
-          // Persist every incoming batch to IndexedDB (fire-and-forget)
-          idbWriteBatch(idbRef.current, sessionIdRef.current, msg.entries);
-        }
         if (msg.append) {
           setTailTotalReceived((n) => n + msg.entries.length);
         }
@@ -1285,7 +1447,7 @@ export function LogsExplorer({
       } else if (msg.type === "status") {
         onConfigChange({ loading: msg.loading });
       } else if (msg.type === "progress") {
-        setFetchProgress({ loaded: msg.loaded, page: msg.page, done: msg.done, paused: msg.paused, source: msg.source, window: msg.window });
+        setFetchProgress({ loaded: msg.loaded, page: msg.page, done: msg.done, paused: msg.paused, source: msg.source, window: msg.window, sourceIdx: msg.sourceIdx, sourceCount: msg.sourceCount, lastTimestamp: msg.lastTimestamp, overallBegin: msg.overallBegin, overallEnd: msg.overallEnd });
         onConfigChange({ searching: !msg.done });
       } else if (msg.type === "error") {
         if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
@@ -1300,44 +1462,18 @@ export function LogsExplorer({
     };
     workerRef.current = worker;
     return () => worker.terminate();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Open IndexedDB and rehydrate prior session entries ──
-  useEffect(() => {
-    let cancelled = false;
-    openLogDb().then(async (db) => {
-      if (cancelled) { db.close(); return; }
-      idbRef.current = db;
-      const sid = sessionIdRef.current;
-      if (sid) {
-        try {
-          const prev = await idbReadSession(db, sid);
-          if (!cancelled && prev.length > 0) {
-            const trimmed = prev.length > TAIL_BUFFER_MAX ? prev.slice(-TAIL_BUFFER_MAX) : prev;
-            startTransition(() => {
-              setEntries(trimmed);
-              setFetched(true);
-              setTailTotalReceived(prev.length);
-              setLastUpdated(new Date());
-            });
-          }
-        } catch { /* ignore */ }
-      }
-      if (!cancelled) setHydrated(true);
-    }).catch(() => { if (!cancelled) setHydrated(true); });
-    return () => { cancelled = true; idbRef.current?.close(); idbRef.current = null; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // ── Sync tab label ──
   useEffect(() => {
     const sourceLabel =
       selectedSources.length >= 2 ? "both"
-      : selectedSources.length === 1 ? selectedSources[0]
-      : env;
+        : selectedSources.length === 1 ? selectedSources[0]
+          : env;
     onLabelChange?.(`${sourceLabel} (${env})`);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [env, selectedSources]);
 
   // ── Reset entries when env changes (but not on the first mount, so refresh keeps prior logs) ──
@@ -1351,12 +1487,11 @@ export function LogsExplorer({
     if (prevEnvRef.current === env) return;
     prevEnvRef.current = env;
     workerRef.current?.postMessage({ type: "cancel" });
-    onConfigChange({ sourcesError: "", tailing: false, sessionId: undefined });
-    if (idbRef.current && sessionIdRef.current) idbDeleteSession(idbRef.current, sessionIdRef.current);
+    onConfigChange({ sourcesError: "", tailing: false });
     setEntries([]);
     setFetched(false);
     setTailTotalReceived(0);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [env]);
 
   // ── Fetch search history when panel opens ──
@@ -1370,50 +1505,34 @@ export function LogsExplorer({
       .finally(() => setHistoryLoading(false));
   }, [historyOpen]);
 
-  // ── Auto-save search results when complete ──
-  const entriesRef = useRef(entries);
-  entriesRef.current = entries;
+  // ── Clear searching flag when fetch completes ──
   const prevDone = useRef(false);
   useEffect(() => {
     const done = !!fetchProgress?.done;
     if (done && !prevDone.current) {
-      // Belt-and-suspenders: ensure searching is cleared whenever fetch completes
       onConfigChange({ searching: false });
-      if (mode === "search") {
-        // Delay slightly to ensure entries state has settled
-        setTimeout(() => {
-          if (entriesRef.current.length > 0) {
-            autoSaveToHistory("search", entriesRef.current);
-          }
-        }, 500);
-      }
     }
     prevDone.current = done;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchProgress?.done, mode, autoSaveToHistory]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchProgress?.done]);
 
   // ── Auto-scroll when tailing ──
   useEffect(() => {
-    if (tailing && entries.length > 0 && isActive && scrollAtBottomRef.current) {
+    if (autoScroll && tailing && entries.length > 0 && isActive && scrollAtBottomRef.current) {
       const el = scrollContainerRef.current;
       if (el) {
         lastProgrammaticScrollAtRef.current = Date.now();
         el.scrollTop = el.scrollHeight;
       }
     }
-  }, [entries, tailing, isActive]);
+  }, [entries, tailing, isActive, autoScroll]);
 
   // ── React to tailing / tailSecs changes from parent config ──
   const prevTailing = useRef(false);
 
   useEffect(() => {
     if (tailing && !prevTailing.current) {
-      // Start tail — new session (replace any previous session for this tab)
-      if (idbRef.current && sessionIdRef.current) idbDeleteSession(idbRef.current, sessionIdRef.current);
-      const newSession = `tail-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      onConfigChange({ sessionId: newSession });
-      sessionIdRef.current = newSession;
-      if (idbRef.current) idbRegisterSession(idbRef.current, newSession);
+      // Start tail
       setTailTotalReceived(0);
       setEntries([]);
       setFetched(false);
@@ -1427,7 +1546,7 @@ export function LogsExplorer({
       workerRef.current?.postMessage({ type: "tail-start", env, sources: tailSources, tailSecs });
     }
     prevTailing.current = tailing;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tailing, tailSecs, tailSources.join(",")]);
 
   // ── React to search mode fetch trigger ──
@@ -1453,8 +1572,8 @@ export function LogsExplorer({
     let beginTime: string;
     let endTime: string;
     if (preset === "custom") {
-      beginTime = fromDatetimeLocal(customBegin);
-      endTime = fromDatetimeLocal(customEnd);
+      beginTime = fromDatetimeLocal(customBegin, tz);
+      endTime = fromDatetimeLocal(customEnd, tz);
     } else {
       const ms = PRESETS.find((p) => p.value === preset)!.ms;
       const now = new Date();
@@ -1470,9 +1589,9 @@ export function LogsExplorer({
     const allTerms = keywordsRawRef.current.split(",").map((k) => k.trim()).filter(Boolean);
     const queryFilter = allTerms.length > 0
       ? allTerms.map((t) => {
-          const v = escapeFilterValue(t);
-          return `(/payload co "${v}") or (/payload/message co "${v}") or (/payload/eventName co "${v}")`;
-        }).join(" or ")
+        const v = escapeFilterValue(t);
+        return `(/payload co "${v}") or (/payload/message co "${v}") or (/payload/eventName co "${v}")`;
+      }).join(" or ")
       : undefined;
 
     setError("");
@@ -1480,43 +1599,23 @@ export function LogsExplorer({
     setFetched(false);
     setExpandedIdx(null);
     setFetchProgress(null);
-    // New search session — replace any previously persisted entries for this tab
-    if (idbRef.current && sessionIdRef.current) idbDeleteSession(idbRef.current, sessionIdRef.current);
-    const newSession = `search-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    sessionIdRef.current = newSession;
-    if (idbRef.current) idbRegisterSession(idbRef.current, newSession);
-    onConfigChange({ searching: true, sessionId: newSession });
+    onConfigChange({ searching: true });
     workerRef.current?.postMessage({ type: "fetch", env, sources: selectedSources, beginTime, endTime, queryFilter });
     return doCleanup;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchSeq]);
 
   // Entries dropped from the in-memory circular buffer (tail mode only)
   const tailDropped = tailing ? Math.max(0, tailTotalReceived - entries.length) : 0;
 
-  // Export the full tail session (all batches) from IndexedDB as a .log text file
-  async function exportTailSession() {
-    if (!idbRef.current || !sessionIdRef.current) return;
-    try {
-      const all   = await idbReadSession(idbRef.current, sessionIdRef.current);
-      const lines = all.map((e) => formatTerminalLine(e, tailSource)).join("\n");
-      const blob  = new Blob([lines], { type: "text/plain" });
-      const url   = URL.createObjectURL(blob);
-      const a     = Object.assign(document.createElement("a"), {
-        href: url,
-        download: `tail-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.log`,
-      });
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch { /* ignore */ }
-  }
+
 
   // ── Filtered entries ──
   const levelFiltered = useMemo(() =>
     levelFilter === "ALL"
       ? entries
       : entries.filter((e) => levelPassesFilter(getLevel(e), levelFilter)),
-  [entries, levelFilter]);
+    [entries, levelFilter]);
 
   // Pre-compute searchable strings once per levelFiltered change
   const defaultSourceForNav = selectedSources[0] ?? "";
@@ -1525,7 +1624,7 @@ export function LogsExplorer({
       json: JSON.stringify(e),
       line: formatTerminalLine(e, defaultSourceForNav),
     })),
-  [levelFiltered, defaultSourceForNav]);
+    [levelFiltered, defaultSourceForNav]);
 
   const rawFilteredWithIdx = useMemo(() => {
     if (!search) return levelFiltered.map((e, i) => ({ e, i }));
@@ -1561,42 +1660,125 @@ export function LogsExplorer({
     return { filteredWithIdx: result, dupeCounts: counts };
   }, [rawFilteredWithIdx, dedupe]);
 
+  // ── Anchor highlight — find the entry closest to anchorTimestamp for violet highlight ──
+  const contextAnchorDisplay = useMemo(() => {
+    if (!anchorTimestamp || filteredWithIdx.length === 0) return null;
+    const targetTs = new Date(anchorTimestamp).getTime();
+    let bestIdx = 0;
+    let bestDiff = Infinity;
+    for (let i = 0; i < filteredWithIdx.length; i++) {
+      const diff = Math.abs(new Date(filteredWithIdx[i].e.timestamp).getTime() - targetTs);
+      if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+    }
+    return bestIdx;
+  }, [anchorTimestamp, filteredWithIdx]);
+
   const filtered = useMemo(() => filteredWithIdx.map(({ e }) => e), [filteredWithIdx]);
 
   // ── Match navigation (terminal view, keyword highlighting) ──
-  // Compute indices into `filtered` where any keyword matches the formatted line
-  const matchIndices = useMemo<number[]>(() => {
-    if (keywords.length === 0) return [];
-    const escaped = keywords.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    const wrapped = wholeWord ? escaped.map((k) => `\\b${k}\\b`) : escaped;
-    const flags = matchCase ? "g" : "gi";
-    const re = new RegExp(wrapped.join("|"), flags);
-    const result: number[] = [];
-    for (let fi = 0; fi < filteredWithIdx.length; fi++) {
-      if (re.test(entryStrings[filteredWithIdx[fi].i].line)) result.push(fi);
-    }
-    return result;
-  }, [filteredWithIdx, entryStrings, keywords, matchCase, wholeWord]);
+  // Compute indices into `filtered` where any keyword matches the formatted line.
+  const matchRows = useMemo(() => findKeywordMatchRows(
+    filteredWithIdx.map(({ e, i }) => ({
+      key: logEntryMatchKey(e, i),
+      line: entryStrings[i].line,
+    })),
+    keywords,
+    { matchCase, wholeWord },
+  ), [filteredWithIdx, entryStrings, keywords, matchCase, wholeWord]);
+  const matchIndices = useMemo(() => matchRows.map((m) => m.index), [matchRows]);
 
   // Jump to first match when keywords/options change; reset when no matches
   useEffect(() => {
-    setMatchCursor(matchIndices.length > 0 ? 0 : -1);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (matchRows.length > 0) {
+      setMatchCursor(0);
+      setActiveMatchKey(matchRows[0].key);
+      setMatchScrollNonce((n) => n + 1);
+    } else {
+      setMatchCursor(-1);
+      setActiveMatchKey(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keywordsActive, matchCase, wholeWord]);
 
-  const scrollToIndex = matchCursor >= 0 && matchCursor < matchIndices.length
-    ? matchIndices[matchCursor]
+  // When tailing adds entries, keep the current match anchored without issuing
+  // a new scroll request. This lets the count update while the viewport stays
+  // where the user is inspecting.
+  useEffect(() => {
+    if (!activeMatchKey) return;
+    const nextCursor = matchRows.findIndex((m) => m.key === activeMatchKey);
+    if (nextCursor >= 0 && nextCursor !== matchCursor) {
+      setMatchCursor(nextCursor);
+    } else if (nextCursor < 0) {
+      setMatchCursor(-1);
+      setActiveMatchKey(null);
+    }
+  }, [activeMatchKey, matchRows, matchCursor]);
+
+  const activeMatchIndex = matchCursor >= 0 && matchCursor < matchRows.length
+    ? matchRows[matchCursor].index
     : null;
-  const activeMatchIndex = scrollToIndex;
+  const matchScrollRequest = useMemo(() =>
+    activeMatchIndex !== null && matchScrollNonce > 0
+      ? { index: activeMatchIndex, nonce: matchScrollNonce }
+      : null,
+    [activeMatchIndex, matchScrollNonce]);
+
+  function navigateToMatch(nextCursor: number) {
+    const row = matchRows[nextCursor];
+    if (!row) return;
+    setMatchCursor(nextCursor);
+    setActiveMatchKey(row.key);
+    setMatchScrollNonce((n) => n + 1);
+
+    // Table view: jump to the right page and highlight the row
+    if (viewMode === "table") {
+      const targetPage = Math.floor(row.index / pageSize) + 1;
+      setPage(targetPage);
+      setHighlightedTableIdx(row.index);
+      setExpandedIdx(null);
+      // Scroll into view after React re-renders the page
+      requestAnimationFrame(() => {
+        const el = scrollContainerRef.current?.querySelector(`[data-row-idx="${row.index}"]`);
+        if (el) {
+          lastProgrammaticScrollAtRef.current = Date.now();
+          el.scrollIntoView({ block: "center" });
+          scrollAtBottomRef.current = false;
+        }
+      });
+    }
+
+    // JSON view: scroll to the matched entry block
+    if (viewMode === "json") {
+      requestAnimationFrame(() => {
+        const el = scrollContainerRef.current?.querySelector(`[data-entry-idx="${row.index}"]`);
+        if (el) {
+          lastProgrammaticScrollAtRef.current = Date.now();
+          el.scrollIntoView({ block: "center" });
+          scrollAtBottomRef.current = false;
+        }
+      });
+    }
+  }
 
   function goNextMatch() {
-    if (matchIndices.length === 0) return;
-    setMatchCursor((c) => (c + 1) % matchIndices.length);
+    if (matchRows.length === 0) return;
+    navigateToMatch((matchCursor + 1) % matchRows.length);
   }
   function goPrevMatch() {
-    if (matchIndices.length === 0) return;
-    setMatchCursor((c) => (c <= 0 ? matchIndices.length - 1 : c - 1));
+    if (matchRows.length === 0) return;
+    navigateToMatch(matchCursor <= 0 ? matchRows.length - 1 : matchCursor - 1);
   }
+
+  // ── Context window — open ±5 seconds around clicked entry in a new tab ──
+  const handleContextEntry = useCallback((displayIdx: number) => {
+    if (!onOpenEntryContextTab) return;
+    const clickedEntry = filteredWithIdx[displayIdx]?.e;
+    if (!clickedEntry) return;
+    const ts = new Date(clickedEntry.timestamp).getTime();
+    const beginTimestamp = new Date(ts - 5000).toISOString();
+    const endTimestamp = new Date(ts + 5000).toISOString();
+    onOpenEntryContextTab(clickedEntry.timestamp, beginTimestamp, endTimestamp);
+  }, [onOpenEntryContextTab, filteredWithIdx]);
 
   // ── Pagination (page 1 = oldest, last page = newest) ──
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -1661,7 +1843,7 @@ export function LogsExplorer({
             </span>
           );
         })()}
-        {saveFlash && <span className="text-xs text-emerald-500 font-medium">Saved to history</span>}
+
         {sourcesError && <span className="text-xs text-red-500">{sourcesError}</span>}
         {error && <span className="text-xs text-red-500">{error}</span>}
       </div>
@@ -1683,15 +1865,15 @@ export function LogsExplorer({
                 const age = Date.now() - new Date(rec.completedAt).getTime();
                 const ageStr = age < 60000 ? "just now"
                   : age < 3600000 ? `${Math.floor(age / 60000)}m ago`
-                  : age < 86400000 ? `${Math.floor(age / 3600000)}h ago`
-                  : `${Math.floor(age / 86400000)}d ago`;
+                    : age < 86400000 ? `${Math.floor(age / 3600000)}h ago`
+                      : `${Math.floor(age / 86400000)}d ago`;
                 return (
                   <div key={rec.id} className="flex items-center gap-3 px-4 py-2 hover:bg-slate-50 transition-colors text-xs">
                     <span className={cn(
                       "shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium",
                       rec.logMode === "search" ? "bg-sky-100 text-sky-700"
                         : rec.logMode === "tail" ? "bg-emerald-100 text-emerald-700"
-                        : "bg-violet-100 text-violet-700"
+                          : "bg-violet-100 text-violet-700"
                     )}>
                       {rec.logMode ?? "search"}
                     </span>
@@ -1713,516 +1895,546 @@ export function LogsExplorer({
         "bg-white border border-slate-200 flex flex-col",
         fullscreen ? "fixed inset-0 z-50 rounded-none overflow-hidden" : "rounded-lg"
       )}>
-          {/* Fullscreen tab bar */}
-          {fullscreen && tabs.length > 0 && (
-            <div className="flex items-end gap-0 border-b border-slate-200 bg-slate-50 shrink-0">
-              {tabs.map((tab) => (
+        {/* Fullscreen tab bar */}
+        {fullscreen && tabs.length > 0 && (
+          <div className="flex items-end gap-0 border-b border-slate-200 bg-slate-50 shrink-0">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => onTabSwitch?.(tab.id)}
+                className={cn(
+                  "px-3 py-2 text-xs border-b-2 transition-colors whitespace-nowrap",
+                  tab.id === activeTabId
+                    ? "border-sky-600 text-slate-900 font-medium bg-white"
+                    : "border-transparent text-slate-500 hover:text-slate-700 hover:bg-white/60"
+                )}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Toolbar */}
+        <div className="flex flex-col border-b border-slate-100 bg-slate-50/50 shrink-0">
+          {/* Row 1: mode toggle + tail/search controls + keyword highlights */}
+          <div className="flex items-center gap-2 px-4 py-2">
+            {/* Mode toggle */}
+            <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+              {(["tail", "search"] as LogMode[]).map((m) => (
                 <button
-                  key={tab.id}
+                  key={m}
                   type="button"
-                  onClick={() => onTabSwitch?.(tab.id)}
+                  onClick={() => {
+                    if (tailing) onConfigChange({ tailing: false });
+                    onConfigChange({ mode: m });
+                  }}
+                  disabled={loading || searching}
                   className={cn(
-                    "px-3 py-2 text-xs border-b-2 transition-colors whitespace-nowrap",
-                    tab.id === activeTabId
-                      ? "border-sky-600 text-slate-900 font-medium bg-white"
-                      : "border-transparent text-slate-500 hover:text-slate-700 hover:bg-white/60"
+                    "px-2 py-0.5 text-[11px] font-medium transition-colors",
+                    mode === m
+                      ? "bg-slate-900 text-white"
+                      : "bg-white text-slate-500 hover:bg-slate-50"
                   )}
                 >
-                  {tab.label}
+                  {m === "tail" ? "Tail" : "Search"}
                 </button>
               ))}
             </div>
-          )}
 
-          {/* Toolbar */}
-          <div className="flex flex-col border-b border-slate-100 bg-slate-50/50 shrink-0">
-            {/* Row 1: mode toggle + tail/search controls + keyword highlights */}
-            <div className="flex items-center gap-2 px-4 py-2">
-              {/* Mode toggle */}
-              <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
-                {(["tail", "search"] as LogMode[]).map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => {
-                      if (tailing) onConfigChange({ tailing: false });
-                      onConfigChange({ mode: m });
-                    }}
-                    disabled={loading || searching}
-                    className={cn(
-                      "px-2 py-0.5 text-[11px] font-medium transition-colors",
-                      mode === m
-                        ? "bg-slate-900 text-white"
-                        : "bg-white text-slate-500 hover:bg-slate-50"
-                    )}
-                  >
-                    {m === "tail" ? "Tail" : "Search"}
-                  </button>
-                ))}
-              </div>
-
-              {/* Tail mode controls */}
-              {mode === "tail" && (
-                <>
-                  {!tailing ? (
-                    <button
-                      type="button"
-                      onClick={() => onConfigChange({ tailing: true })}
-                      disabled={loading || searching || selectedSources.length === 0 || !!sourcesError}
-                      className="px-3 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 disabled:opacity-50 transition-colors shrink-0"
-                    >
-                      Tail Logs
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => onConfigChange({ tailing: false })}
-                      className="px-3 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors shrink-0"
-                    >
-                      Stop Tail
-                    </button>
-                  )}
-                </>
-              )}
-
-              {/* Search mode controls */}
-              {mode === "search" && (
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <select
-                    value={preset}
-                    onChange={(e) => onConfigChange({ preset: e.target.value as Preset })}
-                    disabled={searching}
-                    className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50"
-                  >
-                    {PRESETS.map((p) => (
-                      <option key={p.value} value={p.value}>{p.label}</option>
-                    ))}
-                  </select>
-                  {preset === "custom" && (
-                    <>
-                      <input
-                        type="datetime-local"
-                        value={customBegin}
-                        onChange={(e) => onConfigChange({ customBegin: e.target.value })}
-                        disabled={searching}
-                        className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-sky-500"
-                      />
-                      <span className="text-slate-400 text-[11px]">→</span>
-                      <input
-                        type="datetime-local"
-                        value={customEnd}
-                        onChange={(e) => onConfigChange({ customEnd: e.target.value })}
-                        disabled={searching}
-                        className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-sky-500"
-                      />
-                    </>
-                  )}
+            {/* Tail mode controls */}
+            {mode === "tail" && (
+              <>
+                {!tailing ? (
                   <button
                     type="button"
-                    onClick={() => onConfigChange({ searchSeq: (searchSeq ?? 0) + 1 })}
+                    onClick={() => onConfigChange({ tailing: true })}
                     disabled={loading || searching || selectedSources.length === 0 || !!sourcesError}
-                    className="px-3 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 disabled:opacity-50 transition-colors flex items-center gap-1"
+                    className="px-3 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 disabled:opacity-50 transition-colors shrink-0"
                   >
-                    {searching ? (
-                      <>
-                        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                        </svg>
-                        Running…
-                      </>
-                    ) : (
-                      "Search"
-                    )}
+                    Tail Logs
                   </button>
-                </div>
-              )}
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onConfigChange({ tailing: false })}
+                    className="px-3 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors shrink-0"
+                  >
+                    Stop Tail
+                  </button>
+                )}
+              </>
+            )}
 
-              <span className="text-slate-300 select-none shrink-0">|</span>
-              <label className="text-xs font-medium text-slate-500 shrink-0">Highlight</label>
-              <input
-                ref={highlightInputRef}
-                type="text"
-                value={keywordsRaw}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setKeywordsRaw(val);
-                  keywordsRawRef.current = val;
-                  if (keywordsDebounceRef.current) clearTimeout(keywordsDebounceRef.current);
-                  keywordsDebounceRef.current = setTimeout(() => setKeywordsActive(val), 300);
-                }}
-                onKeyDown={(e) => {
-                  if (terminalView && matchIndices.length > 0) {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      if (e.shiftKey) goPrevMatch(); else goNextMatch();
-                    }
-                  }
-                }}
-                placeholder="Keywords to highlight, comma-separated…"
-                className="flex-1 text-xs rounded border border-slate-200 px-2.5 py-1 font-mono focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-amber-400"
-              />
-              {keywordsRaw && (
-                <span className="text-xs text-amber-600 whitespace-nowrap">
-                  {keywords.length} keyword{keywords.length !== 1 ? "s" : ""}
-                </span>
-              )}
-              <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
-                <button
-                  type="button"
-                  title="Case sensitive"
-                  onClick={() => setMatchCase((v) => !v)}
-                  className={cn(
-                    "px-2 py-0.5 text-[11px] font-medium font-mono transition-colors",
-                    matchCase ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-                  )}
-                >Aa</button>
-                <button
-                  type="button"
-                  title="Whole word"
-                  onClick={() => setWholeWord((v) => !v)}
-                  className={cn(
-                    "px-2 py-0.5 text-[11px] font-medium font-mono border-l border-slate-300 transition-colors",
-                    wholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-                  )}
-                >[W]</button>
-              </div>
-              {terminalView && matchIndices.length > 0 && (
-                <>
-                  <div className="flex items-center gap-1 text-[11px] text-slate-400 whitespace-nowrap tabular-nums">
+            {/* Search mode controls */}
+            {mode === "search" && (
+              <div className="flex items-center gap-1.5 shrink-0">
+                <select
+                  value={preset}
+                  onChange={(e) => onConfigChange({ preset: e.target.value as Preset })}
+                  disabled={searching}
+                  className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50"
+                >
+                  {PRESETS.map((p) => (
+                    <option key={p.value} value={p.value}>{p.label}</option>
+                  ))}
+                </select>
+                {preset === "custom" && (
+                  <>
                     <input
-                      type="number"
-                      min={1}
-                      max={matchIndices.length}
-                      value={matchCursor >= 0 ? matchCursor + 1 : ""}
-                      placeholder="–"
-                      onChange={(e) => {
-                        const n = parseInt(e.target.value, 10);
-                        if (!isNaN(n) && n >= 1 && n <= matchIndices.length) setMatchCursor(n - 1);
-                      }}
-                      className="w-12 text-center text-[11px] rounded border border-slate-300 px-1 py-0.5 font-mono focus:outline-none focus:ring-1 focus:ring-sky-400 focus:border-sky-400 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                      type="datetime-local"
+                      step="1"
+                      value={customBegin}
+                      onChange={(e) => onConfigChange({ customBegin: e.target.value })}
+                      disabled={searching}
+                      className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-sky-500"
                     />
-                    <span>/ {matchIndices.length}</span>
-                  </div>
-                  <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
-                    <button
-                      type="button"
-                      title="Previous match (Shift+Enter)"
-                      onClick={goPrevMatch}
-                      className="px-2 py-0.5 text-[11px] font-medium bg-white text-slate-500 hover:bg-slate-50 transition-colors"
-                    >↑ Prev</button>
-                    <button
-                      type="button"
-                      title="Next match (Enter)"
-                      onClick={goNextMatch}
-                      className="px-2 py-0.5 text-[11px] font-medium bg-white text-slate-500 hover:bg-slate-50 border-l border-slate-300 hover:bg-slate-50 transition-colors"
-                    >↓ Next</button>
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* Row 2: view toggle + filter + count + height controls + fullscreen */}
-            <div className="flex items-center gap-3 px-4 py-2 border-t border-slate-100">
-              {/* Terminal / Table / JSON toggle — available in all modes */}
-              <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+                    <span className="text-slate-400 text-[11px]">→</span>
+                    <input
+                      type="datetime-local"
+                      step="1"
+                      value={customEnd}
+                      onChange={(e) => onConfigChange({ customEnd: e.target.value })}
+                      disabled={searching}
+                      className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-sky-500"
+                    />
+                  </>
+                )}
                 <button
                   type="button"
-                  onClick={() => setViewMode("terminal")}
-                  className={cn(
-                    "px-2 py-0.5 text-[11px] font-medium transition-colors",
-                    viewMode === "terminal" ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-                  )}
+                  onClick={() => onConfigChange({ searchSeq: (searchSeq ?? 0) + 1 })}
+                  disabled={loading || searching || selectedSources.length === 0 || !!sourcesError}
+                  className="px-3 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 disabled:opacity-50 transition-colors flex items-center gap-1"
                 >
-                  Terminal
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setViewMode("table");
-                    if (activeMatchIndex !== null) {
-                      setHighlightedTableIdx(activeMatchIndex);
-                      setPage(Math.floor(activeMatchIndex / pageSize) + 1);
-                      setExpandedIdx(null);
-                    }
-                  }}
-                  className={cn(
-                    "px-2 py-0.5 text-[11px] font-medium border-l border-slate-300 transition-colors",
-                    viewMode === "table" ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                  {searching ? (
+                    <>
+                      <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Running…
+                    </>
+                  ) : (
+                    "Search"
                   )}
-                >
-                  Table
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setViewMode("json")}
-                  className={cn(
-                    "px-2 py-0.5 text-[11px] font-medium border-l border-slate-300 transition-colors",
-                    viewMode === "json" ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-                  )}
-                  title="Show all entries as one JSON document"
-                >
-                  JSON
-                </button>
+                {searching && (
+                  <button
+                    type="button"
+                    onClick={() => workerRef.current?.postMessage({ type: "fetch-stop" })}
+                    className="px-3 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+                  >
+                    Stop
+                  </button>
+                )}
               </div>
-              {/* Wrap toggle — available in terminal and JSON views */}
-              {(viewMode === "terminal" || viewMode === "json") && (
-                <button
-                  type="button"
-                  onClick={() => setWrapLines((w) => !w)}
-                  title={wrapLines ? "Disable line wrap" : "Wrap long lines"}
-                  className={cn(
-                    "px-2 py-0.5 text-[11px] font-medium rounded border transition-colors shrink-0",
-                    wrapLines
-                      ? "bg-slate-900 text-white border-slate-900"
-                      : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50"
-                  )}
-                >
-                  Wrap
-                </button>
-              )}
+            )}
+
+            <span className="text-slate-300 select-none shrink-0">|</span>
+            <label className="text-xs font-medium text-slate-500 shrink-0">Highlight</label>
+            <input
+              ref={highlightInputRef}
+              type="text"
+              value={keywordsRaw}
+              onChange={(e) => {
+                const val = e.target.value;
+                setKeywordsRaw(val);
+                keywordsRawRef.current = val;
+                if (keywordsDebounceRef.current) clearTimeout(keywordsDebounceRef.current);
+                keywordsDebounceRef.current = setTimeout(() => setKeywordsActive(val), 300);
+              }}
+              onKeyDown={(e) => {
+                if (matchIndices.length > 0 && e.key === "Enter") {
+                  e.preventDefault();
+                  if (e.shiftKey) goPrevMatch(); else goNextMatch();
+                }
+              }}
+              placeholder="Keywords to highlight, comma-separated…"
+              className="flex-1 text-xs rounded border border-slate-200 px-2.5 py-1 font-mono focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-amber-400"
+            />
+            {keywordsRaw && (
+              <span className="text-xs text-amber-600 whitespace-nowrap">
+                {keywords.length} keyword{keywords.length !== 1 ? "s" : ""}
+              </span>
+            )}
+            <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
               <button
                 type="button"
-                onClick={() => setDedupe((v) => !v)}
-                title={dedupe ? "Show all entries" : "Collapse exact-match duplicates"}
+                title="Case sensitive"
+                onClick={() => setMatchCase((v) => !v)}
+                className={cn(
+                  "px-2 py-0.5 text-[11px] font-medium font-mono transition-colors",
+                  matchCase ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                )}
+              >Aa</button>
+              <button
+                type="button"
+                title="Whole word"
+                onClick={() => setWholeWord((v) => !v)}
+                className={cn(
+                  "px-2 py-0.5 text-[11px] font-medium font-mono border-l border-slate-300 transition-colors",
+                  wholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                )}
+              >[W]</button>
+            </div>
+            {matchIndices.length > 0 && (
+              <>
+                <div className="flex items-center gap-1 text-[11px] text-slate-400 whitespace-nowrap tabular-nums">
+                  <input
+                    type="number"
+                    min={1}
+                    max={matchIndices.length}
+                    value={matchCursor >= 0 ? matchCursor + 1 : ""}
+                    placeholder="–"
+                    onChange={(e) => {
+                      const n = parseInt(e.target.value, 10);
+                      if (!isNaN(n) && n >= 1 && n <= matchRows.length) navigateToMatch(n - 1);
+                    }}
+                    className="w-12 text-center text-[11px] rounded border border-slate-300 px-1 py-0.5 font-mono focus:outline-none focus:ring-1 focus:ring-sky-400 focus:border-sky-400 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  />
+                  <span>/ {matchIndices.length}</span>
+                </div>
+                <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+                  <button
+                    type="button"
+                    title="Previous match (Shift+Enter)"
+                    onClick={goPrevMatch}
+                    className="px-2 py-0.5 text-[11px] font-medium bg-white text-slate-500 hover:bg-slate-50 transition-colors"
+                  >↑ Prev</button>
+                  <button
+                    type="button"
+                    title="Next match (Enter)"
+                    onClick={goNextMatch}
+                    className="px-2 py-0.5 text-[11px] font-medium bg-white text-slate-500 hover:bg-slate-50 border-l border-slate-300 hover:bg-slate-50 transition-colors"
+                  >↓ Next</button>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Row 2: view toggle + filter + count + height controls + fullscreen */}
+          <div className="flex items-center gap-3 px-4 py-2 border-t border-slate-100">
+            {/* Terminal / Table / JSON toggle — available in all modes */}
+            <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+              <button
+                type="button"
+                onClick={() => setViewMode("terminal")}
+                className={cn(
+                  "px-2 py-0.5 text-[11px] font-medium transition-colors",
+                  viewMode === "terminal" ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                )}
+              >
+                Terminal
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setViewMode("table");
+                  if (activeMatchIndex !== null) {
+                    setHighlightedTableIdx(activeMatchIndex);
+                    setPage(Math.floor(activeMatchIndex / pageSize) + 1);
+                    setExpandedIdx(null);
+                  }
+                }}
+                className={cn(
+                  "px-2 py-0.5 text-[11px] font-medium border-l border-slate-300 transition-colors",
+                  viewMode === "table" ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                )}
+              >
+                Table
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("json")}
+                className={cn(
+                  "px-2 py-0.5 text-[11px] font-medium border-l border-slate-300 transition-colors",
+                  viewMode === "json" ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                )}
+                title="Show all entries as one JSON document"
+              >
+                JSON
+              </button>
+            </div>
+            {/* Wrap toggle — available in terminal and JSON views */}
+            {(viewMode === "terminal" || viewMode === "json") && (
+              <button
+                type="button"
+                onClick={() => setWrapLines((w) => !w)}
+                title={wrapLines ? "Disable line wrap" : "Wrap long lines"}
                 className={cn(
                   "px-2 py-0.5 text-[11px] font-medium rounded border transition-colors shrink-0",
-                  dedupe
+                  wrapLines
                     ? "bg-slate-900 text-white border-slate-900"
                     : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50"
                 )}
               >
-                Dedupe
+                Wrap
               </button>
-              <input
-                type="text"
-                value={rawSearch}
-                onChange={(e) => handleFilterChange(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") applySearch(rawSearch); }}
-                placeholder="Filter entries… (3+ chars or Enter)"
+            )}
+            {/* Auto-scroll toggle — visible during tailing in terminal view */}
+            {viewMode === "terminal" && (
+              <button
+                type="button"
+                onClick={() => setAutoScroll((v) => !v)}
+                title={autoScroll ? "Pause auto-scroll (stay at current position)" : "Resume auto-scroll to latest entries"}
                 className={cn(
-                  "flex-1 text-xs rounded border px-3 py-1.5 font-mono focus:outline-none focus:ring-2 focus:ring-sky-500",
-                  rawSearch && !search
-                    ? "border-amber-300 focus:ring-amber-400"   // typed but not yet active
-                    : "border-slate-300"
+                  "px-2 py-0.5 text-[11px] font-medium rounded border transition-colors shrink-0",
+                  autoScroll
+                    ? "bg-slate-900 text-white border-slate-900"
+                    : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50"
                 )}
-              />
-              {rawSearch && (
-                <button type="button" onClick={clearSearch} className="text-xs text-slate-400 hover:text-slate-600">
+              >
+                Auto-scroll
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setDedupe((v) => !v)}
+              title={dedupe ? "Show all entries" : "Collapse exact-match duplicates"}
+              className={cn(
+                "px-2 py-0.5 text-[11px] font-medium rounded border transition-colors shrink-0",
+                dedupe
+                  ? "bg-slate-900 text-white border-slate-900"
+                  : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50"
+              )}
+            >
+              Dedupe
+            </button>
+            <input
+              type="text"
+              value={rawSearch}
+              onChange={(e) => handleFilterChange(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") applySearch(rawSearch); }}
+              placeholder="Filter entries… (3+ chars or Enter)"
+              className={cn(
+                "flex-1 text-xs rounded border px-3 py-1.5 font-mono focus:outline-none focus:ring-2 focus:ring-sky-500",
+                rawSearch && !search
+                  ? "border-amber-300 focus:ring-amber-400"   // typed but not yet active
+                  : "border-slate-300"
+              )}
+            />
+            {rawSearch && (
+              <button type="button" onClick={clearSearch} className="text-xs text-slate-400 hover:text-slate-600">
+                Clear
+              </button>
+            )}
+            <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+              <button
+                type="button"
+                title="Case sensitive"
+                onClick={() => setMatchCase((v) => !v)}
+                className={cn(
+                  "px-2 py-0.5 text-[11px] font-medium font-mono transition-colors",
+                  matchCase ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                )}
+              >Aa</button>
+              <button
+                type="button"
+                title="Whole word"
+                onClick={() => setWholeWord((v) => !v)}
+                className={cn(
+                  "px-2 py-0.5 text-[11px] font-medium font-mono border-l border-slate-300 transition-colors",
+                  wholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                )}
+              >[W]</button>
+            </div>
+            {viewMode === "table" && (
+              <label className="flex items-center gap-1.5 text-xs text-slate-500 whitespace-nowrap cursor-pointer shrink-0">
+                <input
+                  type="checkbox"
+                  checked={showFullMessage}
+                  onChange={(e) => setShowFullMessage(e.target.checked)}
+                  className="rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                />
+                Full message
+              </label>
+            )}
+            <span className="text-xs text-slate-400 whitespace-nowrap">
+              {(() => {
+                const totalReceived = mode === "tail" ? Math.max(entries.length, tailTotalReceived) : entries.length;
+                const dedupeHidden = dedupe
+                  ? Array.from(dupeCounts.values()).reduce((sum, n) => sum + (n - 1), 0)
+                  : 0;
+                return (
+                  <>
+                    {filtered.length} / {totalReceived.toLocaleString()}
+                    {dedupe && dedupeHidden > 0 && (
+                      <span className="text-amber-600"> (−{dedupeHidden.toLocaleString()})</span>
+                    )}
+                  </>
+                );
+              })()}
+            </span>
+            {!fullscreen && (
+              <div className="flex items-center gap-0.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={shrink}
+                  title="Shrink"
+                  className="text-slate-400 hover:text-slate-600 transition-colors p-0.5"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={grow}
+                  title="Grow"
+                  className="text-slate-400 hover:text-slate-600 transition-colors p-0.5"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14m-7-7h14" />
+                  </svg>
+                </button>
+              </div>
+            )}
+            {fetched && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const data = JSON.stringify(filtered.map((e) => ({ timestamp: e.timestamp, source: e.source, type: e.type, payload: e.payload })), null, 2);
+                    const blob = new Blob([data], { type: "application/json" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `logs-${selectedSources.join("-")}-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.json`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
+                >
+                  Export
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    let text: string;
+                    if (viewMode === "json") {
+                      text = JSON.stringify(filtered, null, 2);
+                    } else if (viewMode === "table") {
+                      text = filtered.map((e) => {
+                        const src = (e.source ?? selectedSources[0] ?? "").padEnd(15);
+                        const lvl = getLevel(e).padEnd(5);
+                        const msg = getMessage(e);
+                        return `${e.timestamp}  ${src}  ${lvl}  ${msg}`;
+                      }).join("\n");
+                    } else {
+                      text = filtered.map((e) => formatTerminalLine(e, tailSource)).join("\n");
+                    }
+                    navigator.clipboard.writeText(text).then(() => {
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 1500);
+                    }).catch(() => { });
+                  }}
+                  className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
+                >
+                  {copied ? "Copied!" : "Copy"}
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: "Clear log entries",
+                      message: `Clear all ${entries.length} log entries from the screen?`,
+                      confirmLabel: "Clear",
+                      variant: "warning",
+                    });
+                    if (ok) {
+                      setEntries([]); setFetched(false); setError(""); clearSearch(); setExpandedIdx(null); setFetchProgress(null); setTailTotalReceived(0);
+                    }
+                  }}
+                  className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
+                >
                   Clear
                 </button>
-              )}
-              <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
-                <button
-                  type="button"
-                  title="Case sensitive"
-                  onClick={() => setMatchCase((v) => !v)}
-                  className={cn(
-                    "px-2 py-0.5 text-[11px] font-medium font-mono transition-colors",
-                    matchCase ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-                  )}
-                >Aa</button>
-                <button
-                  type="button"
-                  title="Whole word"
-                  onClick={() => setWholeWord((v) => !v)}
-                  className={cn(
-                    "px-2 py-0.5 text-[11px] font-medium font-mono border-l border-slate-300 transition-colors",
-                    wholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-                  )}
-                >[W]</button>
-              </div>
-              {viewMode === "table" && (
-                <label className="flex items-center gap-1.5 text-xs text-slate-500 whitespace-nowrap cursor-pointer shrink-0">
-                  <input
-                    type="checkbox"
-                    checked={showFullMessage}
-                    onChange={(e) => setShowFullMessage(e.target.checked)}
-                    className="rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-                  />
-                  Full message
-                </label>
-              )}
-              <span className="text-xs text-slate-400 whitespace-nowrap">
-                {(() => {
-                  const totalReceived = mode === "tail" ? Math.max(entries.length, tailTotalReceived) : entries.length;
-                  const dedupeHidden = dedupe
-                    ? Array.from(dupeCounts.values()).reduce((sum, n) => sum + (n - 1), 0)
-                    : 0;
-                  return (
-                    <>
-                      {filtered.length} / {totalReceived.toLocaleString()}
-                      {dedupe && dedupeHidden > 0 && (
-                        <span className="text-amber-600"> (−{dedupeHidden.toLocaleString()})</span>
-                      )}
-                    </>
-                  );
-                })()}
-              </span>
-              {!fullscreen && (
-                <div className="flex items-center gap-0.5 shrink-0">
-                  <button
-                    type="button"
-                    onClick={shrink}
-                    title="Shrink"
-                    className="text-slate-400 hover:text-slate-600 transition-colors p-0.5"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14" />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={grow}
-                    title="Grow"
-                    className="text-slate-400 hover:text-slate-600 transition-colors p-0.5"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14m-7-7h14" />
-                    </svg>
-                  </button>
-                </div>
-              )}
-              {fetched && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const data = JSON.stringify(filtered.map((e) => ({ timestamp: e.timestamp, source: e.source, type: e.type, payload: e.payload })), null, 2);
-                      const blob = new Blob([data], { type: "application/json" });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement("a");
-                      a.href = url;
-                      a.download = `logs-${selectedSources.join("-")}-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.json`;
-                      a.click();
-                      URL.revokeObjectURL(url);
-                    }}
-                    className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
-                  >
-                    Export
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      autoSaveToHistory(mode as "tail" | "search", entries);
-                      setSaveFlash(true);
-                      setTimeout(() => setSaveFlash(false), 10000);
-                    }}
-                    className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
-                  >
-                    {saveFlash ? "Saved!" : "Save"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const ok = await confirm({
-                        title: "Clear log entries",
-                        message: `Clear all ${entries.length} log entries from the screen?`,
-                        confirmLabel: "Clear",
-                        variant: "warning",
-                      });
-                      if (ok) {
-                        if (idbRef.current && sessionIdRef.current) idbDeleteSession(idbRef.current, sessionIdRef.current);
-                        sessionIdRef.current = undefined;
-                        onConfigChange({ sessionId: undefined });
-                        setEntries([]); setFetched(false); setError(""); clearSearch(); setExpandedIdx(null); setFetchProgress(null); setTailTotalReceived(0);
-                      }
-                    }}
-                    className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
-                  >
-                    Clear
-                  </button>
-                </>
-              )}
-              <button
-                type="button"
-                onClick={() => setHistoryOpen((o) => !o)}
-                className={cn("text-xs transition-colors shrink-0", historyOpen ? "text-sky-600" : "text-slate-400 hover:text-slate-600")}
-                title="Search history"
-              >
-                History
-              </button>
-              <button
-                type="button"
-                onClick={() => onFullscreenChange?.(!fullscreen)}
-                title={fullscreen ? "Exit fullscreen (Esc)" : "Fullscreen"}
-                className="text-slate-400 hover:text-slate-600 transition-colors shrink-0"
-              >
-                {fullscreen ? (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" />
-                  </svg>
-                ) : (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
-                  </svg>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* Scrollable log window — CSS resize handle at bottom-right corner */}
-          <div
-            ref={scrollContainerRef}
-            onScroll={(e) => {
-              // Within ~400ms of a programmatic scroll, skip the at-bottom
-              // update so the cascade of scroll events from that scroll can't
-              // flip the flag the wrong way.
-              if (Date.now() - lastProgrammaticScrollAtRef.current < 400) return;
-              const el = e.currentTarget;
-              scrollAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-            }}
-            onMouseUp={() => {
-              if (fullscreen) return;
-              const el = scrollContainerRef.current;
-              if (!el) return;
-              const h = el.clientHeight;
-              if (h >= 200) { setTableHeight(h); saveHeight(h); }
-            }}
-            className={cn(
-              terminalView ? "overflow-hidden" : "overflow-y-auto overflow-x-auto",
-              fullscreen ? "flex-1" : "resize-y min-h-[200px]"
+              </>
             )}
-            style={fullscreen ? undefined : { height: tableHeight }}
-          >
-            {viewMode === "terminal" ? (
-              !fetched && !tailing ? (
-                <div className="flex items-center justify-center h-full min-h-[160px] bg-slate-950">
-                  <p className="text-sm text-slate-500 font-mono">Select sources and start tailing or run a search</p>
-                </div>
-              ) : deferredIsActive && filtered.length === 0 && fetched && !searching ? (
-                <div className="flex items-center justify-center h-full min-h-[160px] bg-slate-950">
-                  <p className="text-sm text-slate-500 font-mono">
-                    {entries.length === 0 ? "No log entries returned." : "No entries match the filter."}
-                  </p>
-                </div>
+            <button
+              type="button"
+              onClick={() => setHistoryOpen((o) => !o)}
+              className={cn("text-xs transition-colors shrink-0", historyOpen ? "text-sky-600" : "text-slate-400 hover:text-slate-600")}
+              title="Search history"
+            >
+              History
+            </button>
+            <button
+              type="button"
+              onClick={() => onFullscreenChange?.(!fullscreen)}
+              title={fullscreen ? "Exit fullscreen (Esc)" : "Fullscreen"}
+              className="text-slate-400 hover:text-slate-600 transition-colors shrink-0"
+            >
+              {fullscreen ? (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" />
+                </svg>
               ) : (
-                <TailTerminal
-                  entries={filtered}
-                  defaultSource={tailSource}
-                  searchTerm={search}
-                  keywords={keywords}
-                  wrapLines={wrapLines}
-                  dupeCounts={dupeCounts}
-                  scrollToIndex={scrollToIndex}
-                  activeMatchIndex={activeMatchIndex}
-                  matchCase={matchCase}
-                  wholeWord={wholeWord}
-                />
-              )
-            ) : viewMode === "json" ? (
-              !fetched ? (
-                <div className="flex items-center justify-center h-full min-h-[160px]">
-                  <p className="text-sm text-slate-400">Select at least one source and click Tail Logs or Search</p>
-                </div>
-              ) : !deferredIsActive ? null : filtered.length === 0 && !searching ? (
-                <div className="p-8 text-center text-sm text-slate-400">
-                  {entries.length === 0 ? "No log entries returned for this time range." : "No entries match the filter."}
-                </div>
-              ) : (
-                <JsonLogView entries={filtered} wrapLines={wrapLines} />
-              )
-            ) : !fetched ? (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                </svg>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Scrollable log window — CSS resize handle at bottom-right corner */}
+        <div
+          ref={scrollContainerRef}
+          onScroll={(e) => {
+            // Within ~400ms of a programmatic scroll, skip the at-bottom
+            // update so the cascade of scroll events from that scroll can't
+            // flip the flag the wrong way.
+            if (Date.now() - lastProgrammaticScrollAtRef.current < 400) return;
+            const el = e.currentTarget;
+            scrollAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+          }}
+          onMouseUp={() => {
+            if (fullscreen) return;
+            const el = scrollContainerRef.current;
+            if (!el) return;
+            const h = el.clientHeight;
+            if (h >= 200) { setTableHeight(h); saveHeight(h); }
+          }}
+          className={cn(
+            terminalView ? "overflow-hidden" : "overflow-y-auto overflow-x-auto",
+            fullscreen ? "flex-1" : "resize-y min-h-[200px]"
+          )}
+          style={fullscreen ? undefined : { height: tableHeight }}
+        >
+          {viewMode === "terminal" ? (
+            !fetched && !tailing ? (
+              <div className="flex items-center justify-center h-full min-h-[160px]">
+                <p className="text-sm text-slate-400 font-mono">
+                  {anchorTimestamp ? "Loading context…" : "Select sources and start tailing or run a search"}
+                </p>
+              </div>
+            ) : deferredIsActive && filtered.length === 0 && fetched && !searching ? (
+              <div className="flex items-center justify-center h-full min-h-[160px]">
+                <p className="text-sm text-slate-400 font-mono">
+                  {entries.length === 0 ? "No log entries returned." : "No entries match the filter."}
+                </p>
+              </div>
+            ) : (
+              <TailTerminal
+                entries={filtered}
+                defaultSource={tailSource}
+                searchTerm={search}
+                keywords={keywords}
+                wrapLines={wrapLines}
+                dupeCounts={dupeCounts}
+                scrollRequest={matchScrollRequest}
+                activeMatchIndex={activeMatchIndex}
+                matchCase={matchCase}
+                wholeWord={wholeWord}
+                autoScroll={autoScroll}
+                onEntryDoubleClick={handleContextEntry}
+                contextAnchorIdx={contextAnchorDisplay}
+              />
+            )
+          ) : viewMode === "json" ? (
+            !fetched ? (
               <div className="flex items-center justify-center h-full min-h-[160px]">
                 <p className="text-sm text-slate-400">Select at least one source and click Tail Logs or Search</p>
               </div>
@@ -2231,199 +2443,267 @@ export function LogsExplorer({
                 {entries.length === 0 ? "No log entries returned for this time range." : "No entries match the filter."}
               </div>
             ) : (
-              <table className="text-xs border-collapse" style={{ tableLayout: "fixed", width: "100%", minWidth: 700 }}>
-                <thead className="sticky top-0 z-10">
-                  <tr className="bg-slate-50 border-b border-slate-200 text-left">
-                    <ResizableHeader label="Timestamp" colKey="timestamp" widths={colWidths} onResize={handleColResize} className="px-3" />
-                    <ResizableHeader label="Source" colKey="source" widths={colWidths} onResize={handleColResize} />
-                    <ResizableHeader label="Level" colKey="level" widths={colWidths} onResize={handleColResize} />
-                    <ResizableHeader label="Transaction" colKey="transaction" widths={colWidths} onResize={handleColResize} />
-                    <th className="px-2 py-2 font-semibold text-slate-500">Message</th>
-                    <th style={{ width: 24 }} />
-                  </tr>
-                </thead>
-                <tbody>
-                  {pageEntries.map((entry, i) => {
-                    const globalIdx = pageStartIdx + i;
-                    return (
-                      <EntryRow
-                        key={globalIdx}
-                        entry={entry}
-                        source={tailSource}
-                        expanded={expandedIdx === globalIdx}
-                        onToggle={() => setExpandedIdx(expandedIdx === globalIdx ? null : globalIdx)}
-                        searchTerm={search}
-                        keywords={keywords}
-                        onTransactionClick={(txId) => setDrilldown({ txId })}
-                        onTimestampClick={onOpenContextTab}
-                        fullscreen={fullscreen}
-                        showFullMessage={showFullMessage}
-                        highlighted={highlightedTableIdx === globalIdx}
-                        rowIdx={globalIdx}
-                        matchCase={matchCase}
-                        wholeWord={wholeWord}
-                        dupeCount={dupeCounts.get(globalIdx) ?? 1}
-                      />
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
-
-          {/* Pagination controls — table view only */}
-          {viewMode === "table" && fetched && filtered.length > 0 && (
-            <div className="flex items-center justify-between px-4 py-2 border-t border-slate-100 bg-slate-50/50 shrink-0">
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-slate-500">
-                  Showing {pageStartIdx + 1}–{pageEndIdx} of {filtered.length}
-                  {currentPage === totalPages && " (latest)"}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <select
-                  value={pageSize}
-                  onChange={(e) => { setPageSize(Number(e.target.value)); setPage(Infinity); setExpandedIdx(null); }}
-                  className="text-xs rounded border border-slate-300 px-2 py-1 focus:outline-none focus:ring-2 focus:ring-sky-500"
-                >
-                  {[50, 100, 200, 500].map((s) => (
-                    <option key={s} value={s}>{s} / page</option>
-                  ))}
-                </select>
-                <div className="flex items-center gap-1">
-                  <button type="button" onClick={() => { setPage(1); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Oldest (page 1)">Oldest</button>
-                  <button type="button" onClick={() => { setPage((p) => Math.max(1, p - 1)); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Older entries">← Older</button>
-                  <span className="text-xs text-slate-500 px-2 tabular-nums">{currentPage} / {totalPages}</span>
-                  <button type="button" onClick={() => { setPage((p) => Math.min(totalPages, p + 1)); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Newer entries">Newer →</button>
-                  <button type="button" onClick={() => { setPage(totalPages); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Latest (last page)">Latest</button>
-                </div>
-              </div>
+              <JsonLogView
+                entries={filtered}
+                wrapLines={wrapLines}
+                keywords={keywords}
+                searchTerm={search}
+                activeEntryIdx={activeMatchIndex ?? -1}
+                matchIndices={matchIndices}
+                matchCase={matchCase}
+                wholeWord={wholeWord}
+                onEntryDoubleClick={handleContextEntry}
+                contextAnchorIdx={contextAnchorDisplay ?? -1}
+              />
+            )
+          ) : !fetched ? (
+            <div className="flex items-center justify-center h-full min-h-[160px]">
+              <p className="text-sm text-slate-400">Select at least one source and click Tail Logs or Search</p>
             </div>
-          )}
-
-          {/* Search completed indicator */}
-          {mode === "search" && fetchProgress && fetchProgress.done && (
-            <div className={cn("flex items-center gap-2 px-4 py-2 border-t border-slate-100 shrink-0", fetchProgress.loaded > 0 ? "bg-emerald-50/50" : "bg-slate-50/50")}>
-              {fetchProgress.loaded > 0 ? (
-                <svg className="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                </svg>
-              ) : (
-                <svg className="w-3.5 h-3.5 text-slate-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" />
-                </svg>
-              )}
-              <span className="text-xs text-slate-600">
-                {fetchProgress.loaded > 0
-                  ? `Search complete — ${fetchProgress.loaded.toLocaleString()} entries loaded`
-                  : "Search complete — no entries found for this time range"}
-              </span>
+          ) : !deferredIsActive ? null : filtered.length === 0 && !searching ? (
+            <div className="p-8 text-center text-sm text-slate-400">
+              {entries.length === 0 ? "No log entries returned for this time range." : "No entries match the filter."}
             </div>
-          )}
-
-          {/* Search progress indicator */}
-          {(searching || (fetchProgress && !fetchProgress.done)) && (
-            <div className="flex items-center justify-between px-4 py-2 border-t border-slate-100 bg-sky-50/50 shrink-0">
-              <div className="flex items-center gap-2">
-                {fetchProgress?.paused ? (
-                  <span className="inline-block w-2 h-2 rounded-full bg-amber-400 shrink-0" />
-                ) : (
-                  <svg className="w-3 h-3 animate-spin text-sky-600 shrink-0" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                )}
-                <span className="text-xs text-slate-600">
-                  {!fetchProgress
-                    ? "Starting search…"
-                    : fetchProgress.paused
-                    ? `Paused — ${fetchProgress.loaded.toLocaleString()} entries loaded`
-                    : [
-                        fetchProgress.source && `[${fetchProgress.source}]`,
-                        fetchProgress.window && fetchProgress.window,
-                        fetchProgress.loaded > 0 && `${fetchProgress.loaded.toLocaleString()} entries`,
-                      ].filter(Boolean).join(' · ')}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                {fetchProgress?.paused ? (
-                  <button
-                    type="button"
-                    onClick={() => workerRef.current?.postMessage({ type: "fetch-resume" })}
-                    className="px-2.5 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 transition-colors"
-                  >
-                    Resume
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => workerRef.current?.postMessage({ type: "fetch-pause" })}
-                    className="px-2.5 py-1 text-xs font-medium bg-amber-100 text-amber-700 rounded hover:bg-amber-200 transition-colors"
-                  >
-                    Pause
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => workerRef.current?.postMessage({ type: "fetch-stop" })}
-                  className="px-2.5 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
-                >
-                  Stop
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Tail status indicator */}
-          {tailing && (
-            <div className="flex items-center justify-between px-4 py-2 border-t border-slate-700 bg-slate-900 shrink-0">
-              <div className="flex items-center gap-2">
-                <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-                <span className="text-xs text-slate-300 font-mono">
-                  {loading
-                    ? `Fetching…`
-                    : lastUpdated
-                    ? `Updated ${lastUpdated.toLocaleTimeString()}`
-                    : `Starting…`}
-                </span>
-                {tailTotalReceived > 0 && (
-                  <span className="text-xs text-slate-400 font-mono">
-                    · {tailTotalReceived.toLocaleString()} total
-                    {tailDropped > 0 && ` · ${entries.length.toLocaleString()} in buffer`}
-                    {" · saved to IndexedDB"}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={exportTailSession}
-                  className="px-2.5 py-1 text-xs font-medium bg-slate-700 text-slate-200 rounded hover:bg-slate-600 transition-colors"
-                >
-                  Export session
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onConfigChange({ tailing: false })}
-                  className="px-2.5 py-1 text-xs font-medium bg-red-900/60 text-red-300 rounded hover:bg-red-900 transition-colors"
-                >
-                  Stop
-                </button>
-              </div>
-            </div>
+          ) : (
+            <table className="text-xs border-collapse" style={{ tableLayout: "fixed", width: "100%", minWidth: 700 }}>
+              <thead className="sticky top-0 z-10">
+                <tr className="bg-slate-50 border-b border-slate-200 text-left">
+                  <ResizableHeader label="Timestamp" colKey="timestamp" widths={colWidths} onResize={handleColResize} className="px-3" />
+                  <ResizableHeader label="Source" colKey="source" widths={colWidths} onResize={handleColResize} />
+                  <ResizableHeader label="Level" colKey="level" widths={colWidths} onResize={handleColResize} />
+                  <ResizableHeader label="Transaction" colKey="transaction" widths={colWidths} onResize={handleColResize} />
+                  <th className="px-2 py-2 font-semibold text-slate-500">Message</th>
+                  <th style={{ width: 24 }} />
+                </tr>
+              </thead>
+              <tbody>
+                {pageEntries.map((entry, i) => {
+                  const globalIdx = pageStartIdx + i;
+                  return (
+                    <EntryRow
+                      key={globalIdx}
+                      entry={entry}
+                      source={tailSource}
+                      expanded={expandedIdx === globalIdx}
+                      onToggle={() => setExpandedIdx(expandedIdx === globalIdx ? null : globalIdx)}
+                      searchTerm={search}
+                      keywords={keywords}
+                      onTransactionClick={(txId) => setDrilldown({ txId })}
+                      onTimestampClick={onOpenContextTab}
+                      onContextClick={() => handleContextEntry(globalIdx)}
+                      fullscreen={fullscreen}
+                      showFullMessage={showFullMessage}
+                      highlighted={highlightedTableIdx === globalIdx || activeMatchIndex === globalIdx}
+                      isContextAnchor={contextAnchorDisplay === globalIdx}
+                      rowIdx={globalIdx}
+                      matchCase={matchCase}
+                      wholeWord={wholeWord}
+                      dupeCount={dupeCounts.get(globalIdx) ?? 1}
+                    />
+                  );
+                })}
+              </tbody>
+            </table>
           )}
         </div>
 
+        {/* Pagination controls — table view only */}
+        {viewMode === "table" && fetched && filtered.length > 0 && (
+          <div className="flex items-center justify-between px-4 py-2 border-t border-slate-100 bg-slate-50/50 shrink-0">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">
+                Showing {pageStartIdx + 1}–{pageEndIdx} of {filtered.length}
+                {currentPage === totalPages && " (latest)"}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <select
+                value={pageSize}
+                onChange={(e) => { setPageSize(Number(e.target.value)); setPage(Infinity); setExpandedIdx(null); }}
+                className="text-xs rounded border border-slate-300 px-2 py-1 focus:outline-none focus:ring-2 focus:ring-sky-500"
+              >
+                {[50, 100, 200, 500].map((s) => (
+                  <option key={s} value={s}>{s} / page</option>
+                ))}
+              </select>
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={() => { setPage(1); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Oldest (page 1)">Oldest</button>
+                <button type="button" onClick={() => { setPage((p) => Math.max(1, p - 1)); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Older entries">← Older</button>
+                <span className="text-xs text-slate-500 px-2 tabular-nums">{currentPage} / {totalPages}</span>
+                <button type="button" onClick={() => { setPage((p) => Math.min(totalPages, p + 1)); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Newer entries">Newer →</button>
+                <button type="button" onClick={() => { setPage(totalPages); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Latest (last page)">Latest</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Search completed indicator */}
+        {mode === "search" && fetchProgress && fetchProgress.done && (
+          <div className={cn("flex items-center gap-2 px-4 py-2 border-t border-slate-100 shrink-0", fetchProgress.loaded > 0 ? "bg-emerald-50/50" : "bg-slate-50/50")}>
+            {fetchProgress.loaded > 0 ? (
+              <svg className="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            ) : (
+              <svg className="w-3.5 h-3.5 text-slate-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" />
+              </svg>
+            )}
+            <span className="text-xs text-slate-600">
+              {fetchProgress.loaded > 0
+                ? `Search complete — ${fetchProgress.loaded.toLocaleString()} entries loaded`
+                : "Search complete — no entries found for this time range"}
+            </span>
+          </div>
+        )}
+
+        {/* Search progress indicator */}
+        {(searching || (fetchProgress && !fetchProgress.done)) && (() => {
+          // Compute time-based progress percentage across sources
+          let pct: number | null = null;
+          if (fetchProgress && fetchProgress.overallBegin && fetchProgress.overallEnd && fetchProgress.sourceCount) {
+            const rangeStart = new Date(fetchProgress.overallBegin).getTime();
+            const rangeEnd = new Date(fetchProgress.overallEnd).getTime();
+            const totalRange = rangeEnd - rangeStart;
+            if (totalRange > 0) {
+              const si = fetchProgress.sourceIdx ?? 0;
+              const sc = fetchProgress.sourceCount;
+              // Within this source, how far through the time range are we?
+              const sourceFrac = fetchProgress.lastTimestamp
+                ? Math.max(0, Math.min(1, (new Date(fetchProgress.lastTimestamp).getTime() - rangeStart) / totalRange))
+                : 0;
+              // Overall: evenly weight each source
+              pct = Math.min(99, Math.round(((si + sourceFrac) / sc) * 100));
+            }
+          }
+          return (
+            <div className="border-t border-slate-100 bg-sky-50/50 shrink-0">
+              {/* Progress bar */}
+              {pct !== null && (
+                <div className="h-1 bg-slate-100">
+                  <div
+                    className="h-full bg-sky-500 transition-all duration-300"
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+              )}
+              <div className="flex items-center justify-between px-4 py-2">
+                <div className="flex items-center gap-2">
+                  {fetchProgress?.paused ? (
+                    <span className="inline-block w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+                  ) : (
+                    <svg className="w-3 h-3 animate-spin text-sky-600 shrink-0" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                  )}
+                  <span className="text-xs text-slate-600">
+                    {!fetchProgress
+                      ? "Starting search…"
+                      : fetchProgress.paused
+                        ? `Paused — ${fetchProgress.loaded.toLocaleString()} entries loaded`
+                        : [
+                          fetchProgress.source && `[${fetchProgress.source}]`,
+                          fetchProgress.window && fetchProgress.window,
+                          fetchProgress.loaded > 0 && `${fetchProgress.loaded.toLocaleString()} entries`,
+                          pct !== null && `${pct}%`,
+                        ].filter(Boolean).join(' · ')}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {fetchProgress?.paused ? (
+                    <button
+                      type="button"
+                      onClick={() => workerRef.current?.postMessage({ type: "fetch-resume" })}
+                      className="px-2.5 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 transition-colors"
+                    >
+                      Resume
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => workerRef.current?.postMessage({ type: "fetch-pause" })}
+                      className="px-2.5 py-1 text-xs font-medium bg-amber-100 text-amber-700 rounded hover:bg-amber-200 transition-colors"
+                    >
+                      Pause
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => workerRef.current?.postMessage({ type: "fetch-stop" })}
+                    className="px-2.5 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+                  >
+                    Stop
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Tail status indicator */}
+        {tailing && (
+          <div className="flex items-center justify-between px-4 py-2 border-t border-slate-200 bg-slate-50 shrink-0">
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+              <span className="text-xs text-slate-600 font-mono">
+                {loading
+                  ? `Fetching…`
+                  : lastUpdated
+                    ? `Updated ${lastUpdated.toLocaleTimeString()}`
+                    : `Starting…`}
+              </span>
+              {tailTotalReceived > 0 && (
+                <span className="text-xs text-slate-400 font-mono">
+                  · {tailTotalReceived.toLocaleString()} total
+                  {tailDropped > 0 && ` · ${entries.length.toLocaleString()} in buffer`}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  try {
+                    const lines = entries.map((e) => formatTerminalLine(e, tailSource)).join("\n");
+                    const blob = new Blob([lines], { type: "text/plain" });
+                    const url = URL.createObjectURL(blob);
+                    const a = Object.assign(document.createElement("a"), {
+                      href: url,
+                      download: `tail-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.log`,
+                    });
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  } catch { /* ignore */ }
+                }}
+                className="px-2.5 py-1 text-xs font-medium bg-slate-200 text-slate-700 rounded hover:bg-slate-300 transition-colors"
+              >
+                Export session
+              </button>
+              <button
+                type="button"
+                onClick={() => onConfigChange({ tailing: false })}
+                className="px-2.5 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+              >
+                Stop
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* ── Transaction drill-down modal ── */}
-      {drilldown && (
-        <TransactionDrilldown
-          transactionId={drilldown.txId}
-          env={env}
-          availableSources={[...LOG_SOURCES]}
-          onClose={() => setDrilldown(null)}
-        />
-      )}
-    </div>
+      {
+        drilldown && (
+          <TransactionDrilldown
+            transactionId={drilldown.txId}
+            env={env}
+            availableSources={[...LOG_SOURCES]}
+            onClose={() => setDrilldown(null)}
+          />
+        )
+      }
+    </div >
   );
 }
 
@@ -2433,6 +2713,8 @@ interface TabDef {
   id: number;
   label: string;
   config: TabConfig;
+  /** Timestamp of the anchor entry — context tabs highlight after API fetch */
+  anchorTimestamp?: string;
 }
 
 function makeDefaultConfig(environments: EnvWithLogApi[]): TabConfig {
@@ -2476,17 +2758,25 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
   ]);
   const [activeId, setActiveId] = useState(1);
   const [fullscreen, setFullscreen] = useState(false);
+  const [tzMode, setTzMode] = useState<TzMode>("local");
 
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LOGS_STATE_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw) as { tabs?: TabDef[]; activeId?: number };
+        const parsed = JSON.parse(raw) as { tabs?: TabDef[]; activeId?: number; tzMode?: TzMode };
+        if (parsed.tzMode && TZ_OPTIONS.some((o) => o.value === parsed.tzMode)) {
+          setTzMode(parsed.tzMode);
+        }
         if (Array.isArray(parsed.tabs) && parsed.tabs.length > 0) {
-          const restored = parsed.tabs.map((t) => ({
-            ...t,
-            config: sanitizeConfigForPersist({ ...makeDefaultConfig(environments), ...t.config }),
-          }));
+          const validEnvNames = new Set(environments.map((e) => e.name));
+          const defaultCfg = makeDefaultConfig(environments);
+          const restored = parsed.tabs.map((t) => {
+            const merged = { ...defaultCfg, ...t.config };
+            // Reset env if the stored value no longer exists
+            if (!validEnvNames.has(merged.env)) merged.env = defaultCfg.env;
+            return { ...t, config: sanitizeConfigForPersist(merged) };
+          });
           setTabs(restored);
           const maxId = Math.max(...restored.map((t) => t.id));
           _nextTabId = maxId + 1;
@@ -2505,12 +2795,13 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
     if (!mounted) return;
     try {
       const payload = {
-        tabs: tabs.map((t) => ({ ...t, config: sanitizeConfigForPersist(t.config) })),
+        tabs: tabs.map((t) => ({ id: t.id, label: t.label, config: sanitizeConfigForPersist(t.config) })),
         activeId,
+        tzMode,
       };
       localStorage.setItem(LOGS_STATE_KEY, JSON.stringify(payload));
     } catch { /* ignore */ }
-  }, [mounted, tabs, activeId]);
+  }, [mounted, tabs, activeId, tzMode]);
 
   useEffect(() => {
     if (!fullscreen) return;
@@ -2547,8 +2838,8 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
   function openContextTab(timestamp: string, source: string) {
     const id = _nextTabId++;
     const ts = new Date(timestamp).getTime();
-    const begin = toDatetimeLocal(new Date(ts - 60000).toISOString());
-    const end   = toDatetimeLocal(new Date(ts + 60000).toISOString());
+    const begin = toDatetimeLocal(new Date(ts - 60000).toISOString(), tzMode);
+    const end = toDatetimeLocal(new Date(ts + 60000).toISOString(), tzMode);
     const isIDM = source.startsWith("idm-");
     const contextSources = isIDM ? ["idm-everything"] : ["am-everything"];
     const shortTime = new Date(timestamp).toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -2571,6 +2862,30 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
     setActiveId(id);
   }
 
+  function openEntryContextTab(anchorTs: string, beginTs: string, endTs: string) {
+    const id = _nextTabId++;
+    const tabEnv = tabs.find((t) => t.id === activeId)?.config.env ?? "";
+    const tabSources = tabs.find((t) => t.id === activeId)?.config.selectedSources ?? ["am-everything", "idm-everything"];
+    const shortTime = new Date(anchorTs).toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const label = `±5s @${shortTime} (${tabEnv})`;
+    const begin = toDatetimeLocal(beginTs, tzMode);
+    const end = toDatetimeLocal(endTs, tzMode);
+    const baseConfig = makeDefaultConfig(environments);
+    const config: TabConfig = {
+      ...baseConfig,
+      env: tabEnv || baseConfig.env,
+      selectedSources: tabSources,
+      mode: "search",
+      preset: "custom",
+      customBegin: begin,
+      customEnd: end,
+      searchSeq: 1,
+      searching: false,
+    };
+    setTabs((prev) => [...prev, { id, label, config, anchorTimestamp: anchorTs }]);
+    setActiveId(id);
+  }
+
   function closeTab(id: number) {
     setTabs((prev) => {
       const next = prev.filter((t) => t.id !== id);
@@ -2579,6 +2894,7 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
         const fallback = prev[idx + 1] ?? prev[idx - 1];
         if (fallback) setActiveId(fallback.id);
       }
+      configUpdatersRef.current.delete(id);
       return next;
     });
   }
@@ -2587,6 +2903,25 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
     setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, label } : t)));
   }
 
+  // Stable per-tab config updaters — avoids creating new closures every render
+  const configUpdatersRef = useRef(new Map<number, (updates: Partial<TabConfig>) => void>());
+  const getConfigUpdater = useCallback((tabId: number) => {
+    let fn = configUpdatersRef.current.get(tabId);
+    if (!fn) {
+      fn = (updates: Partial<TabConfig>) =>
+        setTabs((prev) =>
+          prev.map((t) =>
+            t.id === tabId ? { ...t, config: { ...t.config, ...updates } } : t
+          )
+        );
+      configUpdatersRef.current.set(tabId, fn);
+    }
+    return fn;
+  }, []);
+
+  // Stable tabs summary for child LogsExplorer tab-switcher UI
+  const tabsSummary = useMemo(() => tabs.map((t) => ({ id: t.id, label: t.label })), [tabs]);
+
   const selectedEnv = environments.find((e) => e.name === cfg?.env);
 
   if (!mounted) {
@@ -2594,173 +2929,184 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
   }
 
   return (
-    <div className="space-y-0">
-      {/* ── Controls (above tabs) ── */}
-      {cfg && (
-        <div className="card-padded space-y-4 rounded-b-none border-b-0">
-          {/* Row 1: env + source + level */}
-          <div className="flex flex-wrap items-end gap-4">
-            <div className="space-y-1">
-              <label className="label-xs">Environment</label>
-              <select
-                value={cfg.env}
-                onChange={(e) => updateActiveConfig({ env: e.target.value, tailing: false })}
-                disabled={cfg.loading || cfg.tailing}
-                className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-50 bg-white"
-              >
-                {environments.map((e) => (
-                  <option key={e.name} value={e.name} disabled={!e.hasLogApi}>
-                    {e.label}{!e.hasLogApi ? " (no credentials)" : ""}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="space-y-1">
-              <label className="label-xs">Log Source</label>
-              <div className="flex gap-3 py-1">
-                {LOG_SOURCES.map((s) => (
-                  <label key={s} className={cn("flex items-center gap-1.5 text-sm cursor-pointer select-none", (cfg.loading || cfg.tailing) ? "opacity-50 cursor-not-allowed" : "")}>
-                    <input
-                      type="checkbox"
-                      checked={cfg.selectedSources.includes(s)}
-                      disabled={cfg.loading || cfg.tailing}
-                      onChange={(e) => {
-                        const next = e.target.checked
-                          ? [...cfg.selectedSources, s]
-                          : cfg.selectedSources.filter((x) => x !== s);
-                        updateActiveConfig({ selectedSources: next, tailing: false });
-                      }}
-                      className="rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-                    />
-                    <span className="font-mono text-xs">{s}</span>
-                  </label>
-                ))}
+    <TzContext.Provider value={tzMode}>
+      <div className="space-y-0">
+        {/* ── Controls (above tabs) ── */}
+        {cfg && (
+          <div className="card-padded space-y-4 rounded-b-none border-b-0">
+            {/* Row 1: env + source + level */}
+            <div className="flex flex-wrap items-end gap-4">
+              <div className="space-y-1">
+                <label className="label-xs">Environment</label>
+                <select
+                  value={cfg.env}
+                  onChange={(e) => updateActiveConfig({ env: e.target.value, tailing: false })}
+                  disabled={cfg.loading || cfg.tailing}
+                  className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-50 bg-white"
+                >
+                  {environments.map((e) => (
+                    <option key={e.name} value={e.name} disabled={!e.hasLogApi}>
+                      {e.label}{!e.hasLogApi ? " (no credentials)" : ""}
+                    </option>
+                  ))}
+                </select>
               </div>
-            </div>
 
-            <div className="space-y-1">
-              <label className="label-xs">Min Level</label>
-              <select
-                value={cfg.levelFilter}
-                onChange={(e) => updateActiveConfig({ levelFilter: e.target.value })}
-                className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 bg-white"
-              >
-                {LEVEL_FILTERS.map((l) => (
-                  <option key={l.value} value={l.value}>{l.label}</option>
-                ))}
-              </select>
-            </div>
-
-            {selectedEnv && (
-              <div className="pb-0.5">
-                <EnvironmentBadge env={selectedEnv} />
+              <div className="space-y-1">
+                <label className="label-xs">Log Source</label>
+                <div className="flex gap-3 py-1">
+                  {LOG_SOURCES.map((s) => (
+                    <label key={s} className={cn("flex items-center gap-1.5 text-sm cursor-pointer select-none", (cfg.loading || cfg.tailing) ? "opacity-50 cursor-not-allowed" : "")}>
+                      <input
+                        type="checkbox"
+                        checked={cfg.selectedSources.includes(s)}
+                        disabled={cfg.loading || cfg.tailing}
+                        onChange={(e) => {
+                          const next = e.target.checked
+                            ? [...cfg.selectedSources, s]
+                            : cfg.selectedSources.filter((x) => x !== s);
+                          updateActiveConfig({ selectedSources: next, tailing: false });
+                        }}
+                        className="rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                      />
+                      <span className="font-mono text-xs">{s}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
-            )}
-          </div>
 
-          {/* Row 2: transaction ID search */}
-          <div className="flex items-center gap-2">
-            <label className="label-xs shrink-0">Transaction ID</label>
-            <input
-              type="text"
-              value={txInput}
-              onChange={(e) => setTxInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") submitTxSearch(); }}
-              placeholder="Paste a transaction ID to trace…"
-              className="px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 font-mono w-96"
-            />
-            <button
-              type="button"
-              onClick={submitTxSearch}
-              disabled={!txInput.trim() || !cfg?.env || cfg?.loading}
-              className="btn-primary disabled:opacity-40 flex items-center gap-1.5"
-            >
-              {cfg?.loading && txSearch ? (
-                <>
-                  <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  Tracing…
-                </>
-              ) : (
-                "Trace"
+              <div className="space-y-1">
+                <label className="label-xs">Min Level</label>
+                <select
+                  value={cfg.levelFilter}
+                  onChange={(e) => updateActiveConfig({ levelFilter: e.target.value })}
+                  className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 bg-white"
+                >
+                  {LEVEL_FILTERS.map((l) => (
+                    <option key={l.value} value={l.value}>{l.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="label-xs">Timezone</label>
+                <select
+                  value={tzMode}
+                  onChange={(e) => setTzMode(e.target.value as TzMode)}
+                  className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 bg-white"
+                >
+                  {TZ_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              {selectedEnv && (
+                <div className="pb-0.5">
+                  <EnvironmentBadge env={selectedEnv} />
+                </div>
               )}
-            </button>
-            {txInput && (
-              <button type="button" onClick={() => { setTxInput(""); setTxSearch(undefined); }} className="text-xs text-slate-400 hover:text-slate-600 transition-colors">
-                Clear
-              </button>
-            )}
-          </div>
-        </div>
-      )}
+            </div>
 
-      {/* ── Tab bar ── */}
-      <div className="flex items-end gap-0 border-b border-slate-200 bg-white border-x border-slate-200">
-        {tabs.map((tab) => (
-          <div
-            key={tab.id}
-            className={cn(
-              "flex items-center gap-1.5 px-3 py-2 text-xs border-b-2 cursor-pointer select-none transition-colors",
-              tab.id === activeId
-                ? "border-sky-600 text-slate-900 font-medium bg-white"
-                : "border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50"
-            )}
-          >
-            <span onClick={() => setActiveId(tab.id)} className="max-w-[160px] truncate">
-              {tab.label}
-            </span>
-            {tabs.length > 1 && (
+            {/* Row 2: transaction ID search */}
+            <div className="flex items-center gap-2">
+              <label className="label-xs shrink-0">Transaction ID</label>
+              <input
+                type="text"
+                value={txInput}
+                onChange={(e) => setTxInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") submitTxSearch(); }}
+                placeholder="Paste a transaction ID to trace…"
+                className="px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 font-mono w-96"
+              />
               <button
                 type="button"
-                onClick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
-                className="text-slate-300 hover:text-slate-500 leading-none text-sm ml-0.5"
-                title="Close tab"
+                onClick={submitTxSearch}
+                disabled={!txInput.trim() || !cfg?.env || cfg?.loading}
+                className="btn-primary disabled:opacity-40 flex items-center gap-1.5"
               >
-                ×
+                {cfg?.loading && txSearch ? (
+                  <>
+                    <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Tracing…
+                  </>
+                ) : (
+                  "Trace"
+                )}
               </button>
-            )}
+              {txInput && (
+                <button type="button" onClick={() => { setTxInput(""); setTxSearch(undefined); }} className="text-xs text-slate-400 hover:text-slate-600 transition-colors">
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Tab bar ── */}
+        <div className="flex items-end gap-0 border-b border-slate-200 bg-white border-x border-slate-200">
+          {tabs.map((tab) => (
+            <div
+              key={tab.id}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-2 text-xs border-b-2 cursor-pointer select-none transition-colors",
+                tab.id === activeId
+                  ? "border-sky-600 text-slate-900 font-medium bg-white"
+                  : "border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50"
+              )}
+            >
+              <span onClick={() => setActiveId(tab.id)} className="max-w-[160px] truncate">
+                {tab.label}
+              </span>
+              {tabs.length > 1 && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
+                  className="text-slate-300 hover:text-slate-500 leading-none text-sm ml-0.5"
+                  title="Close tab"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={addTab}
+            className="px-3 py-2 text-slate-400 hover:text-slate-700 hover:bg-slate-50 text-base leading-none transition-colors"
+            title="New tab"
+          >
+            +
+          </button>
+        </div>
+
+        {/* ── Tab panels ── */}
+        {tabs.map((tab) => (
+          <div key={tab.id} className={tab.id === activeId ? "" : "hidden"}>
+            <div className="pt-4">
+              <LogsExplorer
+                environments={environments}
+                config={tab.config}
+                onConfigChange={getConfigUpdater(tab.id)}
+                isActive={tab.id === activeId}
+                onLabelChange={(label) => updateLabel(tab.id, label)}
+                tabs={tabsSummary}
+                activeTabId={activeId}
+                onTabSwitch={setActiveId}
+                fullscreen={fullscreen}
+                onFullscreenChange={setFullscreen}
+                txSearchId={tab.id === activeId ? txSearch : undefined}
+                onOpenContextTab={openContextTab}
+                onOpenEntryContextTab={openEntryContextTab}
+                anchorTimestamp={tab.anchorTimestamp}
+              />
+            </div>
           </div>
         ))}
-        <button
-          type="button"
-          onClick={addTab}
-          className="px-3 py-2 text-slate-400 hover:text-slate-700 hover:bg-slate-50 text-base leading-none transition-colors"
-          title="New tab"
-        >
-          +
-        </button>
       </div>
-
-      {/* ── Tab panels ── */}
-      {tabs.map((tab) => (
-        <div key={tab.id} className={tab.id === activeId ? "" : "hidden"}>
-          <div className="pt-4">
-            <LogsExplorer
-              environments={environments}
-              config={tab.config}
-              onConfigChange={(updates) =>
-                setTabs((prev) =>
-                  prev.map((t) =>
-                    t.id === tab.id ? { ...t, config: { ...t.config, ...updates } } : t
-                  )
-                )
-              }
-              isActive={tab.id === activeId}
-              onLabelChange={(label) => updateLabel(tab.id, label)}
-              tabs={tabs.map((t) => ({ id: t.id, label: t.label }))}
-              activeTabId={activeId}
-              onTabSwitch={setActiveId}
-              fullscreen={fullscreen}
-              onFullscreenChange={setFullscreen}
-              txSearchId={tab.id === activeId ? txSearch : undefined}
-              onOpenContextTab={openContextTab}
-            />
-          </div>
-        </div>
-      ))}
-    </div>
+    </TzContext.Provider>
   );
 }

@@ -1611,6 +1611,7 @@ function JourneyNode({ node, depth, forceOpen, forceSeq, showScripts, showNodes,
           sourceEnv={sourceEnv}
           targetEnv={targetEnv}
           files={files}
+          journeyTree={[node]}
           ancestorPath={ancestorPath}
           initialFocusNodeId={graphInitialFocusNodeId ?? undefined}
           onClose={() => { setGraphOpen(false); setGraphInitialFocusNodeId(null); }}

@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { ENVIRONMENTS_DIR } from "../paths";
+
 export type Watchlist = Record<string, string[]>;
 
 export interface WatchlistOpts {
@@ -10,8 +12,8 @@ export interface WatchlistOpts {
 const FILE = "rcs-watchlist.json";
 
 function filePath(envName: string, opts?: WatchlistOpts): string {
-  const root = opts?.rootDir ?? process.cwd();
-  return path.join(root, "environments", envName, FILE);
+  const root = opts?.rootDir ?? ENVIRONMENTS_DIR;
+  return path.join(root, envName, FILE);
 }
 
 export function readWatchlist(envName: string, opts?: WatchlistOpts): Watchlist {
