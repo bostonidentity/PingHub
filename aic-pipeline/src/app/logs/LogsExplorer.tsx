@@ -1246,6 +1246,7 @@ export function LogsExplorer({
   // ── Context window (±N entries around a user-selected anchor) ──
   const [contextAnchor, setContextAnchor] = useState<number | null>(null);
   const [contextRadius, setContextRadius] = useState(1000);
+  const [contextDismissed, setContextDismissed] = useState(false);
 
   // ── Transaction drill-down (from clicking inline txId in table) ──
   const [drilldown, setDrilldown] = useState<{ txId: string } | null>(null);
@@ -1403,25 +1404,6 @@ export function LogsExplorer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchProgress?.done]);
 
-  // ── Auto-set context anchor in context tabs after fetch completes ──
-  const pendingAnchorTs = useRef<string | undefined>(anchorTimestamp);
-  useEffect(() => {
-    if (!pendingAnchorTs.current || !fetchProgress?.done || entries.length === 0) return;
-    const targetTs = new Date(pendingAnchorTs.current).getTime();
-    let bestIdx = 0;
-    let bestDiff = Infinity;
-    for (let i = 0; i < entries.length; i++) {
-      const diff = Math.abs(new Date(entries[i].timestamp).getTime() - targetTs);
-      if (diff < bestDiff) {
-        bestDiff = diff;
-        bestIdx = i;
-      }
-    }
-    setContextAnchor(bestIdx);
-    pendingAnchorTs.current = undefined;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchProgress?.done, entries.length]);
-
   // ── Auto-scroll when tailing ──
   useEffect(() => {
     if (autoScroll && tailing && entries.length > 0 && isActive && scrollAtBottomRef.current) {
@@ -1507,6 +1489,7 @@ export function LogsExplorer({
     setExpandedIdx(null);
     setFetchProgress(null);
     setContextAnchor(null);
+    setContextDismissed(false);
     onConfigChange({ searching: true });
     workerRef.current?.postMessage({ type: "fetch", env, sources: selectedSources, beginTime, endTime, queryFilter });
     return doCleanup;
@@ -1569,9 +1552,23 @@ export function LogsExplorer({
   }, [rawFilteredWithIdx, dedupe]);
 
   // ── Context window — slice filteredWithIdx to ±N around anchor ──
-  const contextActive = contextAnchor !== null;
-  const cxStart = contextActive ? Math.max(0, contextAnchor - contextRadius) : 0;
-  const cxEnd = contextActive ? Math.min(filteredWithIdx.length, contextAnchor + contextRadius + 1) : filteredWithIdx.length;
+  // Synchronous anchor computation for context tabs — runs during render so the
+  // slice is always consistent with entries (avoids startTransition timing bugs).
+  const computedAnchor = useMemo(() => {
+    if (!anchorTimestamp || contextDismissed || entries.length === 0) return null;
+    const targetTs = new Date(anchorTimestamp).getTime();
+    let bestIdx = 0;
+    let bestDiff = Infinity;
+    for (let i = 0; i < entries.length; i++) {
+      const diff = Math.abs(new Date(entries[i].timestamp).getTime() - targetTs);
+      if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+    }
+    return bestIdx;
+  }, [anchorTimestamp, contextDismissed, entries]);
+  const effectiveAnchor = computedAnchor ?? contextAnchor;
+  const contextActive = effectiveAnchor !== null;
+  const cxStart = contextActive ? Math.max(0, effectiveAnchor - contextRadius) : 0;
+  const cxEnd = contextActive ? Math.min(filteredWithIdx.length, effectiveAnchor + contextRadius + 1) : filteredWithIdx.length;
   const displayFilteredWithIdx = useMemo(() =>
     contextActive ? filteredWithIdx.slice(cxStart, cxEnd) : filteredWithIdx,
     [filteredWithIdx, contextActive, cxStart, cxEnd]);
@@ -1586,7 +1583,7 @@ export function LogsExplorer({
     }
     return remapped;
   }, [contextActive, cxStart, dupeCounts, displayFilteredWithIdx.length]);
-  const contextAnchorDisplay = contextActive ? contextAnchor - cxStart : null;
+  const contextAnchorDisplay = contextActive ? effectiveAnchor - cxStart : null;
 
   const filtered = useMemo(() => displayFilteredWithIdx.map(({ e }) => e), [displayFilteredWithIdx]);
 
@@ -2285,7 +2282,7 @@ export function LogsExplorer({
                 <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 3.75H6A2.25 2.25 0 003.75 6v1.5M16.5 3.75H18A2.25 2.25 0 0120.25 6v1.5M16.5 20.25H18A2.25 2.25 0 0020.25 18v-1.5M7.5 20.25H6A2.25 2.25 0 013.75 18v-1.5" />
               </svg>
               <span className="text-xs text-violet-700 font-medium">
-                Anchor: entry #{contextAnchor! + 1} of {filtered.length.toLocaleString()}
+                Anchor: entry #{effectiveAnchor! + 1} of {filtered.length.toLocaleString()}
               </span>
               <span className="text-xs text-violet-500">
                 Double-click an entry to open a new context tab · Click Search to re-fetch from API
@@ -2293,7 +2290,7 @@ export function LogsExplorer({
             </div>
             <button
               type="button"
-              onClick={() => setContextAnchor(null)}
+              onClick={() => { setContextAnchor(null); setContextDismissed(true); }}
               className="px-2 py-0.5 text-xs font-medium text-violet-700 bg-violet-100 rounded hover:bg-violet-200 transition-colors"
               title="Clear anchor highlight"
             >✕ Clear</button>
@@ -2327,7 +2324,9 @@ export function LogsExplorer({
           {viewMode === "terminal" ? (
             !fetched && !tailing ? (
               <div className="flex items-center justify-center h-full min-h-[160px]">
-                <p className="text-sm text-slate-400 font-mono">Select sources and start tailing or run a search</p>
+                <p className="text-sm text-slate-400 font-mono">
+                  {anchorTimestamp ? "Loading context…" : "Select sources and start tailing or run a search"}
+                </p>
               </div>
             ) : deferredIsActive && filtered.length === 0 && fetched && !searching ? (
               <div className="flex items-center justify-center h-full min-h-[160px]">
