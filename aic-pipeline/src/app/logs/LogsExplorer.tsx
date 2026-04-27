@@ -1361,8 +1361,11 @@ export function LogsExplorer({
   const [drilldown, setDrilldown] = useState<{ txId: string } | null>(null);
 
   // ── Transaction search from control section → load into main table ──
+  const prevTxSeq = useRef(0);
   useEffect(() => {
     if (!txSearchId || !env) return;
+    if (txSearchId.seq <= prevTxSeq.current) return;
+    prevTxSeq.current = txSearchId.seq;
 
     // Stop any active tail
     onConfigChange({ tailing: false });
@@ -2891,6 +2894,7 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
         const fallback = prev[idx + 1] ?? prev[idx - 1];
         if (fallback) setActiveId(fallback.id);
       }
+      configUpdatersRef.current.delete(id);
       return next;
     });
   }
@@ -2898,6 +2902,25 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
   function updateLabel(id: number, label: string) {
     setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, label } : t)));
   }
+
+  // Stable per-tab config updaters — avoids creating new closures every render
+  const configUpdatersRef = useRef(new Map<number, (updates: Partial<TabConfig>) => void>());
+  const getConfigUpdater = useCallback((tabId: number) => {
+    let fn = configUpdatersRef.current.get(tabId);
+    if (!fn) {
+      fn = (updates: Partial<TabConfig>) =>
+        setTabs((prev) =>
+          prev.map((t) =>
+            t.id === tabId ? { ...t, config: { ...t.config, ...updates } } : t
+          )
+        );
+      configUpdatersRef.current.set(tabId, fn);
+    }
+    return fn;
+  }, []);
+
+  // Stable tabs summary for child LogsExplorer tab-switcher UI
+  const tabsSummary = useMemo(() => tabs.map((t) => ({ id: t.id, label: t.label })), [tabs]);
 
   const selectedEnv = environments.find((e) => e.name === cfg?.env);
 
@@ -3067,16 +3090,10 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
               <LogsExplorer
                 environments={environments}
                 config={tab.config}
-                onConfigChange={(updates) =>
-                  setTabs((prev) =>
-                    prev.map((t) =>
-                      t.id === tab.id ? { ...t, config: { ...t.config, ...updates } } : t
-                    )
-                  )
-                }
+                onConfigChange={getConfigUpdater(tab.id)}
                 isActive={tab.id === activeId}
                 onLabelChange={(label) => updateLabel(tab.id, label)}
-                tabs={tabs.map((t) => ({ id: t.id, label: t.label }))}
+                tabs={tabsSummary}
                 activeTabId={activeId}
                 onTabSwitch={setActiveId}
                 fullscreen={fullscreen}
