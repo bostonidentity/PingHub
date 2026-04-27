@@ -546,6 +546,28 @@ function TailTerminal({
   // back on and yank the user off a match they're inspecting.
   const lastProgrammaticScrollRef = useRef(0);
 
+  // Wrap mode: track which rows are manually expanded (click-to-expand)
+  const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
+  const toggleRow = useCallback((idx: number) => {
+    setExpandedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  }, []);
+
+  // Auto-expand active match row, auto-collapse previous
+  const prevActiveRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (prevActiveRef.current != null && prevActiveRef.current !== activeMatchIndex) {
+      setExpandedRows((prev) => { const next = new Set(prev); next.delete(prevActiveRef.current!); return next; });
+    }
+    if (activeMatchIndex != null && activeMatchIndex >= 0) {
+      setExpandedRows((prev) => { const next = new Set(prev); next.add(activeMatchIndex); return next; });
+    }
+    prevActiveRef.current = activeMatchIndex ?? null;
+  }, [activeMatchIndex]);
+
   // Track container height for virtual list calculations
   useEffect(() => {
     const el = outerRef.current;
@@ -675,6 +697,7 @@ function TailTerminal({
               const count = dupeCounts?.get(vRow.index) ?? 1;
               const isActive = activeMatchIndex === vRow.index;
               const isCtxAnchor = contextAnchorIdx === vRow.index;
+              const isRowExpanded = expandedRows.has(vRow.index);
               return (
                 // Outer div: stable key + measureElement for virtualizer
                 <div
@@ -686,12 +709,14 @@ function TailTerminal({
                   {/* Inner div: re-keyed on flashKey so CSS animation re-fires on each navigation */}
                   <div
                     key={isActive ? flashKey : undefined}
+                    onClick={() => toggleRow(vRow.index)}
                     onDoubleClick={() => onEntryDoubleClick?.(vRow.index)}
                     className={cn(
-                      "px-3 py-px font-mono text-[11px] whitespace-pre-wrap break-all select-text leading-snug border-b border-slate-100",
+                      "px-3 py-px font-mono text-[11px] whitespace-pre-wrap break-all select-text leading-snug border-b border-slate-100 cursor-pointer",
                       terminalLevelClass(level),
                       isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
                       isCtxAnchor && !isActive && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
+                      !isRowExpanded && "max-h-[3.6em] overflow-hidden",
                     )}
                   >
                     {highlightLine(line, isActive)}
@@ -1224,6 +1249,9 @@ export function LogsExplorer({
   // Tracks whether we've already jumped to the first keyword/search match for the current filter.
   // While true, page is not auto-advanced so the user can browse.
   const firstMatchJumpedRef = useRef(false);
+
+  // ── Copy to clipboard ──
+  const [copied, setCopied] = useState(false);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   // Tail auto-scroll only kicks in when the user is already pinned to the
@@ -2227,6 +2255,31 @@ export function LogsExplorer({
                   className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
                 >
                   Export
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    let text: string;
+                    if (viewMode === "json") {
+                      text = JSON.stringify(filtered, null, 2);
+                    } else if (viewMode === "table") {
+                      text = filtered.map((e) => {
+                        const src = (e.source ?? selectedSources[0] ?? "").padEnd(15);
+                        const lvl = getLevel(e).padEnd(5);
+                        const msg = getMessage(e);
+                        return `${e.timestamp}  ${src}  ${lvl}  ${msg}`;
+                      }).join("\n");
+                    } else {
+                      text = filtered.map((e) => formatTerminalLine(e, tailSource)).join("\n");
+                    }
+                    navigator.clipboard.writeText(text).then(() => {
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 1500);
+                    }).catch(() => { });
+                  }}
+                  className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
+                >
+                  {copied ? "Copied!" : "Copy"}
                 </button>
                 <button
                   type="button"
