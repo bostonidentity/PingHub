@@ -1269,7 +1269,7 @@ export function LogsExplorer({
   const workerRef = useRef<Worker | null>(null);
   const [tailTotalReceived, setTailTotalReceived] = useState(0);
 
-  const [fetchProgress, setFetchProgress] = useState<{ loaded: number; page: number; done: boolean; paused: boolean; source?: string; window?: string; sourceIdx?: number; sourceCount?: number; chunkIdx?: number; chunkCount?: number } | null>(null);
+  const [fetchProgress, setFetchProgress] = useState<{ loaded: number; page: number; done: boolean; paused: boolean; source?: string; window?: string; sourceIdx?: number; sourceCount?: number; lastTimestamp?: string; overallBegin?: string; overallEnd?: string } | null>(null);
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -1305,7 +1305,7 @@ export function LogsExplorer({
       } else if (msg.type === "status") {
         onConfigChange({ loading: msg.loading });
       } else if (msg.type === "progress") {
-        setFetchProgress({ loaded: msg.loaded, page: msg.page, done: msg.done, paused: msg.paused, source: msg.source, window: msg.window, sourceIdx: msg.sourceIdx, sourceCount: msg.sourceCount, chunkIdx: msg.chunkIdx, chunkCount: msg.chunkCount });
+        setFetchProgress({ loaded: msg.loaded, page: msg.page, done: msg.done, paused: msg.paused, source: msg.source, window: msg.window, sourceIdx: msg.sourceIdx, sourceCount: msg.sourceCount, lastTimestamp: msg.lastTimestamp, overallBegin: msg.overallBegin, overallEnd: msg.overallEnd });
         onConfigChange({ searching: !msg.done });
       } else if (msg.type === "error") {
         if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
@@ -2355,137 +2355,153 @@ export function LogsExplorer({
         )}
 
         {/* Search progress indicator */}
-        {(searching || (fetchProgress && !fetchProgress.done)) && (
-          <div className="border-t border-slate-100 bg-sky-50/50 shrink-0">
-            {/* Progress bar */}
-            {fetchProgress && fetchProgress.sourceCount && fetchProgress.chunkCount && (
-              <div className="h-1 bg-slate-100">
-                <div
-                  className="h-full bg-sky-500 transition-all duration-300"
-                  style={{
-                    width: `${Math.min(100, Math.round(
-                      ((fetchProgress.sourceIdx ?? 0) * fetchProgress.chunkCount + (fetchProgress.chunkIdx ?? 0) + 1) /
-                      (fetchProgress.sourceCount * fetchProgress.chunkCount) * 100
-                    ))}%`,
-                  }}
-                />
-              </div>
-            )}
-            <div className="flex items-center justify-between px-4 py-2">
-              <div className="flex items-center gap-2">
-                {fetchProgress?.paused ? (
-                  <span className="inline-block w-2 h-2 rounded-full bg-amber-400 shrink-0" />
-                ) : (
-                  <svg className="w-3 h-3 animate-spin text-sky-600 shrink-0" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                )}
-                <span className="text-xs text-slate-600">
-                  {!fetchProgress
-                    ? "Starting search…"
-                    : fetchProgress.paused
-                      ? `Paused — ${fetchProgress.loaded.toLocaleString()} entries loaded`
-                      : [
-                        fetchProgress.source && `[${fetchProgress.source}]`,
-                        fetchProgress.window && fetchProgress.window,
-                        fetchProgress.loaded > 0 && `${fetchProgress.loaded.toLocaleString()} entries`,
-                        fetchProgress.sourceCount && fetchProgress.chunkCount &&
-                        `${Math.round(((fetchProgress.sourceIdx ?? 0) * fetchProgress.chunkCount + (fetchProgress.chunkIdx ?? 0) + 1) / (fetchProgress.sourceCount * fetchProgress.chunkCount) * 100)}%`,
-                      ].filter(Boolean).join(' · ')}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                {fetchProgress?.paused ? (
-                  <button
-                    type="button"
-                    onClick={() => workerRef.current?.postMessage({ type: "fetch-resume" })}
-                    className="px-2.5 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 transition-colors"
-                  >
-                    Resume
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => workerRef.current?.postMessage({ type: "fetch-pause" })}
-                    className="px-2.5 py-1 text-xs font-medium bg-amber-100 text-amber-700 rounded hover:bg-amber-200 transition-colors"
-                  >
-                    Pause
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => workerRef.current?.postMessage({ type: "fetch-stop" })}
-                  className="px-2.5 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
-                >
-                  Stop
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Tail status indicator */}
-        {tailing && (
-          <div className="flex items-center justify-between px-4 py-2 border-t border-slate-200 bg-slate-50 shrink-0">
-            <div className="flex items-center gap-2">
-              <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-              <span className="text-xs text-slate-600 font-mono">
-                {loading
-                  ? `Fetching…`
-                  : lastUpdated
-                    ? `Updated ${lastUpdated.toLocaleTimeString()}`
-                    : `Starting…`}
-              </span>
-              {tailTotalReceived > 0 && (
-                <span className="text-xs text-slate-400 font-mono">
-                  · {tailTotalReceived.toLocaleString()} total
-                  {tailDropped > 0 && ` · ${entries.length.toLocaleString()} in buffer`}
-                </span>
+        {(searching || (fetchProgress && !fetchProgress.done)) && (() => {
+          // Compute time-based progress percentage across sources
+          let pct: number | null = null;
+          if (fetchProgress && fetchProgress.overallBegin && fetchProgress.overallEnd && fetchProgress.sourceCount) {
+            const rangeStart = new Date(fetchProgress.overallBegin).getTime();
+            const rangeEnd = new Date(fetchProgress.overallEnd).getTime();
+            const totalRange = rangeEnd - rangeStart;
+            if (totalRange > 0) {
+              const si = fetchProgress.sourceIdx ?? 0;
+              const sc = fetchProgress.sourceCount;
+              // Within this source, how far through the time range are we?
+              const sourceFrac = fetchProgress.lastTimestamp
+                ? Math.max(0, Math.min(1, (new Date(fetchProgress.lastTimestamp).getTime() - rangeStart) / totalRange))
+                : 0;
+              // Overall: evenly weight each source
+              pct = Math.min(99, Math.round(((si + sourceFrac) / sc) * 100));
+            }
+          }
+          return (
+            <div className="border-t border-slate-100 bg-sky-50/50 shrink-0">
+              {/* Progress bar */}
+              {pct !== null && (
+                <div className="h-1 bg-slate-100">
+                  <div
+                    className="h-full bg-sky-500 transition-all duration-300"
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
               )}
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  try {
-                    const lines = entries.map((e) => formatTerminalLine(e, tailSource)).join("\n");
-                    const blob = new Blob([lines], { type: "text/plain" });
-                    const url = URL.createObjectURL(blob);
-                    const a = Object.assign(document.createElement("a"), {
-                      href: url,
-                      download: `tail-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.log`,
-                    });
-                    a.click();
-                    URL.revokeObjectURL(url);
-                  } catch { /* ignore */ }
-                }}
-                className="px-2.5 py-1 text-xs font-medium bg-slate-200 text-slate-700 rounded hover:bg-slate-300 transition-colors"
-              >
-                Export session
-              </button>
-              <button
-                type="button"
-                onClick={() => onConfigChange({ tailing: false })}
-                className="px-2.5 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
-              >
-                Stop
-              </button>
+              <div className="flex items-center justify-between px-4 py-2">
+                <div className="flex items-center gap-2">
+                  {fetchProgress?.paused ? (
+                    <span className="inline-block w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+                  ) : (
+                    <svg className="w-3 h-3 animate-spin text-sky-600 shrink-0" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                  )}
+                  <span className="text-xs text-slate-600">
+                    {!fetchProgress
+                      ? "Starting search…"
+                      : fetchProgress.paused
+                        ? `Paused — ${fetchProgress.loaded.toLocaleString()} entries loaded`
+                        : [
+                          fetchProgress.source && `[${fetchProgress.source}]`,
+                          fetchProgress.window && fetchProgress.window,
+                          fetchProgress.loaded > 0 && `${fetchProgress.loaded.toLocaleString()} entries`,
+                          pct !== null && `${pct}%`,
+                        ].filter(Boolean).join(' · ')}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {fetchProgress?.paused ? (
+                    <button
+                      type="button"
+                      onClick={() => workerRef.current?.postMessage({ type: "fetch-resume" })}
+                      className="px-2.5 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 transition-colors"
+                    >
+                      Resume
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => workerRef.current?.postMessage({ type: "fetch-pause" })}
+                      className="px-2.5 py-1 text-xs font-medium bg-amber-100 text-amber-700 rounded hover:bg-amber-200 transition-colors"
+                    >
+                      Pause
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => workerRef.current?.postMessage({ type: "fetch-stop" })}
+                    className="px-2.5 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+                  >
+                    Stop
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
-        )}
-      </div>
+      );
+        })()}
 
-      {/* ── Transaction drill-down modal ── */}
-      {drilldown && (
-        <TransactionDrilldown
-          transactionId={drilldown.txId}
-          env={env}
-          availableSources={[...LOG_SOURCES]}
-          onClose={() => setDrilldown(null)}
-        />
+      {/* Tail status indicator */}
+      {tailing && (
+        <div className="flex items-center justify-between px-4 py-2 border-t border-slate-200 bg-slate-50 shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+            <span className="text-xs text-slate-600 font-mono">
+              {loading
+                ? `Fetching…`
+                : lastUpdated
+                  ? `Updated ${lastUpdated.toLocaleTimeString()}`
+                  : `Starting…`}
+            </span>
+            {tailTotalReceived > 0 && (
+              <span className="text-xs text-slate-400 font-mono">
+                · {tailTotalReceived.toLocaleString()} total
+                {tailDropped > 0 && ` · ${entries.length.toLocaleString()} in buffer`}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                try {
+                  const lines = entries.map((e) => formatTerminalLine(e, tailSource)).join("\n");
+                  const blob = new Blob([lines], { type: "text/plain" });
+                  const url = URL.createObjectURL(blob);
+                  const a = Object.assign(document.createElement("a"), {
+                    href: url,
+                    download: `tail-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.log`,
+                  });
+                  a.click();
+                  URL.revokeObjectURL(url);
+                } catch { /* ignore */ }
+              }}
+              className="px-2.5 py-1 text-xs font-medium bg-slate-200 text-slate-700 rounded hover:bg-slate-300 transition-colors"
+            >
+              Export session
+            </button>
+            <button
+              type="button"
+              onClick={() => onConfigChange({ tailing: false })}
+              className="px-2.5 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+            >
+              Stop
+            </button>
+          </div>
+        </div>
       )}
     </div>
+
+      {/* ── Transaction drill-down modal ── */ }
+  {
+    drilldown && (
+      <TransactionDrilldown
+        transactionId={drilldown.txId}
+        env={env}
+        availableSources={[...LOG_SOURCES]}
+        onClose={() => setDrilldown(null)}
+      />
+    )
+  }
+    </div >
   );
 }
 
