@@ -10,14 +10,10 @@ import { getRegistry, JobConflictError } from "@/lib/data/job-registry";
 import { runPull } from "@/lib/data/pull-runner";
 import { getEnvironments } from "@/lib/fr-config";
 
-export const dynamic = "force-dynamic";
+import { getController, setController, deleteController } from "./route-controllers";
+export { getController };
 
-// One AbortController per in-flight job, keyed by job id. Scoped to this
-// module so the DELETE route can look it up.
-const controllers = new Map<string, AbortController>();
-export function getController(id: string): AbortController | undefined {
-  return controllers.get(id);
-}
+export const dynamic = "force-dynamic";
 
 function envVarsFor(env: string): Record<string, string> | null {
   const envFile = path.join(ENVIRONMENTS_DIR, env, ".env");
@@ -66,7 +62,7 @@ export async function POST(req: NextRequest) {
   }
 
   const ctl = new AbortController();
-  controllers.set(job.id, ctl);
+  setController(job.id, ctl);
 
   void runPull({
     job,
@@ -76,7 +72,7 @@ export async function POST(req: NextRequest) {
     mintToken: (vars) => getAccessToken(vars),
     signal: ctl.signal,
     pageSize,
-  }).finally(() => controllers.delete(job.id));
+  }).finally(() => deleteController(job.id));
 
   return NextResponse.json({ jobId: job.id }, { status: 202 });
 }
