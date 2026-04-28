@@ -45,6 +45,7 @@ interface NewEnvForm {
   color: Environment["color"];
   type: EnvironmentType;
   devEnvironment: boolean;
+  pageSize: string; // empty string → omitted from save
   TENANT_BASE_URL: string;
   SERVICE_ACCOUNT_CLIENT_ID: string;
   SERVICE_ACCOUNT_ID: string;
@@ -61,6 +62,7 @@ const EMPTY_FORM: NewEnvForm = {
   color: "green",
   type: "sandbox",
   devEnvironment: false,
+  pageSize: "",
   TENANT_BASE_URL: "",
   SERVICE_ACCOUNT_CLIENT_ID: "service-account",
   SERVICE_ACCOUNT_ID: "",
@@ -194,6 +196,7 @@ export function EnvironmentsManager({
         color: form.color,
         type: form.type,
         devEnvironment: form.type === "controlled" ? form.devEnvironment : undefined,
+        pageSize: form.pageSize ? parseInt(form.pageSize, 10) || undefined : undefined,
         envContent: buildEnvContent(form),
       }),
     });
@@ -396,6 +399,23 @@ export function EnvironmentsManager({
                         </label>
                       ))}
                     </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-medium text-slate-700">
+                      Pull page size <span className="text-slate-400 font-normal">(optional)</span>
+                    </label>
+                    <p className="text-xs text-slate-400">
+                      AIC pagination size for managed-data pulls. Leave blank to use the default (5000).
+                    </p>
+                    <input
+                      type="number"
+                      min={1}
+                      max={100000}
+                      value={form.pageSize}
+                      placeholder="5000"
+                      onChange={(e) => setF("pageSize", e.target.value)}
+                      className="block w-32 rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                    />
                   </div>
                   <div className="space-y-1.5">
                     <label className="text-sm font-medium text-slate-700">Environment Type</label>
