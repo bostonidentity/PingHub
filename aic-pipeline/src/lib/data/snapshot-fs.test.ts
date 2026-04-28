@@ -151,6 +151,49 @@ describe("listRecords", () => {
   });
 });
 
+// ── NDJSON-format reader tests ─────────────────────────────────────────────
+
+function writeNDJsonSnapshot(
+  type: string,
+  records: Record<string, unknown>[],
+) {
+  const dir = path.join(tmpDir, ENV, "managed-data", type);
+  fs.mkdirSync(dir, { recursive: true });
+  const offsets: Record<string, number> = {};
+  let bytes = 0;
+  const lines: string[] = [];
+  for (const r of records) {
+    const id = r._id as string;
+    offsets[id] = bytes;
+    const line = JSON.stringify(r) + "\n";
+    lines.push(line);
+    bytes += Buffer.byteLength(line, "utf-8");
+  }
+  fs.writeFileSync(path.join(dir, "data.ndjson"), lines.join(""));
+  fs.writeFileSync(path.join(dir, "_offsets.json"), JSON.stringify(offsets));
+  fs.writeFileSync(
+    path.join(dir, "_manifest.json"),
+    JSON.stringify({ type, pulledAt: 1700000000000, count: records.length, jobId: "j1" }),
+  );
+}
+
+describe("readRecord (NDJSON format)", () => {
+  it("reads a record by id via byte-offset seek", async () => {
+    writeNDJsonSnapshot("alpha_user", [
+      { _id: "u1", userName: "alice" },
+      { _id: "u2", userName: "bob", longField: "x".repeat(500) },
+      { _id: "u3", userName: "charlie" },
+    ]);
+    expect(await readRecord(tmpDir, ENV, "alpha_user", "u2"))
+      .toEqual({ _id: "u2", userName: "bob", longField: "x".repeat(500) });
+  });
+
+  it("returns null for an unknown id in NDJSON format", async () => {
+    writeNDJsonSnapshot("alpha_user", [{ _id: "u1" }]);
+    expect(await readRecord(tmpDir, ENV, "alpha_user", "missing")).toBeNull();
+  });
+});
+
 // ── Index-accelerated path ─────────────────────────────────────────────────
 
 function writeIndex(type: string, entries: { id: string; f: Record<string, string> }[]) {

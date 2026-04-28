@@ -2,6 +2,7 @@ import { existsSync } from "fs";
 import fsp from "fs/promises";
 import path from "path";
 import type { DisplayFields, SnapshotType, SnapshotRecordPage } from "./types";
+import { isNDJsonFormat, NDJSON_FILE, OFFSETS_FILE, type Offsets } from "./ndjson-format";
 
 function managedDataDir(envsRoot: string, env: string): string {
   return path.join(envsRoot, env, "managed-data");
@@ -116,11 +117,56 @@ export async function listSnapshotTypes(envsRoot: string, env: string): Promise<
 export async function readRecord(
   envsRoot: string, env: string, type: string, id: string,
 ): Promise<Record<string, unknown> | null> {
-  const filePath = path.join(managedDataDir(envsRoot, env), type, `${id}.json`);
+  const typeDir = path.join(managedDataDir(envsRoot, env), type);
+
+  if (isNDJsonFormat(typeDir)) {
+    return readRecordFromNDJson(typeDir, id);
+  }
+
+  // Legacy {id}.json path.
+  const filePath = path.join(typeDir, `${id}.json`);
   try {
     return JSON.parse(await fsp.readFile(filePath, "utf-8"));
   } catch {
     return null;
+  }
+}
+
+async function readRecordFromNDJson(
+  typeDir: string,
+  id: string,
+): Promise<Record<string, unknown> | null> {
+  const offsetsPath = path.join(typeDir, OFFSETS_FILE);
+  let offsets: Offsets;
+  try {
+    offsets = JSON.parse(await fsp.readFile(offsetsPath, "utf-8")) as Offsets;
+  } catch { return null; }
+
+  const off = offsets[id];
+  if (typeof off !== "number") return null;
+
+  const ndjsonPath = path.join(typeDir, NDJSON_FILE);
+  const fd = await fsp.open(ndjsonPath, "r");
+  try {
+    // Read a chunk starting at the offset; expand if we don't see a newline.
+    const initialChunk = 8192;
+    let buf = Buffer.alloc(initialChunk);
+    let { bytesRead } = await fd.read(buf, 0, initialChunk, off);
+    let lineEnd = buf.indexOf(0x0a /* \n */, 0);
+    while (lineEnd === -1 && bytesRead === buf.length) {
+      const next = Buffer.alloc(buf.length * 2);
+      buf.copy(next, 0, 0, bytesRead);
+      const r = await fd.read(next, bytesRead, next.length - bytesRead, off + bytesRead);
+      bytesRead += r.bytesRead;
+      buf = next;
+      lineEnd = buf.indexOf(0x0a, 0);
+      if (r.bytesRead === 0) break;
+    }
+    const line = buf.slice(0, lineEnd === -1 ? bytesRead : lineEnd).toString("utf-8");
+    try { return JSON.parse(line) as Record<string, unknown>; }
+    catch { return null; }
+  } finally {
+    await fd.close();
   }
 }
 
