@@ -80,7 +80,7 @@ export function PullPanel({
   const [probeProgress, setProbeProgress] = useState<Record<string, { fetched: number; pages: number }>>({});
   const [prePullChecking, setPrePullChecking] = useState(false);
 
-  const { jobs, start, abort } = useDataPullJobs({ pollMs: 2000, includeFinished: true });
+  const { jobs, start, abort, resume } = useDataPullJobs({ pollMs: 2000, includeFinished: true });
   const types = useMemo(() => typesByEnv[env] ?? [], [typesByEnv, env]);
   const visibleTypes = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -400,6 +400,7 @@ export function PullPanel({
               job={j}
               probedCounts={probedForJob}
               onAbort={() => abort(j.id)}
+              onResume={() => resume(j.id)}
             />
           );
         })}
