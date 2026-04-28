@@ -263,9 +263,18 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
             total = data.totalPagedResults;
           }
 
-          registry.updateProgress(job.id, type, { fetched, total });
+          // Drain the write stream so byteLength accurately reflects what's on disk.
+          if (ndjsonStream.writableNeedDrain) {
+            await new Promise<void>((resolve) => ndjsonStream.once("drain", resolve));
+          }
 
           cookie = data.pagedResultsCookie ?? null;
+          registry.updateProgress(job.id, type, {
+            fetched,
+            total,
+            cookie,
+            byteLength: bytesWritten,
+          });
           success = true;
           break;
         } catch (err) {

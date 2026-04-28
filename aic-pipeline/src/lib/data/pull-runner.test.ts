@@ -297,3 +297,48 @@ describe("runPull: preflight count", () => {
     expect(after.progress[0].total).toBeNull();
   });
 });
+
+describe("runPull: cookie persistence", () => {
+  it("persists cookie + byteLength on registry after each page", async () => {
+    const fetchMock = mockFetchSequence([
+      {
+        status: 200, body: {
+          result: [{ _id: "u1" }, { _id: "u2" }],
+          pagedResultsCookie: "page2",
+        }
+      },
+      {
+        status: 200, body: {
+          result: [{ _id: "u3" }],
+          pagedResultsCookie: null,
+        }
+      },
+    ]);
+
+    const job = registry.startJob("uat", ["alpha_user"]);
+    const updates: Array<{ cookie?: string | null; byteLength?: number; fetched?: number }> = [];
+    const origUpdate = registry.updateProgress.bind(registry);
+    registry.updateProgress = (id, type, patch) => {
+      if ("cookie" in patch || "byteLength" in patch || "fetched" in patch) {
+        updates.push({ ...patch });
+      }
+      origUpdate(id, type, patch);
+    };
+
+    await runPull({
+      job, registry, envsRoot: tmpDir, envVars: ENV_VARS,
+      mintToken: async () => "tok", fetchFn: fetchMock,
+      preflightCount: async () => null,
+      signal: new AbortController().signal,
+    });
+
+    // After page 1 we should have seen cookie="page2" with a positive byteLength.
+    const afterPage1 = updates.find((u) => u.cookie === "page2");
+    expect(afterPage1).toBeDefined();
+    expect(afterPage1!.byteLength).toBeGreaterThan(0);
+
+    // After the final page we should have seen cookie=null (last page reached).
+    const afterFinal = updates.find((u) => u.cookie === null);
+    expect(afterFinal).toBeDefined();
+  });
+});
