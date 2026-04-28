@@ -5,7 +5,7 @@ import type { DataPullJob } from "./types";
 import type { Registry } from "./job-registry";
 import { NDJSON_FILE, OFFSETS_FILE, type Offsets } from "./ndjson-format";
 
-const MAX_RETRIES = 2;
+const MAX_RETRIES = 5;
 const DEFAULT_RETRY_DELAY_MS = 3000;
 const DEFAULT_PAGE_SIZE = 5000;
 const INDEX_FIELD_MAX_LEN = 200;
@@ -285,7 +285,7 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
           }
 
           if (res.status === 429) {
-            const backoff = [5000, 10000, 20000][attempt] ?? 20000;
+            const backoff = [5000, 10000, 20000, 40000, 60000][attempt] ?? 60000;
             attempt++;
             if (attempt > MAX_RETRIES) break;
             await sleep(backoff);
@@ -300,9 +300,22 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
           }
 
           if (!res.ok) {
+            // If we were resuming with a persisted cookie and the tenant
+            // rejected the request with a 4xx, the cookie is most likely
+            // stale (AIC's _pagedResultsCookie isn't documented as durable
+            // across long gaps). Surface a clear message so the user knows
+            // to start a fresh pull rather than keep retrying.
+            const isResumeFailure = isResuming && cookie && res.status >= 400 && res.status < 500;
+            let body = "";
+            if (isResumeFailure) {
+              try { body = await res.text(); } catch { body = ""; }
+            }
+            const errorMsg = isResumeFailure
+              ? `paged results cookie expired — please start a fresh pull (HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ""})`
+              : `HTTP ${res.status}`;
             registry.updateProgress(job.id, type, {
               status: "failed",
-              error: `HTTP ${res.status}`,
+              error: errorMsg,
             });
             typeFailed = true;
             break pages;
