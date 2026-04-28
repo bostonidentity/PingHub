@@ -1346,9 +1346,6 @@ export function LogsExplorer({
     applySearch("");
   }
 
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [historyRecords, setHistoryRecords] = useState<{ id: string; completedAt: string; environment: string; logSource?: string; logMode?: string; logEntryCount?: number; logPreset?: string; summary: string }[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
   const [colWidths, setColWidths] = useState<Record<string, number>>({ ...DEFAULT_COL_WIDTHS });
   const handleColResize = useCallback((key: string, width: number) => {
     setColWidths((prev) => ({ ...prev, [key]: width }));
@@ -1521,17 +1518,6 @@ export function LogsExplorer({
     setTailTotalReceived(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [env]);
-
-  // ── Fetch search history when panel opens ──
-  useEffect(() => {
-    if (!historyOpen) return;
-    setHistoryLoading(true);
-    fetch("/api/history?type=log-search")
-      .then((r) => r.json())
-      .then((data) => setHistoryRecords(Array.isArray(data) ? data : []))
-      .catch(() => setHistoryRecords([]))
-      .finally(() => setHistoryLoading(false));
-  }, [historyOpen]);
 
   // ── Clear searching flag when fetch completes ──
   const prevDone = useRef(false);
@@ -1929,48 +1915,6 @@ export function LogsExplorer({
         {sourcesError && <span className="text-xs text-red-500">{sourcesError}</span>}
         {error && <span className="text-xs text-red-500">{error}</span>}
       </div>
-
-      {/* ── Search history panel ── */}
-      {historyOpen && (
-        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-600">Search History</span>
-            <button type="button" onClick={() => setHistoryOpen(false)} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
-          </div>
-          {historyLoading ? (
-            <div className="p-6 text-center text-xs text-slate-400">Loading…</div>
-          ) : historyRecords.length === 0 ? (
-            <div className="p-6 text-center text-xs text-slate-400">No saved searches yet.</div>
-          ) : (
-            <div className="divide-y divide-slate-100 max-h-64 overflow-y-auto">
-              {historyRecords.map((rec) => {
-                const age = Date.now() - new Date(rec.completedAt).getTime();
-                const ageStr = age < 60000 ? "just now"
-                  : age < 3600000 ? `${Math.floor(age / 60000)}m ago`
-                    : age < 86400000 ? `${Math.floor(age / 3600000)}h ago`
-                      : `${Math.floor(age / 86400000)}d ago`;
-                return (
-                  <div key={rec.id} className="flex items-center gap-3 px-4 py-2 hover:bg-slate-50 transition-colors text-xs">
-                    <span className={cn(
-                      "shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium",
-                      rec.logMode === "search" ? "bg-sky-100 text-sky-700"
-                        : rec.logMode === "tail" ? "bg-emerald-100 text-emerald-700"
-                          : "bg-violet-100 text-violet-700"
-                    )}>
-                      {rec.logMode ?? "search"}
-                    </span>
-                    <span className="text-slate-500 font-mono text-[11px] shrink-0">{rec.logSource ?? rec.environment}</span>
-                    <span className="text-slate-700 flex-1 truncate">
-                      {rec.summary}
-                    </span>
-                    <span className="text-slate-400 shrink-0">{ageStr}</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* ── Log window ── */}
       <div className={cn(
@@ -2537,14 +2481,6 @@ export function LogsExplorer({
                 </button>
               </>
             )}
-            <button
-              type="button"
-              onClick={() => setHistoryOpen((o) => !o)}
-              className={cn("text-xs transition-colors shrink-0", historyOpen ? "text-sky-600" : "text-slate-400 hover:text-slate-600")}
-              title="Search history"
-            >
-              History
-            </button>
             <button
               type="button"
               onClick={() => onFullscreenChange?.(!fullscreen)}
