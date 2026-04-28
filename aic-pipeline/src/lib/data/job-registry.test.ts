@@ -79,8 +79,8 @@ describe("job-registry: updates + persistence", () => {
   });
 });
 
-describe("job-registry: stale cleanup on init", () => {
-  it("marks non-terminal disk jobs as failed(server restart) on createRegistry", () => {
+describe("job-registry: boot recovery", () => {
+  it("marks running jobs as 'interrupted' on createRegistry, preserving per-type state", () => {
     const jobsDir = path.join(tmpDir, "uat", "managed-data", ".jobs");
     fs.mkdirSync(jobsDir, { recursive: true });
     fs.writeFileSync(
@@ -91,13 +91,61 @@ describe("job-registry: stale cleanup on init", () => {
         types: ["alpha_user"],
         startedAt: 1,
         status: "running",
-        progress: [{ type: "alpha_user", status: "running", fetched: 5, total: 10 }],
+        progress: [{
+          type: "alpha_user",
+          status: "running",
+          fetched: 5,
+          total: 10,
+          cookie: "page2",
+          byteLength: 1234,
+        }],
       }),
     );
     const r2 = createRegistry(tmpDir);
     const stale = r2.getJob("stale");
-    expect(stale?.status).toBe("failed");
-    expect(stale?.fatalError).toBe("server restart");
+    expect(stale?.status).toBe("interrupted");
+    expect(stale?.fatalError).toBeUndefined();
+    // Per-type state preserved so resume can pick up from the right place.
+    expect(stale?.progress[0]).toMatchObject({
+      status: "running",
+      fetched: 5,
+      cookie: "page2",
+      byteLength: 1234,
+    });
+  });
+
+  it("leaves already-terminal jobs untouched on boot", () => {
+    const jobsDir = path.join(tmpDir, "uat", "managed-data", ".jobs");
+    fs.mkdirSync(jobsDir, { recursive: true });
+    for (const status of ["completed", "failed", "aborted"] as const) {
+      fs.writeFileSync(
+        path.join(jobsDir, `${status}.json`),
+        JSON.stringify({
+          id: status, env: "uat", types: ["alpha_user"],
+          startedAt: 1, status,
+          progress: [{ type: "alpha_user", status: "done", fetched: 10, total: 10 }],
+        }),
+      );
+    }
+    const r2 = createRegistry(tmpDir);
+    expect(r2.getJob("completed")?.status).toBe("completed");
+    expect(r2.getJob("failed")?.status).toBe("failed");
+    expect(r2.getJob("aborted")?.status).toBe("aborted");
+  });
+
+  it("leaves already-interrupted jobs untouched on boot", () => {
+    const jobsDir = path.join(tmpDir, "uat", "managed-data", ".jobs");
+    fs.mkdirSync(jobsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(jobsDir, "i1.json"),
+      JSON.stringify({
+        id: "i1", env: "uat", types: ["alpha_user"],
+        startedAt: 1, status: "interrupted",
+        progress: [{ type: "alpha_user", status: "running", fetched: 5, total: 10, cookie: "c", byteLength: 100 }],
+      }),
+    );
+    const r2 = createRegistry(tmpDir);
+    expect(r2.getJob("i1")?.status).toBe("interrupted");
   });
 });
 
