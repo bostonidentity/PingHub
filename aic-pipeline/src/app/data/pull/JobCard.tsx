@@ -11,6 +11,7 @@ const STATUS_STYLE: Record<DataPullJob["status"], string> = {
   completed:  "bg-emerald-100 text-emerald-700",
   failed:     "bg-rose-100 text-rose-700",
   aborted:    "bg-slate-100 text-slate-500",
+  interrupted: "bg-indigo-100 text-indigo-700",
 };
 
 const MIN_ELAPSED_FOR_ETA_MS = 10_000;
