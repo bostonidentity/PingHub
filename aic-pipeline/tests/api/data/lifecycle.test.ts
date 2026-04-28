@@ -93,7 +93,7 @@ describe("data API lifecycle", () => {
 
     const typeDir = path.join(tmpDir, "environments", "test-env", "managed-data", "alpha_user");
     expect(fs.readdirSync(typeDir).sort()).toEqual([
-      "_index.json", "_manifest.json", "_refs.json", "u1.json", "u2.json", "u3.json",
+      "_index.json", "_manifest.json", "_offsets.json", "_refs.json", "data.ndjson",
     ]);
   });
 
@@ -120,5 +120,81 @@ describe("data API lifecycle", () => {
     expect(r2.status).toBe(409);
     const body = await r2.json();
     expect(typeof body.jobId).toBe("string");
+  });
+
+  it("POST /pull/jobs/:id/resume continues from persisted cookie", async () => {
+    vi.resetModules();
+    const { POST } = await import("@/app/api/data/pull/route");
+    const resumeRoute = await import("@/app/api/data/pull/jobs/[jobId]/resume/route");
+    const jobsId = await import("@/app/api/data/jobs/[id]/route");
+
+    // Get the registry singleton and seed an interrupted job + on-disk state.
+    const { getRegistry } = await import("@/lib/data/job-registry");
+    const reg = getRegistry();
+    const job = reg.startJob("test-env", ["alpha_user"]);
+
+    const pullingDir = path.join(
+      tmpDir, "environments", "test-env", "managed-data",
+      `.pulling-${job.id}`, "alpha_user",
+    );
+    fs.mkdirSync(pullingDir, { recursive: true });
+    const page1 = `${JSON.stringify({ _id: "u1", userName: "alice" })}\n${JSON.stringify({ _id: "u2", userName: "bob" })}\n`;
+    fs.writeFileSync(path.join(pullingDir, "data.ndjson"), page1);
+    reg.updateProgress(job.id, "alpha_user", {
+      status: "running", fetched: 2,
+      cookie: "page2-cookie",
+      byteLength: Buffer.byteLength(page1, "utf-8"),
+      total: 3,
+    });
+    reg.setJobStatus(job.id, "interrupted");
+
+    // Reset fetch to return a final page and end.
+    fetchCall = 0;
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true, status: 200,
+      json: async () => ({ result: [{ _id: "u3", userName: "charlie" }], pagedResultsCookie: null }),
+    } as Response)) as typeof fetch;
+
+    const resumeReq = new NextRequest(
+      `http://localhost/api/data/pull/jobs/${job.id}/resume`,
+      { method: "POST" },
+    );
+    const resumeRes = await resumeRoute.POST(
+      resumeReq,
+      { params: Promise.resolve({ jobId: job.id }) },
+    );
+    expect(resumeRes.status).toBe(202);
+
+    // Poll until completed.
+    let status = "";
+    for (let i = 0; i < 50 && status !== "completed" && status !== "failed"; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      const res = await jobsId.GET(
+        new NextRequest(`http://localhost/api/data/jobs/${job.id}`),
+        { params: Promise.resolve({ id: job.id }) },
+      );
+      status = (await res.json()).status;
+    }
+    expect(status).toBe("completed");
+
+    const typeDir = path.join(tmpDir, "environments", "test-env", "managed-data", "alpha_user");
+    const lines = fs.readFileSync(path.join(typeDir, "data.ndjson"), "utf-8")
+      .split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    expect(lines.map((r) => r._id)).toEqual(["u1", "u2", "u3"]);
+  });
+
+  it("POST /pull/jobs/:id/resume returns 409 if job is not interrupted", async () => {
+    vi.resetModules();
+    const resumeRoute = await import("@/app/api/data/pull/jobs/[jobId]/resume/route");
+    const { getRegistry } = await import("@/lib/data/job-registry");
+    const reg = getRegistry();
+    const job = reg.startJob("test-env", ["alpha_user"]);
+    reg.setJobStatus(job.id, "completed");
+
+    const res = await resumeRoute.POST(
+      new NextRequest(`http://localhost/api/data/pull/jobs/${job.id}/resume`, { method: "POST" }),
+      { params: Promise.resolve({ jobId: job.id }) },
+    );
+    expect(res.status).toBe(409);
   });
 });
