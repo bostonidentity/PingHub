@@ -299,7 +299,16 @@ export function FileContentViewer({
   // already been selected don't unmount as the user scrolls past them — the
   // browser's native Selection anchors to DOM nodes, and losing them
   // mid-drag collapses the selection in odd ways.
+  // `selecting` is true while the primary mouse button is down inside the
+  // content container. `selectionScrolled` is the actual signal that drives
+  // the virtualizer overscan — it stays false until the user scrolls during a
+  // selection. This means a click-release (or a short drag inside the
+  // viewport) never triggers an overscan inflation, and only an actual
+  // drag-and-scroll does. Cap is 80 rows, not 500 — covers ~1600px of slack
+  // per side, enough for typical drag-while-scrolling without a render burst.
   const [selecting, setSelecting] = useState(false);
+  const [selectionScrolled, setSelectionScrolled] = useState(false);
+
   useEffect(() => {
     const onMouseDown = (e: MouseEvent) => {
       // Only react to primary-button presses inside the content container.
@@ -307,7 +316,10 @@ export function FileContentViewer({
       const el = containerRef.current;
       if (el && el.contains(e.target as Node)) setSelecting(true);
     };
-    const onMouseUp = () => setSelecting(false);
+    const onMouseUp = () => {
+      setSelecting(false);
+      setSelectionScrolled(false);
+    };
     window.addEventListener("mousedown", onMouseDown);
     window.addEventListener("mouseup", onMouseUp);
     return () => {
@@ -316,17 +328,32 @@ export function FileContentViewer({
     };
   }, []);
 
+  // Only attach the scroll listener while a selection is in progress. When
+  // selection ends (mouseup), the effect tears down naturally because
+  // `selecting` flips back to false.
+  useEffect(() => {
+    if (!selecting) return;
+    const el = containerRef.current;
+    if (!el) return;
+    const onScroll = () => setSelectionScrolled(true);
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [selecting]);
+
   const virtualizer = useVirtualizer({
     count: visibleLines.length,
     getScrollElement: () => containerRef.current,
     estimateSize: () => 20,
     // Ordinary scrolling: 24 rows of slack above/below (~480px each side).
-    // During an active selection we bump overscan so rows the user has
-    // already anchored don't unmount as they scroll, BUT we cap it so a
-    // mousedown on a 5 000-line file doesn't stall rendering the moment
-    // the user clicks. 500 rows of slack each way covers ~10 000px of
-    // scroll — more than enough for the vast majority of drag selects.
-    overscan: selecting ? Math.min(visibleLines.length, 500) : 24,
+    // While the user is drag-selecting AND has scrolled the container, we
+    // bump overscan so rows the user has already anchored don't unmount as
+    // they scroll past — the browser's native Selection anchors to DOM
+    // nodes, and losing them mid-drag collapses the selection. The cap is
+    // 80 rows (~1600px each side) — enough for typical drag-while-scrolling
+    // without producing a render burst on every mousedown. Long drags past
+    // ~80 rows of scroll will lose their anchor; that's an acceptable
+    // trade-off vs. the per-click lag the previous 500-row cap caused.
+    overscan: selectionScrolled ? Math.min(visibleLines.length, 80) : 24,
   });
 
   // Scroll a highlighted line into view (find-match focus).
