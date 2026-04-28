@@ -2,6 +2,7 @@
 import { NextRequest } from "next/server";
 import path from "path";
 import fs from "fs";
+import readline from "readline";
 import { cwd } from "process";
 import { ENVIRONMENTS_DIR } from "@/lib/paths";
 
@@ -49,14 +50,17 @@ export async function GET(
   }
 
   if (isNDJson) {
-    const content = fs.readFileSync(ndjsonPath, "utf-8");
-    for (const line of content.split("\n")) {
+    const stream = fs.createReadStream(ndjsonPath, { encoding: "utf-8" });
+    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    for await (const line of rl) {
       if (!line) continue;
       try {
         const record = JSON.parse(line) as Record<string, unknown>;
         maybeAdd(record, line);
       } catch { /* skip malformed */ }
     }
+    rl.close();
+    stream.destroy();
   } else {
     const files = fs.readdirSync(dir)
       .filter((f) => f.endsWith(".json") && f !== "_manifest.json")
