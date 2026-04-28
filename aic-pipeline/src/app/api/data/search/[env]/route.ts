@@ -79,6 +79,31 @@ export async function GET(
     const manifestPath = path.join(typeDir, "_manifest.json");
     if (!fs.existsSync(manifestPath)) continue; // unpulled / partial
 
+    const ndjsonPath = path.join(typeDir, "data.ndjson");
+    if (fs.existsSync(ndjsonPath)) {
+      // NDJSON format: stream the file line by line.
+      const content = fs.readFileSync(ndjsonPath, "utf-8");
+      const lines = content.split("\n");
+      for (const line of lines) {
+        if (!line) continue;
+        const idx = findIndex(line);
+        if (idx < 0) continue;
+        let parsed: Record<string, unknown>;
+        try { parsed = JSON.parse(line) as Record<string, unknown>; }
+        catch { continue; }
+        const id = typeof parsed._id === "string" ? parsed._id : "";
+        if (!id) continue;
+        hits.push({
+          type: typeEntry.name,
+          id,
+          preview: previewFrom(line, idx),
+        });
+        if (hits.length >= limit) { truncated = true; break outer; }
+      }
+      continue;
+    }
+
+    // Legacy {id}.json format.
     for (const f of fs.readdirSync(typeDir)) {
       if (!f.endsWith(".json") || f === "_manifest.json") continue;
       try {
