@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import type { DataPullJob } from "./types";
 import type { Registry } from "./job-registry";
+import { NDJSON_FILE, OFFSETS_FILE, type Offsets } from "./ndjson-format";
 
 const MAX_RETRIES = 2;
 const DEFAULT_RETRY_DELAY_MS = 3000;
@@ -158,6 +159,15 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
 
     const indexEntries: { id: string; f: Record<string, string> }[] = [];
     const refsIndex: Record<string, string[]> = {};
+    const offsets: Offsets = {};
+
+    const ndjsonPath = path.join(typePullingDir, NDJSON_FILE);
+    // Create the file eagerly so the WriteStream fd open never races against
+    // a directory removal on the abort/failure path.
+    fs.writeFileSync(ndjsonPath, "");
+    const ndjsonStream = fs.createWriteStream(ndjsonPath, { flags: "a" });
+    ndjsonStream.on("error", () => { /* swallow post-destroy ENOENT */ });
+    let bytesWritten = 0;
 
     let cookie: string | null = null;
     let total: number | null = await preflightCount(type, token);
@@ -169,7 +179,7 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
 
     pages:
     while (true) {
-      if (signal.aborted) break outer;
+      if (signal.aborted) { ndjsonStream.destroy(); break outer; }
 
       const url = new URL(`${tenantUrl}/openidm/managed/${type}`);
       url.searchParams.set("_queryFilter", "true");
@@ -181,7 +191,7 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
       let refreshedThisPage = false;
 
       while (attempt <= MAX_RETRIES) {
-        if (signal.aborted) break outer;
+        if (signal.aborted) { ndjsonStream.destroy(); break outer; }
         try {
           const res = await fetchFn(url.toString(), {
             headers: { Authorization: `Bearer ${token}` },
@@ -226,13 +236,16 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
 
           const items = data.result ?? [];
           for (const item of items) {
-            if (signal.aborted) break outer;
+            if (signal.aborted) { ndjsonStream.destroy(); break outer; }
             const id = typeof item._id === "string"
               ? item._id
               : typeof item.id === "string"
                 ? item.id as string
                 : String(fetched + 1);
-            fs.writeFileSync(path.join(typePullingDir, `${id}.json`), JSON.stringify(item, null, 2));
+            const line = JSON.stringify(item) + "\n";
+            offsets[id] = bytesWritten;
+            ndjsonStream.write(line);
+            bytesWritten += Buffer.byteLength(line, "utf-8");
             indexEntries.push({ id, f: pickIndexFields(item) });
             const itemRefs = extractRefs(item);
             if (itemRefs.length > 0) refsIndex[id] = itemRefs;
@@ -250,7 +263,7 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
           success = true;
           break;
         } catch (err) {
-          if (signal.aborted) break outer;
+          if (signal.aborted) { ndjsonStream.destroy(); break outer; }
           attempt++;
           if (attempt > MAX_RETRIES) {
             registry.updateProgress(job.id, type, {
@@ -275,13 +288,24 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
       if (!cookie) break; // last page
     }
 
-    if (signal.aborted) break;
+    if (signal.aborted) {
+      ndjsonStream.destroy();
+      break;
+    }
 
     if (typeFailed) {
       anyFailed = true;
+      ndjsonStream.destroy();
       fs.rmSync(typePullingDir, { recursive: true, force: true });
       continue;
     }
+
+    // Close the NDJSON stream and flush before the atomic swap.
+    await new Promise<void>((resolve, reject) => {
+      ndjsonStream.end((err: NodeJS.ErrnoException | null | undefined) =>
+        err ? reject(err) : resolve(),
+      );
+    });
 
     // Atomic swap: prev → .prev-<job>-<type>, new → current, delete prev.
     // Uses renameWithRetry so transient Windows file-handle locks don't
@@ -305,6 +329,10 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
       fs.writeFileSync(
         path.join(currentDir, "_refs.json"),
         JSON.stringify(refsIndex),
+      );
+      fs.writeFileSync(
+        path.join(currentDir, OFFSETS_FILE),
+        JSON.stringify(offsets),
       );
       if (fs.existsSync(backupDir)) fs.rmSync(backupDir, { recursive: true, force: true });
 
