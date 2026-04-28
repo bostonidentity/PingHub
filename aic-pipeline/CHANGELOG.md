@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3.1] - 2026-04-27
+
+### Added
+
+- **Logs boolean queries**: Filter and Highlight boxes now accept `&&`, `||`, `( )`, `"phrase"` and treat whitespace between terms as implicit AND (Splunk/Lucene/KQL convention). Comma is still accepted as `||` for backwards compatibility.
+- **Logs Search keywords field**: search mode now exposes a dedicated server-side keywords box (sent to AIC as `_queryFilter`), separate from the client-side Filter and Highlight boxes. Press Enter to launch a search.
+- **Logs per-field Aa/[W] toggles**: each input (Search keywords, Filter, Highlight) has its own case-sensitive and whole-word toggles inline. Auto-highlight unions terms from all three fields so anything you type anywhere gets coloured in the rendered results.
+- **Logs Expand all / Collapse all** buttons in terminal + wrap view, for bulk expansion of line-clamped entries.
+- **Logs custom range validation**: warns and disables Search when the end time is before the start time.
+
+### Changed
+
+- **Logs toolbar reorganized into three rows by purpose** — Acquire (mode, time, Search/Stop, Keywords) · Query (Filter, Highlight, match navigator) · View (Terminal/Table/JSON, Wrap, Auto-scroll, Dedupe, counts, export). Removes the duplicate Aa/[W] cluster that previously appeared on two rows.
+- **Logs progress dates** now render in local time (no more spurious roll-forward to the next day when local time is late evening).
+
+### Removed
+
+- **Logs History button** and the search-history panel in the log explorer toolbar.
+
+### Fixed
+
+- React key collision in the terminal nowrap view that made dedupe rows appear duplicated when the active match changed.
+
 ## [0.2.3.0] - 2026-04-27
 
 ### Added
