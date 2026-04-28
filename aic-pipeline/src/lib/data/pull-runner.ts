@@ -162,9 +162,6 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
     const offsets: Offsets = {};
 
     const ndjsonPath = path.join(typePullingDir, NDJSON_FILE);
-    // Create the file eagerly so the WriteStream fd open never races against
-    // a directory removal on the abort/failure path.
-    fs.writeFileSync(ndjsonPath, "");
     const ndjsonStream = fs.createWriteStream(ndjsonPath, { flags: "a" });
     ndjsonStream.on("error", () => { /* swallow post-destroy ENOENT */ });
     let bytesWritten = 0;
