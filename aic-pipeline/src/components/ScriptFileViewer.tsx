@@ -767,6 +767,13 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
     requestScrollTo(n);
   }, [gotoLine, unfoldAncestors, requestScrollTo]);
 
+  // Stable reference so FileContentViewer's memoized <Row> components don't
+  // re-render every visible row whenever any state in this component changes.
+  // setCurrentLine is a stable setter, so the dep array is empty.
+  const handleLineClick = useCallback((ln: number) => {
+    setCurrentLine(ln);
+  }, []);
+
   const goTo = useCallback((ln: number) => {
     unfoldAncestors(ln);
     setCurrentLine(ln);
@@ -1134,7 +1141,7 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
               indentGuides
               onScroll={handleViewerScroll}
               scrollRequest={scrollRequest ?? undefined}
-              onLineClick={(ln) => setCurrentLine(ln)}
+              onLineClick={handleLineClick}
             />
           </div>
         </div>
