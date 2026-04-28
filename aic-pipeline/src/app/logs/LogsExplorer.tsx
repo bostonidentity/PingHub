@@ -1275,6 +1275,10 @@ export function LogsExplorer({
   const keywordsRawRef = useRef("");
   const [keywordsActive, setKeywordsActive] = useState(""); // debounced — drives actual highlighting
   const keywordsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Search-mode only: keywords sent to AIC as the server-side _queryFilter (separate
+  // from the client-side Highlight box, which only colors matches).
+  const [searchKeywordsRaw, setSearchKeywordsRaw] = useState("");
+  const searchKeywordsRawRef = useRef("");
   const [matchCursor, setMatchCursor] = useState(-1); // index into matchRows; -1 = none selected
   const [activeMatchKey, setActiveMatchKey] = useState<string | null>(null);
   const [matchScrollNonce, setMatchScrollNonce] = useState(0);
@@ -1608,14 +1612,14 @@ export function LogsExplorer({
       endTime = now.toISOString();
     }
 
-    // Build server-side _queryFilter from highlight keywords only.
-    // The Filter entries box is client-side only — do NOT include it here.
+    // Build server-side _queryFilter from the dedicated Search keywords box (search mode only).
+    // The Filter and Highlight boxes are client-side only — do NOT include them here.
     // This mirrors KYID Utilities' approach: only matching entries are returned by AIC,
     // dramatically reducing page count and eliminating rate-limit risk on long ranges.
     function escapeFilterValue(v: string) { return v.replace(/\\/g, "\\\\").replace(/"/g, '\\"'); }
-    // Parse the highlight box and pull out positive leaf terms. Server-side filtering is
-    // a conservative OR over leaves; the client predicate still enforces &&, () precisely.
-    const parsed = parseQuery(keywordsRawRef.current, { matchCase, wholeWord });
+    // Parse the Search keywords box and pull out positive leaf terms. Server-side filtering is
+    // a conservative OR over leaves; the client predicate (Filter box) still enforces && / () precisely.
+    const parsed = parseQuery(searchKeywordsRawRef.current, { matchCase, wholeWord });
     const allTerms = parsed.error ? [] : parsed.highlightTerms;
     const queryFilter = allTerms.length > 0
       ? allTerms.map((t) => {
@@ -2019,7 +2023,7 @@ export function LogsExplorer({
               const customRangeInvalid = preset === "custom" && !!customBegin && !!customEnd
                 && new Date(customEnd).getTime() <= new Date(customBegin).getTime();
               return (
-                <div className="flex items-center gap-1.5 shrink-0">
+                <div className="flex items-center gap-1.5 flex-1 min-w-0">
                   <select
                     value={preset}
                     onChange={(e) => onConfigChange({ preset: e.target.value as Preset })}
@@ -2089,6 +2093,28 @@ export function LogsExplorer({
                       Stop
                     </button>
                   )}
+                  {/* Server-side search keywords — sent to AIC as _queryFilter, runs at fetch time. */}
+                  <span className="text-slate-300 select-none">|</span>
+                  <label className="text-xs font-medium text-slate-500">Keywords</label>
+                  <input
+                    type="text"
+                    value={searchKeywordsRaw}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setSearchKeywordsRaw(val);
+                      searchKeywordsRawRef.current = val;
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !searching && !customRangeInvalid && selectedSources.length > 0 && !sourcesError) {
+                        e.preventDefault();
+                        onConfigChange({ searchSeq: (searchSeq ?? 0) + 1 });
+                      }
+                    }}
+                    disabled={searching}
+                    placeholder="Server-side keywords (||, &quot;phrase&quot;)…"
+                    title="Sent to AIC as _queryFilter — restricts what's downloaded. Leave blank to fetch everything in the time range."
+                    className="flex-1 min-w-0 text-xs rounded border border-slate-300 px-2.5 py-1 font-mono focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500 disabled:opacity-50"
+                  />
                 </div>
               );
             })()}
