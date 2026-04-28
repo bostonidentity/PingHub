@@ -201,8 +201,8 @@ describe("runPull: preserves previous snapshot on failure", () => {
 describe("runPull: page size", () => {
   it("uses opts.pageSize in the _pageSize query param", async () => {
     const seenUrls: string[] = [];
-    const fetchMock = vi.fn(async (url: string) => {
-      seenUrls.push(url);
+    const fetchMock = vi.fn(async (url: URL | RequestInfo) => {
+      seenUrls.push(typeof url === "string" ? url : url.toString());
       return {
         ok: true, status: 200,
         json: async () => ({ result: [{ _id: "u1" }], pagedResultsCookie: null, totalPagedResults: 1 }),
@@ -227,8 +227,8 @@ describe("runPull: page size", () => {
 
   it("defaults to 5000 when pageSize is not provided", async () => {
     const seenUrls: string[] = [];
-    const fetchMock = vi.fn(async (url: string) => {
-      seenUrls.push(url);
+    const fetchMock = vi.fn(async (url: URL | RequestInfo) => {
+      seenUrls.push(typeof url === "string" ? url : url.toString());
       return {
         ok: true, status: 200,
         json: async () => ({ result: [{ _id: "u1" }], pagedResultsCookie: null, totalPagedResults: 1 }),
