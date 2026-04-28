@@ -25,6 +25,9 @@ export async function POST(req: NextRequest) {
     ...(body.type === "controlled" && body.devEnvironment !== undefined
       ? { devEnvironment: body.devEnvironment }
       : {}),
+    ...(typeof body.pageSize === "number" && body.pageSize > 0 && body.pageSize <= 100000
+      ? { pageSize: body.pageSize }
+      : {}),
   };
 
   if (envs.find((e) => e.name === newEnv.name)) {
