@@ -30,26 +30,44 @@ export async function GET(
   const dir = path.join(envsRoot, env, "managed-data", type);
   if (!fs.existsSync(dir)) return new Response("snapshot not found", { status: 404 });
 
-  const files = fs.readdirSync(dir)
-    .filter((f) => f.endsWith(".json") && f !== "_manifest.json")
-    .sort();
+  const ndjsonPath = path.join(dir, "data.ndjson");
+  const isNDJson = fs.existsSync(ndjsonPath);
 
   const matching: Record<string, unknown>[] = [];
   const scalarKeys = new Set<string>();
-  for (const f of files) {
-    try {
-      const raw = fs.readFileSync(path.join(dir, f), "utf-8");
-      if (q && !raw.toLowerCase().includes(q)) continue;
-      const record = JSON.parse(raw) as Record<string, unknown>;
-      matching.push(record);
-      if (format === "csv") {
-        for (const [k, v] of Object.entries(record)) {
-          if (typeof v === "string" || typeof v === "number" || typeof v === "boolean" || v == null) {
-            scalarKeys.add(k);
-          }
+
+  function maybeAdd(record: Record<string, unknown>, raw: string) {
+    if (q && !raw.toLowerCase().includes(q)) return;
+    matching.push(record);
+    if (format === "csv") {
+      for (const [k, v] of Object.entries(record)) {
+        if (typeof v === "string" || typeof v === "number" || typeof v === "boolean" || v == null) {
+          scalarKeys.add(k);
         }
       }
-    } catch { /* skip */ }
+    }
+  }
+
+  if (isNDJson) {
+    const content = fs.readFileSync(ndjsonPath, "utf-8");
+    for (const line of content.split("\n")) {
+      if (!line) continue;
+      try {
+        const record = JSON.parse(line) as Record<string, unknown>;
+        maybeAdd(record, line);
+      } catch { /* skip malformed */ }
+    }
+  } else {
+    const files = fs.readdirSync(dir)
+      .filter((f) => f.endsWith(".json") && f !== "_manifest.json")
+      .sort();
+    for (const f of files) {
+      try {
+        const raw = fs.readFileSync(path.join(dir, f), "utf-8");
+        const record = JSON.parse(raw) as Record<string, unknown>;
+        maybeAdd(record, raw);
+      } catch { /* skip */ }
+    }
   }
 
   const filename = `${env}-${type}-${tsStamp()}.${format}`;
