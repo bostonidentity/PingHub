@@ -6,7 +6,8 @@ import { Environment } from "@/lib/fr-config-types";
 import { EnvironmentBadge } from "@/components/EnvironmentBadge";
 import { useDialog } from "@/components/ConfirmDialog";
 import { cn } from "@/lib/utils";
-import { findKeywordMatchRows, logEntryMatchKey } from "@/lib/log-match-navigation";
+import { logEntryMatchKey } from "@/lib/log-match-navigation";
+import { parseQuery } from "@/lib/log-query";
 
 // ── Timezone ──────────────────────────────────────────────────────────────────
 
@@ -573,6 +574,7 @@ const TailTerminal = memo(function TailTerminal({
   entries, defaultSource, searchTerm, keywords, wrapLines = false,
   scrollRequest = null, activeMatchIndex = null, matchCase = false, wholeWord = false,
   dupeCounts, autoScroll = true, onEntryDoubleClick, contextAnchorIdx = null,
+  expandCommand = null,
 }: {
   entries: LogEntry[];
   defaultSource: string;
@@ -587,6 +589,8 @@ const TailTerminal = memo(function TailTerminal({
   autoScroll?: boolean;
   onEntryDoubleClick?: (idx: number) => void;
   contextAnchorIdx?: number | null;
+  /** Bulk expand/collapse signal from parent. Bumped via nonce to retrigger. */
+  expandCommand?: { kind: "all" | "none"; nonce: number } | null;
 }) {
   const outerRef = useRef<HTMLDivElement>(null);
   const [viewH, setViewH] = useState(400);
@@ -623,6 +627,21 @@ const TailTerminal = memo(function TailTerminal({
     }
     prevActiveRef.current = activeMatchIndex ?? null;
   }, [activeMatchIndex]);
+
+  // Bulk expand/collapse from parent toolbar buttons
+  const lastExpandNonceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!expandCommand) return;
+    if (lastExpandNonceRef.current === expandCommand.nonce) return;
+    lastExpandNonceRef.current = expandCommand.nonce;
+    if (expandCommand.kind === "all") {
+      const next = new Set<number>();
+      for (let i = 0; i < entries.length; i++) next.add(i);
+      setExpandedRows(next);
+    } else {
+      setExpandedRows(new Set());
+    }
+  }, [expandCommand, entries.length]);
 
   // Track container height for virtual list calculations
   useEffect(() => {
@@ -1256,16 +1275,23 @@ export function LogsExplorer({
   const keywordsRawRef = useRef("");
   const [keywordsActive, setKeywordsActive] = useState(""); // debounced — drives actual highlighting
   const keywordsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const keywords = keywordsActive
-    .split(",")
-    .map((k) => k.trim())
-    .filter(Boolean);
+  // Search-mode only: keywords sent to AIC as the server-side _queryFilter (separate
+  // from the client-side Highlight box, which only colors matches).
+  const [searchKeywordsRaw, setSearchKeywordsRaw] = useState("");
+  const searchKeywordsRawRef = useRef("");
   const [matchCursor, setMatchCursor] = useState(-1); // index into matchRows; -1 = none selected
   const [activeMatchKey, setActiveMatchKey] = useState<string | null>(null);
   const [matchScrollNonce, setMatchScrollNonce] = useState(0);
   const [highlightedTableIdx, setHighlightedTableIdx] = useState<number | null>(null); // filtered idx to highlight in table view
-  const [matchCase, setMatchCase] = useState(false);
-  const [wholeWord, setWholeWord] = useState(false);
+  const [highlightMatchCase, setHighlightMatchCase] = useState(false);
+  const [highlightWholeWord, setHighlightWholeWord] = useState(false);
+  // Per-field case/word toggles. Each field's predicate honours its own pair;
+  // the renderer applies a single uniform setting (Highlight's), so visual
+  // coloring of Filter / Search auto-highlighted terms uses Highlight's settings.
+  const [filterMatchCase, setFilterMatchCase] = useState(false);
+  const [filterWholeWord, setFilterWholeWord] = useState(false);
+  const [searchMatchCase, setSearchMatchCase] = useState(false);
+  const [searchWholeWord, setSearchWholeWord] = useState(false);
   const highlightInputRef = useRef<HTMLInputElement>(null);
 
 
@@ -1320,14 +1346,13 @@ export function LogsExplorer({
     applySearch("");
   }
 
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [historyRecords, setHistoryRecords] = useState<{ id: string; completedAt: string; environment: string; logSource?: string; logMode?: string; logEntryCount?: number; logPreset?: string; summary: string }[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
   const [colWidths, setColWidths] = useState<Record<string, number>>({ ...DEFAULT_COL_WIDTHS });
   const handleColResize = useCallback((key: string, width: number) => {
     setColWidths((prev) => ({ ...prev, [key]: width }));
   }, []);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  // Bulk expand/collapse signal for terminal+wrap view (handled inside TailTerminal).
+  const [expandCmd, setExpandCmd] = useState<{ kind: "all" | "none"; nonce: number } | null>(null);
 
   // ── Pagination ──
   const [page, setPage] = useState(1);
@@ -1494,17 +1519,6 @@ export function LogsExplorer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [env]);
 
-  // ── Fetch search history when panel opens ──
-  useEffect(() => {
-    if (!historyOpen) return;
-    setHistoryLoading(true);
-    fetch("/api/history?type=log-search")
-      .then((r) => r.json())
-      .then((data) => setHistoryRecords(Array.isArray(data) ? data : []))
-      .catch(() => setHistoryRecords([]))
-      .finally(() => setHistoryLoading(false));
-  }, [historyOpen]);
-
   // ── Clear searching flag when fetch completes ──
   const prevDone = useRef(false);
   useEffect(() => {
@@ -1574,6 +1588,16 @@ export function LogsExplorer({
     if (preset === "custom") {
       beginTime = fromDatetimeLocal(customBegin, tz);
       endTime = fromDatetimeLocal(customEnd, tz);
+      if (!beginTime || !endTime) {
+        setError("Custom range requires both a start and end time.");
+        onConfigChange({ searching: false });
+        return doCleanup;
+      }
+      if (new Date(endTime).getTime() <= new Date(beginTime).getTime()) {
+        setError("End time must be after start time.");
+        onConfigChange({ searching: false });
+        return doCleanup;
+      }
     } else {
       const ms = PRESETS.find((p) => p.value === preset)!.ms;
       const now = new Date();
@@ -1581,12 +1605,15 @@ export function LogsExplorer({
       endTime = now.toISOString();
     }
 
-    // Build server-side _queryFilter from highlight keywords only.
-    // The Filter entries box is client-side only — do NOT include it here.
+    // Build server-side _queryFilter from the dedicated Search keywords box (search mode only).
+    // The Filter and Highlight boxes are client-side only — do NOT include them here.
     // This mirrors KYID Utilities' approach: only matching entries are returned by AIC,
     // dramatically reducing page count and eliminating rate-limit risk on long ranges.
     function escapeFilterValue(v: string) { return v.replace(/\\/g, "\\\\").replace(/"/g, '\\"'); }
-    const allTerms = keywordsRawRef.current.split(",").map((k) => k.trim()).filter(Boolean);
+    // Parse the Search keywords box and pull out positive leaf terms. Server-side filtering is
+    // a conservative OR over leaves; the client predicate (Filter box) still enforces && / () precisely.
+    const parsed = parseQuery(searchKeywordsRawRef.current, { matchCase: searchMatchCase, wholeWord: searchWholeWord });
+    const allTerms = parsed.error ? [] : parsed.highlightTerms;
     const queryFilter = allTerms.length > 0
       ? allTerms.map((t) => {
         const v = escapeFilterValue(t);
@@ -1626,17 +1653,55 @@ export function LogsExplorer({
     })),
     [levelFiltered, defaultSourceForNav]);
 
+  // Parse the Filter box as a boolean query supporting && / || / ( ) and quoted phrases.
+  // Comma is also accepted as `||` for backwards compatibility with older usage.
+  const filterQuery = useMemo(
+    () => parseQuery(search ?? "", { matchCase: filterMatchCase, wholeWord: filterWholeWord }),
+    [search, filterMatchCase, filterWholeWord],
+  );
+
+  // Same for the Highlight box. The positive leaf terms drive per-token <mark>
+  // rendering; the predicate drives match navigation.
+  const highlightQuery = useMemo(
+    () => parseQuery(keywordsActive, { matchCase: highlightMatchCase, wholeWord: highlightWholeWord }),
+    [keywordsActive, highlightMatchCase, highlightWholeWord],
+  );
+  // Parsed Search keywords (search mode only). Used for the server _queryFilter
+  // AND for auto-highlighting search terms in the rendered results.
+  const searchKeywordsParsed = useMemo(
+    () => parseQuery(searchKeywordsRaw, { matchCase: searchMatchCase, wholeWord: searchWholeWord }),
+    [searchKeywordsRaw, searchMatchCase, searchWholeWord],
+  );
+  // Auto-highlight terms = union of Highlight + Filter + Search keyword leaves.
+  // Rendering uses Highlight's matchCase / wholeWord (uniform regex required).
+  const keywords = useMemo(() => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const push = (terms: string[]) => {
+      for (const t of terms) {
+        if (!t) continue;
+        const key = highlightMatchCase ? t : t.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(t);
+      }
+    };
+    if (!highlightQuery.empty && !highlightQuery.error) push(highlightQuery.highlightTerms);
+    if (!filterQuery.empty && !filterQuery.error) push(filterQuery.highlightTerms);
+    if (mode === "search" && !searchKeywordsParsed.empty && !searchKeywordsParsed.error) {
+      push(searchKeywordsParsed.highlightTerms);
+    }
+    return out;
+  }, [highlightQuery, filterQuery, searchKeywordsParsed, mode, highlightMatchCase]);
+
   const rawFilteredWithIdx = useMemo(() => {
-    if (!search) return levelFiltered.map((e, i) => ({ e, i }));
-    const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const pattern = wholeWord ? `\\b${escaped}\\b` : escaped;
-    const flags = matchCase ? "g" : "gi";
-    const re = new RegExp(pattern, flags);
+    if (filterQuery.empty) return levelFiltered.map((e, i) => ({ e, i }));
+    if (filterQuery.error) return [] as { e: LogEntry; i: number }[];
     return levelFiltered.reduce<{ e: LogEntry; i: number }[]>((acc, e, i) => {
-      if (re.test(entryStrings[i].json)) acc.push({ e, i });
+      if (filterQuery.test(entryStrings[i].json)) acc.push({ e, i });
       return acc;
     }, []);
-  }, [levelFiltered, entryStrings, search, matchCase, wholeWord]);
+  }, [levelFiltered, entryStrings, filterQuery]);
 
   // Dedupe pass — collapses exact-match duplicates to the first occurrence and tracks counts.
   // Key: source + level + message text. When off, dupeCounts is empty and everything passes through.
@@ -1676,15 +1741,18 @@ export function LogsExplorer({
   const filtered = useMemo(() => filteredWithIdx.map(({ e }) => e), [filteredWithIdx]);
 
   // ── Match navigation (terminal view, keyword highlighting) ──
-  // Compute indices into `filtered` where any keyword matches the formatted line.
-  const matchRows = useMemo(() => findKeywordMatchRows(
-    filteredWithIdx.map(({ e, i }) => ({
-      key: logEntryMatchKey(e, i),
-      line: entryStrings[i].line,
-    })),
-    keywords,
-    { matchCase, wholeWord },
-  ), [filteredWithIdx, entryStrings, keywords, matchCase, wholeWord]);
+  // Compute indices into `filtered` where the highlight query matches the formatted line.
+  const matchRows = useMemo(() => {
+    if (highlightQuery.empty || highlightQuery.error) return [];
+    const out: { key: string; index: number }[] = [];
+    for (let idx = 0; idx < filteredWithIdx.length; idx++) {
+      const { e, i } = filteredWithIdx[idx];
+      if (highlightQuery.test(entryStrings[i].line)) {
+        out.push({ key: logEntryMatchKey(e, i), index: idx });
+      }
+    }
+    return out;
+  }, [filteredWithIdx, entryStrings, highlightQuery]);
   const matchIndices = useMemo(() => matchRows.map((m) => m.index), [matchRows]);
 
   // Jump to first match when keywords/options change; reset when no matches
@@ -1698,7 +1766,7 @@ export function LogsExplorer({
       setActiveMatchKey(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [keywordsActive, matchCase, wholeWord]);
+  }, [keywordsActive, highlightMatchCase, highlightWholeWord]);
 
   // When tailing adds entries, keep the current match anchored without issuing
   // a new scroll request. This lets the count update while the viewport stays
@@ -1848,48 +1916,6 @@ export function LogsExplorer({
         {error && <span className="text-xs text-red-500">{error}</span>}
       </div>
 
-      {/* ── Search history panel ── */}
-      {historyOpen && (
-        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-600">Search History</span>
-            <button type="button" onClick={() => setHistoryOpen(false)} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
-          </div>
-          {historyLoading ? (
-            <div className="p-6 text-center text-xs text-slate-400">Loading…</div>
-          ) : historyRecords.length === 0 ? (
-            <div className="p-6 text-center text-xs text-slate-400">No saved searches yet.</div>
-          ) : (
-            <div className="divide-y divide-slate-100 max-h-64 overflow-y-auto">
-              {historyRecords.map((rec) => {
-                const age = Date.now() - new Date(rec.completedAt).getTime();
-                const ageStr = age < 60000 ? "just now"
-                  : age < 3600000 ? `${Math.floor(age / 60000)}m ago`
-                    : age < 86400000 ? `${Math.floor(age / 3600000)}h ago`
-                      : `${Math.floor(age / 86400000)}d ago`;
-                return (
-                  <div key={rec.id} className="flex items-center gap-3 px-4 py-2 hover:bg-slate-50 transition-colors text-xs">
-                    <span className={cn(
-                      "shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium",
-                      rec.logMode === "search" ? "bg-sky-100 text-sky-700"
-                        : rec.logMode === "tail" ? "bg-emerald-100 text-emerald-700"
-                          : "bg-violet-100 text-violet-700"
-                    )}>
-                      {rec.logMode ?? "search"}
-                    </span>
-                    <span className="text-slate-500 font-mono text-[11px] shrink-0">{rec.logSource ?? rec.environment}</span>
-                    <span className="text-slate-700 flex-1 truncate">
-                      {rec.summary}
-                    </span>
-                    <span className="text-slate-400 shrink-0">{ageStr}</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
       {/* ── Log window ── */}
       <div className={cn(
         "bg-white border border-slate-200 flex flex-col",
@@ -1968,69 +1994,180 @@ export function LogsExplorer({
             )}
 
             {/* Search mode controls */}
-            {mode === "search" && (
-              <div className="flex items-center gap-1.5 shrink-0">
-                <select
-                  value={preset}
-                  onChange={(e) => onConfigChange({ preset: e.target.value as Preset })}
-                  disabled={searching}
-                  className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50"
-                >
-                  {PRESETS.map((p) => (
-                    <option key={p.value} value={p.value}>{p.label}</option>
-                  ))}
-                </select>
-                {preset === "custom" && (
-                  <>
-                    <input
-                      type="datetime-local"
-                      step="1"
-                      value={customBegin}
-                      onChange={(e) => onConfigChange({ customBegin: e.target.value })}
-                      disabled={searching}
-                      className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-sky-500"
-                    />
-                    <span className="text-slate-400 text-[11px]">→</span>
-                    <input
-                      type="datetime-local"
-                      step="1"
-                      value={customEnd}
-                      onChange={(e) => onConfigChange({ customEnd: e.target.value })}
-                      disabled={searching}
-                      className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-sky-500"
-                    />
-                  </>
-                )}
-                <button
-                  type="button"
-                  onClick={() => onConfigChange({ searchSeq: (searchSeq ?? 0) + 1 })}
-                  disabled={loading || searching || selectedSources.length === 0 || !!sourcesError}
-                  className="px-3 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 disabled:opacity-50 transition-colors flex items-center gap-1"
-                >
-                  {searching ? (
+            {mode === "search" && (() => {
+              const customRangeInvalid = preset === "custom" && !!customBegin && !!customEnd
+                && new Date(customEnd).getTime() <= new Date(customBegin).getTime();
+              return (
+                <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                  <select
+                    value={preset}
+                    onChange={(e) => onConfigChange({ preset: e.target.value as Preset })}
+                    disabled={searching}
+                    className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50"
+                  >
+                    {PRESETS.map((p) => (
+                      <option key={p.value} value={p.value}>{p.label}</option>
+                    ))}
+                  </select>
+                  {preset === "custom" && (
                     <>
-                      <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                      Running…
+                      <input
+                        type="datetime-local"
+                        step="1"
+                        value={customBegin}
+                        onChange={(e) => onConfigChange({ customBegin: e.target.value })}
+                        disabled={searching}
+                        className={cn(
+                          "rounded border px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1",
+                          customRangeInvalid ? "border-rose-400 focus:ring-rose-400" : "border-slate-300 focus:ring-sky-500",
+                        )}
+                      />
+                      <span className="text-slate-400 text-[11px]">→</span>
+                      <input
+                        type="datetime-local"
+                        step="1"
+                        value={customEnd}
+                        onChange={(e) => onConfigChange({ customEnd: e.target.value })}
+                        disabled={searching}
+                        className={cn(
+                          "rounded border px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1",
+                          customRangeInvalid ? "border-rose-400 focus:ring-rose-400" : "border-slate-300 focus:ring-sky-500",
+                        )}
+                      />
+                      {customRangeInvalid && (
+                        <span className="text-[11px] text-rose-600 whitespace-nowrap" title="End time must be after start time">
+                          End must be after start
+                        </span>
+                      )}
                     </>
-                  ) : (
-                    "Search"
                   )}
-                </button>
-                {searching && (
                   <button
                     type="button"
-                    onClick={() => workerRef.current?.postMessage({ type: "fetch-stop" })}
-                    className="px-3 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+                    onClick={() => onConfigChange({ searchSeq: (searchSeq ?? 0) + 1 })}
+                    disabled={loading || searching || selectedSources.length === 0 || !!sourcesError || customRangeInvalid}
+                    className="px-3 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 disabled:opacity-50 transition-colors flex items-center gap-1"
                   >
-                    Stop
+                    {searching ? (
+                      <>
+                        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Running…
+                      </>
+                    ) : (
+                      "Search"
+                    )}
                   </button>
-                )}
-              </div>
-            )}
+                  {searching && (
+                    <button
+                      type="button"
+                      onClick={() => workerRef.current?.postMessage({ type: "fetch-stop" })}
+                      className="px-3 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+                    >
+                      Stop
+                    </button>
+                  )}
+                  {/* Server-side search keywords — sent to AIC as _queryFilter, runs at fetch time. */}
+                  <span className="text-slate-300 select-none">|</span>
+                  <label className="text-xs font-medium text-slate-500">Keywords</label>
+                  <input
+                    type="text"
+                    value={searchKeywordsRaw}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setSearchKeywordsRaw(val);
+                      searchKeywordsRawRef.current = val;
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !searching && !customRangeInvalid && selectedSources.length > 0 && !sourcesError) {
+                        e.preventDefault();
+                        onConfigChange({ searchSeq: (searchSeq ?? 0) + 1 });
+                      }
+                    }}
+                    disabled={searching}
+                    placeholder="Server-side keywords (||, &quot;phrase&quot;)…"
+                    title="Sent to AIC as _queryFilter — restricts what's downloaded. Leave blank to fetch everything in the time range."
+                    className="flex-1 min-w-0 text-xs rounded border border-slate-300 px-2.5 py-1 font-mono focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500 disabled:opacity-50"
+                  />
+                  {/* Per-field Aa/[W] for Search keywords. Note: AIC's _queryFilter is
+                      always case-insensitive substring; these toggles control how the
+                      same terms are auto-highlighted in the rendered results. */}
+                  <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+                    <button
+                      type="button"
+                      title="Case sensitive (auto-highlight only — AIC server is always case-insensitive)"
+                      onClick={() => setSearchMatchCase((v) => !v)}
+                      className={cn(
+                        "px-2 py-0.5 text-[11px] font-medium font-mono transition-colors",
+                        searchMatchCase ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                      )}
+                    >Aa</button>
+                    <button
+                      type="button"
+                      title="Whole word (auto-highlight only — AIC server has no whole-word operator)"
+                      onClick={() => setSearchWholeWord((v) => !v)}
+                      className={cn(
+                        "px-2 py-0.5 text-[11px] font-medium font-mono border-l border-slate-300 transition-colors",
+                        searchWholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                      )}
+                    >[W]</button>
+                  </div>
+                </div>
+              );
+            })()}
 
+          </div>
+
+          {/* Row 2: Query — Filter and Highlight side-by-side; share one Aa/[W] toggle pair and the match navigator */}
+          <div className="flex items-center gap-2 px-4 py-2 border-t border-slate-100">
+            <label className="text-xs font-medium text-slate-500 shrink-0">Filter</label>
+            <input
+              type="text"
+              value={rawSearch}
+              onChange={(e) => handleFilterChange(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") applySearch(rawSearch); }}
+              placeholder="Filter entries… (space=AND, ||, ( ), &quot;phrase&quot;; 3+ chars or Enter)"
+              className={cn(
+                "flex-1 min-w-0 text-xs rounded border px-2.5 py-1 font-mono focus:outline-none focus:ring-2",
+                filterQuery.error
+                  ? "border-rose-300 focus:ring-rose-400"
+                  : rawSearch && !search
+                    ? "border-amber-300 focus:ring-amber-400"   // typed but not yet active
+                    : "border-slate-300 focus:ring-sky-500"
+              )}
+            />
+            {filterQuery.error && (
+              <span className="text-xs text-rose-600 whitespace-nowrap" title={filterQuery.error}>
+                {filterQuery.error}
+              </span>
+            )}
+            {rawSearch && (
+              <button type="button" onClick={clearSearch} className="text-xs text-slate-400 hover:text-slate-600 shrink-0">
+                Clear
+              </button>
+            )}
+            {/* Per-field Aa/[W] for the Filter predicate */}
+            <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+              <button
+                type="button"
+                title="Case sensitive (Filter predicate)"
+                onClick={() => setFilterMatchCase((v) => !v)}
+                className={cn(
+                  "px-2 py-0.5 text-[11px] font-medium font-mono transition-colors",
+                  filterMatchCase ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                )}
+              >Aa</button>
+              <button
+                type="button"
+                title="Whole word (Filter predicate)"
+                onClick={() => setFilterWholeWord((v) => !v)}
+                className={cn(
+                  "px-2 py-0.5 text-[11px] font-medium font-mono border-l border-slate-300 transition-colors",
+                  filterWholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                )}
+              >[W]</button>
+            </div>
             <span className="text-slate-300 select-none shrink-0">|</span>
             <label className="text-xs font-medium text-slate-500 shrink-0">Highlight</label>
             <input
@@ -2050,37 +2187,46 @@ export function LogsExplorer({
                   if (e.shiftKey) goPrevMatch(); else goNextMatch();
                 }
               }}
-              placeholder="Keywords to highlight, comma-separated…"
-              className="flex-1 text-xs rounded border border-slate-200 px-2.5 py-1 font-mono focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-amber-400"
+              placeholder="Highlight (space=AND, ||, ( ), &quot;phrase&quot;)…"
+              className={cn(
+                "flex-1 min-w-0 text-xs rounded border px-2.5 py-1 font-mono focus:outline-none focus:ring-2",
+                highlightQuery.error
+                  ? "border-rose-300 focus:ring-rose-400 focus:border-rose-400"
+                  : "border-slate-200 focus:ring-amber-400 focus:border-amber-400",
+              )}
             />
-            {keywordsRaw && (
+            {highlightQuery.error ? (
+              <span className="text-xs text-rose-600 whitespace-nowrap" title={highlightQuery.error}>
+                {highlightQuery.error}
+              </span>
+            ) : keywordsRaw && (
               <span className="text-xs text-amber-600 whitespace-nowrap">
                 {keywords.length} keyword{keywords.length !== 1 ? "s" : ""}
               </span>
             )}
-            <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+            <div className="flex rounded border border-slate-300 overflow-hidden shrink-0" title="Highlight predicate; also drives auto-highlight rendering for Filter and Search terms">
               <button
                 type="button"
-                title="Case sensitive"
-                onClick={() => setMatchCase((v) => !v)}
+                title="Case sensitive (Highlight predicate; also controls how all auto-highlighted terms are rendered)"
+                onClick={() => setHighlightMatchCase((v) => !v)}
                 className={cn(
                   "px-2 py-0.5 text-[11px] font-medium font-mono transition-colors",
-                  matchCase ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                  highlightMatchCase ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
                 )}
               >Aa</button>
               <button
                 type="button"
-                title="Whole word"
-                onClick={() => setWholeWord((v) => !v)}
+                title="Whole word (Highlight predicate; also controls how all auto-highlighted terms are rendered)"
+                onClick={() => setHighlightWholeWord((v) => !v)}
                 className={cn(
                   "px-2 py-0.5 text-[11px] font-medium font-mono border-l border-slate-300 transition-colors",
-                  wholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                  highlightWholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
                 )}
               >[W]</button>
             </div>
             {matchIndices.length > 0 && (
               <>
-                <div className="flex items-center gap-1 text-[11px] text-slate-400 whitespace-nowrap tabular-nums">
+                <div className="flex items-center gap-1 text-[11px] text-slate-400 whitespace-nowrap tabular-nums shrink-0">
                   <input
                     type="number"
                     min={1}
@@ -2113,7 +2259,7 @@ export function LogsExplorer({
             )}
           </div>
 
-          {/* Row 2: view toggle + filter + count + height controls + fullscreen */}
+          {/* Row 3: view toggles + count + height controls + fullscreen */}
           <div className="flex items-center gap-3 px-4 py-2 border-t border-slate-100">
             {/* Terminal / Table / JSON toggle — available in all modes */}
             <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
@@ -2201,44 +2347,27 @@ export function LogsExplorer({
             >
               Dedupe
             </button>
-            <input
-              type="text"
-              value={rawSearch}
-              onChange={(e) => handleFilterChange(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") applySearch(rawSearch); }}
-              placeholder="Filter entries… (3+ chars or Enter)"
-              className={cn(
-                "flex-1 text-xs rounded border px-3 py-1.5 font-mono focus:outline-none focus:ring-2 focus:ring-sky-500",
-                rawSearch && !search
-                  ? "border-amber-300 focus:ring-amber-400"   // typed but not yet active
-                  : "border-slate-300"
-              )}
-            />
-            {rawSearch && (
-              <button type="button" onClick={clearSearch} className="text-xs text-slate-400 hover:text-slate-600">
-                Clear
-              </button>
+            {/* Bulk expand / collapse — only meaningful when rows are line-clamped (terminal + wrap) */}
+            {viewMode === "terminal" && wrapLines && filtered.length > 0 && (
+              <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+                <button
+                  type="button"
+                  title="Expand all entries"
+                  onClick={() => setExpandCmd({ kind: "all", nonce: Date.now() })}
+                  className="px-2 py-0.5 text-[11px] font-medium bg-white text-slate-500 hover:bg-slate-50 transition-colors"
+                >
+                  Expand all
+                </button>
+                <button
+                  type="button"
+                  title="Collapse all entries"
+                  onClick={() => setExpandCmd({ kind: "none", nonce: Date.now() })}
+                  className="px-2 py-0.5 text-[11px] font-medium bg-white text-slate-500 hover:bg-slate-50 border-l border-slate-300 transition-colors"
+                >
+                  Collapse all
+                </button>
+              </div>
             )}
-            <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
-              <button
-                type="button"
-                title="Case sensitive"
-                onClick={() => setMatchCase((v) => !v)}
-                className={cn(
-                  "px-2 py-0.5 text-[11px] font-medium font-mono transition-colors",
-                  matchCase ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-                )}
-              >Aa</button>
-              <button
-                type="button"
-                title="Whole word"
-                onClick={() => setWholeWord((v) => !v)}
-                className={cn(
-                  "px-2 py-0.5 text-[11px] font-medium font-mono border-l border-slate-300 transition-colors",
-                  wholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-                )}
-              >[W]</button>
-            </div>
             {viewMode === "table" && (
               <label className="flex items-center gap-1.5 text-xs text-slate-500 whitespace-nowrap cursor-pointer shrink-0">
                 <input
@@ -2354,14 +2483,6 @@ export function LogsExplorer({
             )}
             <button
               type="button"
-              onClick={() => setHistoryOpen((o) => !o)}
-              className={cn("text-xs transition-colors shrink-0", historyOpen ? "text-sky-600" : "text-slate-400 hover:text-slate-600")}
-              title="Search history"
-            >
-              History
-            </button>
-            <button
-              type="button"
               onClick={() => onFullscreenChange?.(!fullscreen)}
               title={fullscreen ? "Exit fullscreen (Esc)" : "Fullscreen"}
               className="text-slate-400 hover:text-slate-600 transition-colors shrink-0"
@@ -2426,11 +2547,12 @@ export function LogsExplorer({
                 dupeCounts={dupeCounts}
                 scrollRequest={matchScrollRequest}
                 activeMatchIndex={activeMatchIndex}
-                matchCase={matchCase}
-                wholeWord={wholeWord}
+                matchCase={highlightMatchCase}
+                wholeWord={highlightWholeWord}
                 autoScroll={autoScroll}
                 onEntryDoubleClick={handleContextEntry}
                 contextAnchorIdx={contextAnchorDisplay}
+                expandCommand={expandCmd}
               />
             )
           ) : viewMode === "json" ? (
@@ -2450,8 +2572,8 @@ export function LogsExplorer({
                 searchTerm={search}
                 activeEntryIdx={activeMatchIndex ?? -1}
                 matchIndices={matchIndices}
-                matchCase={matchCase}
-                wholeWord={wholeWord}
+                matchCase={highlightMatchCase}
+                wholeWord={highlightWholeWord}
                 onEntryDoubleClick={handleContextEntry}
                 contextAnchorIdx={contextAnchorDisplay ?? -1}
               />
@@ -2496,8 +2618,8 @@ export function LogsExplorer({
                       highlighted={highlightedTableIdx === globalIdx || activeMatchIndex === globalIdx}
                       isContextAnchor={contextAnchorDisplay === globalIdx}
                       rowIdx={globalIdx}
-                      matchCase={matchCase}
-                      wholeWord={wholeWord}
+                      matchCase={highlightMatchCase}
+                      wholeWord={highlightWholeWord}
                       dupeCount={dupeCounts.get(globalIdx) ?? 1}
                     />
                   );
