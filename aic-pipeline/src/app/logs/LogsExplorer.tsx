@@ -1283,8 +1283,15 @@ export function LogsExplorer({
   const [activeMatchKey, setActiveMatchKey] = useState<string | null>(null);
   const [matchScrollNonce, setMatchScrollNonce] = useState(0);
   const [highlightedTableIdx, setHighlightedTableIdx] = useState<number | null>(null); // filtered idx to highlight in table view
-  const [matchCase, setMatchCase] = useState(false);
-  const [wholeWord, setWholeWord] = useState(false);
+  const [highlightMatchCase, setHighlightMatchCase] = useState(false);
+  const [highlightWholeWord, setHighlightWholeWord] = useState(false);
+  // Per-field case/word toggles. Each field's predicate honours its own pair;
+  // the renderer applies a single uniform setting (Highlight's), so visual
+  // coloring of Filter / Search auto-highlighted terms uses Highlight's settings.
+  const [filterMatchCase, setFilterMatchCase] = useState(false);
+  const [filterWholeWord, setFilterWholeWord] = useState(false);
+  const [searchMatchCase, setSearchMatchCase] = useState(false);
+  const [searchWholeWord, setSearchWholeWord] = useState(false);
   const highlightInputRef = useRef<HTMLInputElement>(null);
 
 
@@ -1619,7 +1626,7 @@ export function LogsExplorer({
     function escapeFilterValue(v: string) { return v.replace(/\\/g, "\\\\").replace(/"/g, '\\"'); }
     // Parse the Search keywords box and pull out positive leaf terms. Server-side filtering is
     // a conservative OR over leaves; the client predicate (Filter box) still enforces && / () precisely.
-    const parsed = parseQuery(searchKeywordsRawRef.current, { matchCase, wholeWord });
+    const parsed = parseQuery(searchKeywordsRawRef.current, { matchCase: searchMatchCase, wholeWord: searchWholeWord });
     const allTerms = parsed.error ? [] : parsed.highlightTerms;
     const queryFilter = allTerms.length > 0
       ? allTerms.map((t) => {
@@ -1663,19 +1670,43 @@ export function LogsExplorer({
   // Parse the Filter box as a boolean query supporting && / || / ( ) and quoted phrases.
   // Comma is also accepted as `||` for backwards compatibility with older usage.
   const filterQuery = useMemo(
-    () => parseQuery(search ?? "", { matchCase, wholeWord }),
-    [search, matchCase, wholeWord],
+    () => parseQuery(search ?? "", { matchCase: filterMatchCase, wholeWord: filterWholeWord }),
+    [search, filterMatchCase, filterWholeWord],
   );
 
   // Same for the Highlight box. The positive leaf terms drive per-token <mark>
   // rendering; the predicate drives match navigation.
   const highlightQuery = useMemo(
-    () => parseQuery(keywordsActive, { matchCase, wholeWord }),
-    [keywordsActive, matchCase, wholeWord],
+    () => parseQuery(keywordsActive, { matchCase: highlightMatchCase, wholeWord: highlightWholeWord }),
+    [keywordsActive, highlightMatchCase, highlightWholeWord],
   );
-  const keywords = highlightQuery.empty || highlightQuery.error
-    ? []
-    : highlightQuery.highlightTerms;
+  // Parsed Search keywords (search mode only). Used for the server _queryFilter
+  // AND for auto-highlighting search terms in the rendered results.
+  const searchKeywordsParsed = useMemo(
+    () => parseQuery(searchKeywordsRaw, { matchCase: searchMatchCase, wholeWord: searchWholeWord }),
+    [searchKeywordsRaw, searchMatchCase, searchWholeWord],
+  );
+  // Auto-highlight terms = union of Highlight + Filter + Search keyword leaves.
+  // Rendering uses Highlight's matchCase / wholeWord (uniform regex required).
+  const keywords = useMemo(() => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const push = (terms: string[]) => {
+      for (const t of terms) {
+        if (!t) continue;
+        const key = highlightMatchCase ? t : t.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(t);
+      }
+    };
+    if (!highlightQuery.empty && !highlightQuery.error) push(highlightQuery.highlightTerms);
+    if (!filterQuery.empty && !filterQuery.error) push(filterQuery.highlightTerms);
+    if (mode === "search" && !searchKeywordsParsed.empty && !searchKeywordsParsed.error) {
+      push(searchKeywordsParsed.highlightTerms);
+    }
+    return out;
+  }, [highlightQuery, filterQuery, searchKeywordsParsed, mode, highlightMatchCase]);
 
   const rawFilteredWithIdx = useMemo(() => {
     if (filterQuery.empty) return levelFiltered.map((e, i) => ({ e, i }));
@@ -1749,7 +1780,7 @@ export function LogsExplorer({
       setActiveMatchKey(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [keywordsActive, matchCase, wholeWord]);
+  }, [keywordsActive, highlightMatchCase, highlightWholeWord]);
 
   // When tailing adds entries, keep the current match anchored without issuing
   // a new scroll request. This lets the count update while the viewport stays
@@ -2115,6 +2146,29 @@ export function LogsExplorer({
                     title="Sent to AIC as _queryFilter — restricts what's downloaded. Leave blank to fetch everything in the time range."
                     className="flex-1 min-w-0 text-xs rounded border border-slate-300 px-2.5 py-1 font-mono focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500 disabled:opacity-50"
                   />
+                  {/* Per-field Aa/[W] for Search keywords. Note: AIC's _queryFilter is
+                      always case-insensitive substring; these toggles control how the
+                      same terms are auto-highlighted in the rendered results. */}
+                  <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+                    <button
+                      type="button"
+                      title="Case sensitive (auto-highlight only — AIC server is always case-insensitive)"
+                      onClick={() => setSearchMatchCase((v) => !v)}
+                      className={cn(
+                        "px-2 py-0.5 text-[11px] font-medium font-mono transition-colors",
+                        searchMatchCase ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                      )}
+                    >Aa</button>
+                    <button
+                      type="button"
+                      title="Whole word (auto-highlight only — AIC server has no whole-word operator)"
+                      onClick={() => setSearchWholeWord((v) => !v)}
+                      className={cn(
+                        "px-2 py-0.5 text-[11px] font-medium font-mono border-l border-slate-300 transition-colors",
+                        searchWholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                      )}
+                    >[W]</button>
+                  </div>
                 </div>
               );
             })()}
@@ -2149,6 +2203,27 @@ export function LogsExplorer({
                 Clear
               </button>
             )}
+            {/* Per-field Aa/[W] for the Filter predicate */}
+            <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+              <button
+                type="button"
+                title="Case sensitive (Filter predicate)"
+                onClick={() => setFilterMatchCase((v) => !v)}
+                className={cn(
+                  "px-2 py-0.5 text-[11px] font-medium font-mono transition-colors",
+                  filterMatchCase ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                )}
+              >Aa</button>
+              <button
+                type="button"
+                title="Whole word (Filter predicate)"
+                onClick={() => setFilterWholeWord((v) => !v)}
+                className={cn(
+                  "px-2 py-0.5 text-[11px] font-medium font-mono border-l border-slate-300 transition-colors",
+                  filterWholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                )}
+              >[W]</button>
+            </div>
             <span className="text-slate-300 select-none shrink-0">|</span>
             <label className="text-xs font-medium text-slate-500 shrink-0">Highlight</label>
             <input
@@ -2185,23 +2260,23 @@ export function LogsExplorer({
                 {keywords.length} keyword{keywords.length !== 1 ? "s" : ""}
               </span>
             )}
-            <div className="flex rounded border border-slate-300 overflow-hidden shrink-0" title="Applies to both Filter and Highlight">
+            <div className="flex rounded border border-slate-300 overflow-hidden shrink-0" title="Highlight predicate; also drives auto-highlight rendering for Filter and Search terms">
               <button
                 type="button"
-                title="Case sensitive (applies to Filter and Highlight)"
-                onClick={() => setMatchCase((v) => !v)}
+                title="Case sensitive (Highlight predicate; also controls how all auto-highlighted terms are rendered)"
+                onClick={() => setHighlightMatchCase((v) => !v)}
                 className={cn(
                   "px-2 py-0.5 text-[11px] font-medium font-mono transition-colors",
-                  matchCase ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                  highlightMatchCase ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
                 )}
               >Aa</button>
               <button
                 type="button"
-                title="Whole word (applies to Filter and Highlight)"
-                onClick={() => setWholeWord((v) => !v)}
+                title="Whole word (Highlight predicate; also controls how all auto-highlighted terms are rendered)"
+                onClick={() => setHighlightWholeWord((v) => !v)}
                 className={cn(
                   "px-2 py-0.5 text-[11px] font-medium font-mono border-l border-slate-300 transition-colors",
-                  wholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
+                  highlightWholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
                 )}
               >[W]</button>
             </div>
@@ -2536,8 +2611,8 @@ export function LogsExplorer({
                 dupeCounts={dupeCounts}
                 scrollRequest={matchScrollRequest}
                 activeMatchIndex={activeMatchIndex}
-                matchCase={matchCase}
-                wholeWord={wholeWord}
+                matchCase={highlightMatchCase}
+                wholeWord={highlightWholeWord}
                 autoScroll={autoScroll}
                 onEntryDoubleClick={handleContextEntry}
                 contextAnchorIdx={contextAnchorDisplay}
@@ -2561,8 +2636,8 @@ export function LogsExplorer({
                 searchTerm={search}
                 activeEntryIdx={activeMatchIndex ?? -1}
                 matchIndices={matchIndices}
-                matchCase={matchCase}
-                wholeWord={wholeWord}
+                matchCase={highlightMatchCase}
+                wholeWord={highlightWholeWord}
                 onEntryDoubleClick={handleContextEntry}
                 contextAnchorIdx={contextAnchorDisplay ?? -1}
               />
@@ -2607,8 +2682,8 @@ export function LogsExplorer({
                       highlighted={highlightedTableIdx === globalIdx || activeMatchIndex === globalIdx}
                       isContextAnchor={contextAnchorDisplay === globalIdx}
                       rowIdx={globalIdx}
-                      matchCase={matchCase}
-                      wholeWord={wholeWord}
+                      matchCase={highlightMatchCase}
+                      wholeWord={highlightWholeWord}
                       dupeCount={dupeCounts.get(globalIdx) ?? 1}
                     />
                   );
