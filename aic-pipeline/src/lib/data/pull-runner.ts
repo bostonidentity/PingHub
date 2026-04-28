@@ -232,10 +232,24 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
     // NDJSON to that size (drops any half-written tail) and rebuild
     // in-memory state from the kept bytes.
     const persistedProgress = job.progress.find((p) => p.type === type);
-    const isResuming = !!persistedProgress
+    const wantsResume = !!persistedProgress
       && typeof persistedProgress.byteLength === "number"
-      && persistedProgress.byteLength > 0
-      && fs.existsSync(ndjsonPath);
+      && persistedProgress.byteLength > 0;
+    const isResuming = wantsResume && fs.existsSync(ndjsonPath);
+
+    if (wantsResume && !isResuming) {
+      // The job state says "resume from byte X with cookie Y", but the
+      // staging file is gone. We can't safely restart from the cookie
+      // (records before byte X would be lost), and we shouldn't silently
+      // re-fetch from page 1 either (wasted hours of tenant traffic).
+      // Mark the type failed with a clear message so the user knows.
+      registry.updateProgress(job.id, type, {
+        status: "failed",
+        error: "resume staging file missing — please start a fresh pull",
+      });
+      anyFailed = true;
+      continue;
+    }
 
     if (isResuming) {
       fs.truncateSync(ndjsonPath, persistedProgress!.byteLength!);
