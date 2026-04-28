@@ -342,3 +342,101 @@ describe("runPull: cookie persistence", () => {
     expect(afterFinal).toBeDefined();
   });
 });
+
+describe("runPull: resume from cookie", () => {
+  it("truncates half-written tail, rebuilds in-memory state, and continues from the persisted cookie", async () => {
+    // Pre-state: a previous run wrote 2 pages + a half-written third record,
+    // then crashed before the third record's offset was persisted.
+    const typeStagingDir = path.join(tmpDir, "uat", "managed-data");
+    const job = registry.startJob("uat", ["alpha_user"]);
+    const pullingDir = path.join(typeStagingDir, `.pulling-${job.id}`, "alpha_user");
+    fs.mkdirSync(pullingDir, { recursive: true });
+
+    // Page 1: u1, u2. Page 2: u3, u4. Half-line: '{"_id":"u5...'.
+    const page1 = `${JSON.stringify({ _id: "u1" })}\n${JSON.stringify({ _id: "u2" })}\n`;
+    const page2 = `${JSON.stringify({ _id: "u3" })}\n${JSON.stringify({ _id: "u4" })}\n`;
+    const halfLine = `{"_id":"u5"`;
+    fs.writeFileSync(path.join(pullingDir, "data.ndjson"), page1 + page2 + halfLine);
+
+    const byteAfterPage2 = Buffer.byteLength(page1 + page2, "utf-8");
+
+    // Mark job interrupted with persisted cookie + byteLength matching end-of-page-2.
+    registry.updateProgress(job.id, "alpha_user", {
+      status: "running",
+      fetched: 4,
+      cookie: "page3",
+      byteLength: byteAfterPage2,
+    });
+    registry.setJobStatus(job.id, "interrupted");
+
+    // Resume: tenant returns one final page with u5 + u6, then null.
+    const fetchMock = mockFetchSequence([
+      {
+        status: 200, body: {
+          result: [{ _id: "u5" }, { _id: "u6" }],
+          pagedResultsCookie: null,
+        }
+      },
+    ]);
+
+    await runPull({
+      job: registry.getJob(job.id)!,
+      registry, envsRoot: tmpDir, envVars: ENV_VARS,
+      mintToken: async () => "tok", fetchFn: fetchMock,
+      preflightCount: async () => null,
+      signal: new AbortController().signal,
+    });
+
+    const typeDir = path.join(tmpDir, "uat", "managed-data", "alpha_user");
+    expect(fs.existsSync(typeDir)).toBe(true);
+    const lines = fs.readFileSync(path.join(typeDir, "data.ndjson"), "utf-8")
+      .split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    expect(lines.map((r) => r._id)).toEqual(["u1", "u2", "u3", "u4", "u5", "u6"]);
+
+    const offsets = JSON.parse(fs.readFileSync(path.join(typeDir, "_offsets.json"), "utf-8"));
+    expect(Object.keys(offsets).sort()).toEqual(["u1", "u2", "u3", "u4", "u5", "u6"]);
+
+    expect(registry.getJob(job.id)?.status).toBe("completed");
+  });
+
+  it("dedupes a duplicated page when registry persisted cookie but the next fetch returns the same records", async () => {
+    const job = registry.startJob("uat", ["alpha_user"]);
+    const pullingDir = path.join(tmpDir, "uat", "managed-data", `.pulling-${job.id}`, "alpha_user");
+    fs.mkdirSync(pullingDir, { recursive: true });
+
+    const page1 = `${JSON.stringify({ _id: "u1" })}\n${JSON.stringify({ _id: "u2" })}\n`;
+    fs.writeFileSync(path.join(pullingDir, "data.ndjson"), page1);
+    const byteAfterPage1 = Buffer.byteLength(page1, "utf-8");
+
+    registry.updateProgress(job.id, "alpha_user", {
+      status: "running",
+      fetched: 2,
+      cookie: "page1-cookie",
+      byteLength: byteAfterPage1,
+    });
+    registry.setJobStatus(job.id, "interrupted");
+
+    // Tenant returns the same u1, u2 again, then a fresh u3, then end.
+    const fetchMock = mockFetchSequence([
+      {
+        status: 200, body: {
+          result: [{ _id: "u1" }, { _id: "u2" }, { _id: "u3" }],
+          pagedResultsCookie: null,
+        }
+      },
+    ]);
+
+    await runPull({
+      job: registry.getJob(job.id)!,
+      registry, envsRoot: tmpDir, envVars: ENV_VARS,
+      mintToken: async () => "tok", fetchFn: fetchMock,
+      preflightCount: async () => null,
+      signal: new AbortController().signal,
+    });
+
+    const typeDir = path.join(tmpDir, "uat", "managed-data", "alpha_user");
+    const lines = fs.readFileSync(path.join(typeDir, "data.ndjson"), "utf-8")
+      .split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    expect(lines.map((r) => r._id)).toEqual(["u1", "u2", "u3"]);
+  });
+});
