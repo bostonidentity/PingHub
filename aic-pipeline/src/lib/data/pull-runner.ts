@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import readline from "readline";
 import type { DataPullJob } from "./types";
 import type { Registry } from "./job-registry";
 import { NDJSON_FILE, OFFSETS_FILE, type Offsets } from "./ndjson-format";
@@ -66,6 +67,54 @@ async function renameWithRetry(src: string, dst: string, maxAttempts = 5): Promi
     }
   }
   throw lastErr;
+}
+
+/**
+ * Stream-read an NDJSON file and rebuild in-memory state from records up to
+ * `expectedBytes`. Returns the offsets/index/refs accumulators that match
+ * the bytes already on disk. Caller has already truncated the file to
+ * `expectedBytes` so any half-written tail is gone.
+ */
+async function rebuildFromNDJson(
+  ndjsonPath: string,
+  pickIndexFieldsFn: typeof pickIndexFields,
+  extractRefsFn: typeof extractRefs,
+): Promise<{
+  offsets: Offsets;
+  indexEntries: { id: string; f: Record<string, string> }[];
+  refsIndex: Record<string, string[]>;
+  fetched: number;
+  byteLength: number;
+}> {
+  const offsets: Offsets = {};
+  const indexEntries: { id: string; f: Record<string, string> }[] = [];
+  const refsIndex: Record<string, string[]> = {};
+  let fetched = 0;
+  let byteLength = 0;
+
+  if (!fs.existsSync(ndjsonPath)) {
+    return { offsets, indexEntries, refsIndex, fetched, byteLength };
+  }
+
+  const stream = fs.createReadStream(ndjsonPath, { encoding: "utf-8" });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  for await (const line of rl) {
+    if (!line) continue;
+    let item: Record<string, unknown>;
+    try { item = JSON.parse(line); } catch { continue; }
+    const id = typeof item._id === "string"
+      ? item._id
+      : typeof item.id === "string"
+        ? item.id as string
+        : String(fetched + 1);
+    offsets[id] = byteLength;
+    indexEntries.push({ id, f: pickIndexFieldsFn(item) });
+    const r = extractRefsFn(item);
+    if (r.length > 0) refsIndex[id] = r;
+    fetched++;
+    byteLength += Buffer.byteLength(line, "utf-8") + 1; // +1 for the newline
+  }
+  return { offsets, indexEntries, refsIndex, fetched, byteLength };
 }
 
 export interface RunPullOpts {
@@ -166,22 +215,47 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
     const typePullingDir = path.join(pullingRoot, type);
     fs.mkdirSync(typePullingDir, { recursive: true });
 
-    const indexEntries: { id: string; f: Record<string, string> }[] = [];
-    const refsIndex: Record<string, string[]> = {};
-    const offsets: Offsets = {};
+    let indexEntries: { id: string; f: Record<string, string> }[] = [];
+    let refsIndex: Record<string, string[]> = {};
+    let offsets: Offsets = {};
 
     const ndjsonPath = path.join(typePullingDir, NDJSON_FILE);
-    const ndjsonStream = fs.createWriteStream(ndjsonPath, { flags: "a" });
-    ndjsonStream.on("error", () => { /* swallow post-destroy ENOENT */ });
-    let bytesWritten = 0;
 
     let cookie: string | null = null;
-    let total: number | null = await preflightCount(type, token);
+    let total: number | null = null;
     let fetched = 0;
+    let bytesWritten = 0;
     let typeFailed = false;
-    if (total !== null) {
-      registry.updateProgress(job.id, type, { fetched: 0, total });
+
+    // Resume detection: per-type progress already has cookie/byteLength from
+    // the prior interrupted run. If `byteLength > 0`, truncate the existing
+    // NDJSON to that size (drops any half-written tail) and rebuild
+    // in-memory state from the kept bytes.
+    const persistedProgress = job.progress.find((p) => p.type === type);
+    const isResuming = !!persistedProgress
+      && typeof persistedProgress.byteLength === "number"
+      && persistedProgress.byteLength > 0
+      && fs.existsSync(ndjsonPath);
+
+    if (isResuming) {
+      fs.truncateSync(ndjsonPath, persistedProgress!.byteLength!);
+      const rebuilt = await rebuildFromNDJson(ndjsonPath, pickIndexFields, extractRefs);
+      offsets = rebuilt.offsets;
+      indexEntries = rebuilt.indexEntries;
+      refsIndex = rebuilt.refsIndex;
+      fetched = rebuilt.fetched;
+      bytesWritten = rebuilt.byteLength;
+      cookie = persistedProgress!.cookie ?? null;
+      total = persistedProgress!.total ?? null;
+    } else {
+      total = await preflightCount(type, token);
+      if (total !== null) {
+        registry.updateProgress(job.id, type, { fetched: 0, total });
+      }
     }
+
+    const ndjsonStream = fs.createWriteStream(ndjsonPath, { flags: "a" });
+    ndjsonStream.on("error", () => { /* swallow post-destroy ENOENT */ });
 
     pages:
     while (true) {
@@ -248,6 +322,7 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
               : typeof item.id === "string"
                 ? item.id as string
                 : String(fetched + 1);
+            if (id in offsets) continue; // dedupe on resume
             const line = JSON.stringify(item) + "\n";
             offsets[id] = bytesWritten;
             ndjsonStream.write(line);
