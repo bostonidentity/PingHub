@@ -6,7 +6,7 @@ import { NDJSON_FILE, OFFSETS_FILE, type Offsets } from "./ndjson-format";
 
 const MAX_RETRIES = 2;
 const DEFAULT_RETRY_DELAY_MS = 3000;
-const PAGE_SIZE = 1000;
+const DEFAULT_PAGE_SIZE = 5000;
 const INDEX_FIELD_MAX_LEN = 200;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -84,6 +84,14 @@ export interface RunPullOpts {
    * to mock the preflight HTTP call.
    */
   preflightCount?: (type: string, token: string) => Promise<number | null>;
+  /**
+   * Page size for the `_pageSize` query param. Order of precedence at the
+   * call site (route handler resolves these into a single number):
+   *   1. Environment.pageSize from environments.json
+   *   2. process.env.DATA_PULL_PAGE_SIZE
+   *   3. DEFAULT_PAGE_SIZE (5000)
+   */
+  pageSize?: number;
 }
 
 export async function runPull(opts: RunPullOpts): Promise<void> {
@@ -91,6 +99,7 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
     job, registry, envsRoot, envVars,
     mintToken, fetchFn = fetch, signal,
     retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+    pageSize = DEFAULT_PAGE_SIZE,
   } = opts;
 
   const tenantUrl = envVars.TENANT_BASE_URL ?? "";
@@ -180,7 +189,7 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
 
       const url = new URL(`${tenantUrl}/openidm/managed/${type}`);
       url.searchParams.set("_queryFilter", "true");
-      url.searchParams.set("_pageSize", String(PAGE_SIZE));
+      url.searchParams.set("_pageSize", String(pageSize));
       if (cookie) url.searchParams.set("_pagedResultsCookie", cookie);
 
       let attempt = 0;
