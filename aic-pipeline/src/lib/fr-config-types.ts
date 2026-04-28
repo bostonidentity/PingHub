@@ -49,6 +49,8 @@ export interface Environment {
   type?: EnvironmentType;
   /** Only meaningful when type === "controlled". Indicates this is the first env in the pipeline. */
   devEnvironment?: boolean;
+  /** Per-env override for the AIC pagination page size used by managed-data pulls. Defaults to 5000 when unset. */
+  pageSize?: number;
 }
 
 /** Scopes supporting file-level filtering via filenameFilter env var (comma-separated filenames) */

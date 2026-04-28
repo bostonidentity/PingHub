@@ -4,7 +4,8 @@ export type JobStatus =
   | "aborting"
   | "completed"
   | "failed"
-  | "aborted";
+  | "aborted"
+  | "interrupted";
 
 export type PerTypeProgress = {
   type: string;
@@ -12,6 +13,10 @@ export type PerTypeProgress = {
   fetched: number;
   total: number | null;
   error?: string;
+  /** Last persisted _pagedResultsCookie. null = last page reached; undefined = no cookie persisted yet. */
+  cookie?: string | null;
+  /** Bytes written to data.ndjson when `cookie` was persisted. Used to truncate half-written tail on resume. */
+  byteLength?: number;
 };
 
 export type DataPullJob = {
