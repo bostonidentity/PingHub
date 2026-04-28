@@ -574,6 +574,7 @@ const TailTerminal = memo(function TailTerminal({
   entries, defaultSource, searchTerm, keywords, wrapLines = false,
   scrollRequest = null, activeMatchIndex = null, matchCase = false, wholeWord = false,
   dupeCounts, autoScroll = true, onEntryDoubleClick, contextAnchorIdx = null,
+  expandCommand = null,
 }: {
   entries: LogEntry[];
   defaultSource: string;
@@ -588,6 +589,8 @@ const TailTerminal = memo(function TailTerminal({
   autoScroll?: boolean;
   onEntryDoubleClick?: (idx: number) => void;
   contextAnchorIdx?: number | null;
+  /** Bulk expand/collapse signal from parent. Bumped via nonce to retrigger. */
+  expandCommand?: { kind: "all" | "none"; nonce: number } | null;
 }) {
   const outerRef = useRef<HTMLDivElement>(null);
   const [viewH, setViewH] = useState(400);
@@ -624,6 +627,21 @@ const TailTerminal = memo(function TailTerminal({
     }
     prevActiveRef.current = activeMatchIndex ?? null;
   }, [activeMatchIndex]);
+
+  // Bulk expand/collapse from parent toolbar buttons
+  const lastExpandNonceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!expandCommand) return;
+    if (lastExpandNonceRef.current === expandCommand.nonce) return;
+    lastExpandNonceRef.current = expandCommand.nonce;
+    if (expandCommand.kind === "all") {
+      const next = new Set<number>();
+      for (let i = 0; i < entries.length; i++) next.add(i);
+      setExpandedRows(next);
+    } else {
+      setExpandedRows(new Set());
+    }
+  }, [expandCommand, entries.length]);
 
   // Track container height for virtual list calculations
   useEffect(() => {
@@ -1325,6 +1343,8 @@ export function LogsExplorer({
     setColWidths((prev) => ({ ...prev, [key]: width }));
   }, []);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  // Bulk expand/collapse signal for terminal+wrap view (handled inside TailTerminal).
+  const [expandCmd, setExpandCmd] = useState<{ kind: "all" | "none"; nonce: number } | null>(null);
 
   // ── Pagination ──
   const [page, setPage] = useState(1);
@@ -2282,6 +2302,27 @@ export function LogsExplorer({
             >
               Dedupe
             </button>
+            {/* Bulk expand / collapse — only meaningful when rows are line-clamped (terminal + wrap) */}
+            {viewMode === "terminal" && wrapLines && filtered.length > 0 && (
+              <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+                <button
+                  type="button"
+                  title="Expand all entries"
+                  onClick={() => setExpandCmd({ kind: "all", nonce: Date.now() })}
+                  className="px-2 py-0.5 text-[11px] font-medium bg-white text-slate-500 hover:bg-slate-50 transition-colors"
+                >
+                  Expand all
+                </button>
+                <button
+                  type="button"
+                  title="Collapse all entries"
+                  onClick={() => setExpandCmd({ kind: "none", nonce: Date.now() })}
+                  className="px-2 py-0.5 text-[11px] font-medium bg-white text-slate-500 hover:bg-slate-50 border-l border-slate-300 transition-colors"
+                >
+                  Collapse all
+                </button>
+              </div>
+            )}
             {viewMode === "table" && (
               <label className="flex items-center gap-1.5 text-xs text-slate-500 whitespace-nowrap cursor-pointer shrink-0">
                 <input
@@ -2474,6 +2515,7 @@ export function LogsExplorer({
                 autoScroll={autoScroll}
                 onEntryDoubleClick={handleContextEntry}
                 contextAnchorIdx={contextAnchorDisplay}
+                expandCommand={expandCmd}
               />
             )
           ) : viewMode === "json" ? (
