@@ -66,8 +66,27 @@ describe("runPull: happy path", () => {
 
     const typeDir = path.join(tmpDir, "uat", "managed-data", "alpha_user");
     expect(fs.readdirSync(typeDir).sort()).toEqual([
-      "_index.json", "_manifest.json", "_refs.json", "u1.json", "u2.json", "u3.json",
+      "_index.json", "_manifest.json", "_offsets.json", "_refs.json", "data.ndjson",
     ]);
+
+    const ndjson = fs.readFileSync(path.join(typeDir, "data.ndjson"), "utf-8");
+    const lines = ndjson.split("\n").filter((l) => l.length > 0);
+    expect(lines.map((l) => JSON.parse(l))).toEqual([
+      { _id: "u1", userName: "a" },
+      { _id: "u2", userName: "b" },
+      { _id: "u3", userName: "c" },
+    ]);
+
+    const offsets = JSON.parse(fs.readFileSync(path.join(typeDir, "_offsets.json"), "utf-8"));
+    expect(Object.keys(offsets).sort()).toEqual(["u1", "u2", "u3"]);
+    // Sanity-check one offset by seeking and reading the line.
+    const fd = fs.openSync(path.join(typeDir, "data.ndjson"), "r");
+    const buf = Buffer.alloc(64);
+    fs.readSync(fd, buf, 0, 64, offsets.u2);
+    fs.closeSync(fd);
+    const u2Line = buf.toString("utf-8").split("\n")[0];
+    expect(JSON.parse(u2Line)).toEqual({ _id: "u2", userName: "b" });
+
     const manifest = JSON.parse(fs.readFileSync(path.join(typeDir, "_manifest.json"), "utf-8"));
     expect(manifest.count).toBe(3);
 
