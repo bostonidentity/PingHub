@@ -123,30 +123,30 @@ function parseOr(s: ParserState): Node | null {
 }
 
 function parseAnd(s: ParserState): Node | null {
-  const left = parseAtom(s);
-  if (left == null) return null;
-  const items: Node[] = [left];
-  // Accept either an explicit '&&' or an implicit AND (the next token is another
-  // atom — a TERM or '('). '||' and ')' end the AND chain.
-  while (s.i < s.tokens.length) {
-    const tok = s.tokens[s.i];
-    if (tok.kind === "AND") {
-      s.i++;
-      const right = parseAtom(s);
-      if (right == null) return null;
-      items.push(right);
-      continue;
+    const left = parseAtom(s);
+    if (left == null) return null;
+    const items: Node[] = [left];
+    // Accept either an explicit '&&' or an implicit AND (the next token is another
+    // atom — a TERM or '('). '||' and ')' end the AND chain.
+    while (s.i < s.tokens.length) {
+        const tok = s.tokens[s.i];
+        if (tok.kind === "AND") {
+            s.i++;
+            const right = parseAtom(s);
+            if (right == null) return null;
+            items.push(right);
+            continue;
+        }
+        if (tok.kind === "TERM" || tok.kind === "LP") {
+            const right = parseAtom(s);
+            if (right == null) return null;
+            items.push(right);
+            continue;
+        }
+        break;
     }
-    if (tok.kind === "TERM" || tok.kind === "LP") {
-      const right = parseAtom(s);
-      if (right == null) return null;
-      items.push(right);
-      continue;
-    }
-    break;
-  }
-  if (items.length === 1) return left;
-  return { kind: "and", children: items };
+    if (items.length === 1) return left;
+    return { kind: "and", children: items };
 }
 
 function parseAtom(s: ParserState): Node | null {
