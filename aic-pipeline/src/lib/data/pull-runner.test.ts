@@ -125,6 +125,9 @@ describe("runPull: transient 5xx retries, then fails", () => {
       { status: 500, body: {} },
       { status: 502, body: {} },
       { status: 503, body: {} },
+      { status: 500, body: {} },
+      { status: 502, body: {} },
+      { status: 503, body: {} },
     ]);
 
     const job = registry.startJob("uat", ["alpha_user"]);
@@ -438,5 +441,62 @@ describe("runPull: resume from cookie", () => {
     const lines = fs.readFileSync(path.join(typeDir, "data.ndjson"), "utf-8")
       .split("\n").filter(Boolean).map((l) => JSON.parse(l));
     expect(lines.map((r) => r._id)).toEqual(["u1", "u2", "u3"]);
+  });
+});
+
+describe("runPull: cookie expiry on resume", () => {
+  it("marks the type failed with a clear message when tenant rejects a stale cookie", async () => {
+    const job = registry.startJob("uat", ["alpha_user"]);
+    const pullingDir = path.join(tmpDir, "uat", "managed-data", `.pulling-${job.id}`, "alpha_user");
+    fs.mkdirSync(pullingDir, { recursive: true });
+    const page1 = `${JSON.stringify({ _id: "u1" })}\n`;
+    fs.writeFileSync(path.join(pullingDir, "data.ndjson"), page1);
+    registry.updateProgress(job.id, "alpha_user", {
+      status: "running", fetched: 1,
+      cookie: "stale-cookie", byteLength: page1.length,
+    });
+    registry.setJobStatus(job.id, "interrupted");
+
+    // Tenant rejects the stale cookie with 400.
+    const fetchMock = mockFetchSequence([
+      { status: 400, body: { code: 400, message: "Invalid pagedResultsCookie" } },
+    ]);
+
+    await runPull({
+      job: registry.getJob(job.id)!,
+      registry, envsRoot: tmpDir, envVars: ENV_VARS,
+      mintToken: async () => "tok", fetchFn: fetchMock,
+      preflightCount: async () => null,
+      signal: new AbortController().signal,
+      retryDelayMs: 0,
+    });
+
+    const after = registry.getJob(job.id)!;
+    expect(after.progress[0].status).toBe("failed");
+    expect(after.progress[0].error).toMatch(/cookie/i);
+  });
+});
+
+describe("runPull: retry budget", () => {
+  it("absorbs up to 5 transient 5xx retries before giving up", async () => {
+    // 4 transient failures then success.
+    const fetchMock = mockFetchSequence([
+      { status: 500, body: {} },
+      { status: 502, body: {} },
+      { status: 503, body: {} },
+      { status: 500, body: {} },
+      { status: 200, body: { result: [{ _id: "u1" }], pagedResultsCookie: null, totalPagedResults: 1 } },
+    ]);
+
+    const job = registry.startJob("uat", ["alpha_user"]);
+    await runPull({
+      job, registry, envsRoot: tmpDir, envVars: ENV_VARS,
+      mintToken: async () => "tok", fetchFn: fetchMock,
+      preflightCount: async () => null,
+      signal: new AbortController().signal,
+      retryDelayMs: 0,
+    });
+
+    expect(registry.getJob(job.id)?.status).toBe("completed");
   });
 });
