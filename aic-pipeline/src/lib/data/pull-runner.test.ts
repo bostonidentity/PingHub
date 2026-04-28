@@ -195,6 +195,58 @@ describe("runPull: preserves previous snapshot on failure", () => {
   });
 });
 
+describe("runPull: page size", () => {
+  it("uses opts.pageSize in the _pageSize query param", async () => {
+    const seenUrls: string[] = [];
+    const fetchMock = vi.fn(async (url: string) => {
+      seenUrls.push(url);
+      return {
+        ok: true, status: 200,
+        json: async () => ({ result: [{ _id: "u1" }], pagedResultsCookie: null, totalPagedResults: 1 }),
+      } as Response;
+    });
+
+    const job = registry.startJob("uat", ["alpha_user"]);
+    await runPull({
+      job, registry, envsRoot: tmpDir, envVars: ENV_VARS,
+      mintToken: async () => "tok", fetchFn: fetchMock,
+      preflightCount: async () => null,
+      signal: new AbortController().signal,
+      pageSize: 7777,
+    });
+
+    const pageRequests = seenUrls.filter((u) => u.includes("_pageSize="));
+    expect(pageRequests.length).toBeGreaterThan(0);
+    for (const u of pageRequests) {
+      expect(u).toContain("_pageSize=7777");
+    }
+  });
+
+  it("defaults to 5000 when pageSize is not provided", async () => {
+    const seenUrls: string[] = [];
+    const fetchMock = vi.fn(async (url: string) => {
+      seenUrls.push(url);
+      return {
+        ok: true, status: 200,
+        json: async () => ({ result: [{ _id: "u1" }], pagedResultsCookie: null, totalPagedResults: 1 }),
+      } as Response;
+    });
+
+    const job = registry.startJob("uat", ["alpha_user"]);
+    await runPull({
+      job, registry, envsRoot: tmpDir, envVars: ENV_VARS,
+      mintToken: async () => "tok", fetchFn: fetchMock,
+      preflightCount: async () => null,
+      signal: new AbortController().signal,
+    });
+
+    const pageRequests = seenUrls.filter((u) => u.includes("_pageSize="));
+    for (const u of pageRequests) {
+      expect(u).toContain("_pageSize=5000");
+    }
+  });
+});
+
 describe("runPull: preflight count", () => {
   it("seeds progress.total from preflightCount before paginating", async () => {
     const fetchMock = mockFetchSequence([
