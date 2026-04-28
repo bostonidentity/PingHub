@@ -259,3 +259,58 @@ describe("listRecords with _index.json", () => {
     expect(page.records[0].title).toBe("u1");
   });
 });
+
+function writeNDJsonSnapshotWithIndex(
+  type: string,
+  records: Record<string, unknown>[],
+  indexFields: (r: Record<string, unknown>) => Record<string, string>,
+) {
+  writeNDJsonSnapshot(type, records);
+  const dir = path.join(tmpDir, ENV, "managed-data", type);
+  const indexEntries = records.map((r) => ({ id: r._id as string, f: indexFields(r) }));
+  fs.writeFileSync(path.join(dir, "_index.json"), JSON.stringify(indexEntries));
+}
+
+describe("listRecords (NDJSON format)", () => {
+  beforeEach(() => {
+    writeNDJsonSnapshotWithIndex(
+      "alpha_user",
+      [
+        { _id: "u1", name: "alice", mail: "alice@x.co" },
+        { _id: "u2", name: "bob", mail: "bob@x.co" },
+        { _id: "u3", name: "charlie", mail: "alice@y.co" },
+      ],
+      (r) => ({ _id: r._id as string, name: r.name as string, mail: r.mail as string }),
+    );
+  });
+
+  it("paginates from the index", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "", page: 1, limit: 10,
+      display: { title: "name", searchFields: [] },
+    });
+    expect(page.total).toBe(3);
+    expect(page.records.map((r) => r.id)).toEqual(["u1", "u2", "u3"]);
+  });
+
+  it("searches via the index without scanning data.ndjson", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "alice", page: 1, limit: 10,
+      display: { title: "name", searchFields: [] },
+    });
+    expect(page.total).toBe(2);
+    expect(page.records.map((r) => r.id).sort()).toEqual(["u1", "u3"]);
+  });
+
+  it("falls back to streaming data.ndjson when no index is present", async () => {
+    // Remove the index to force the fallback path.
+    fs.rmSync(path.join(tmpDir, ENV, "managed-data", "alpha_user", "_index.json"));
+
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "charlie", page: 1, limit: 10,
+      display: { title: "name", searchFields: [] },
+    });
+    expect(page.total).toBe(1);
+    expect(page.records[0].id).toBe("u3");
+  });
+});
