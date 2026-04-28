@@ -2073,6 +2073,36 @@ export function LogsExplorer({
               );
             })()}
 
+          </div>
+
+          {/* Row 2: Query — Filter and Highlight side-by-side; share one Aa/[W] toggle pair and the match navigator */}
+          <div className="flex items-center gap-2 px-4 py-2 border-t border-slate-100">
+            <label className="text-xs font-medium text-slate-500 shrink-0">Filter</label>
+            <input
+              type="text"
+              value={rawSearch}
+              onChange={(e) => handleFilterChange(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") applySearch(rawSearch); }}
+              placeholder="Filter entries… (space=AND, ||, ( ), &quot;phrase&quot;; 3+ chars or Enter)"
+              className={cn(
+                "flex-1 min-w-0 text-xs rounded border px-2.5 py-1 font-mono focus:outline-none focus:ring-2",
+                filterQuery.error
+                  ? "border-rose-300 focus:ring-rose-400"
+                  : rawSearch && !search
+                    ? "border-amber-300 focus:ring-amber-400"   // typed but not yet active
+                    : "border-slate-300 focus:ring-sky-500"
+              )}
+            />
+            {filterQuery.error && (
+              <span className="text-xs text-rose-600 whitespace-nowrap" title={filterQuery.error}>
+                {filterQuery.error}
+              </span>
+            )}
+            {rawSearch && (
+              <button type="button" onClick={clearSearch} className="text-xs text-slate-400 hover:text-slate-600 shrink-0">
+                Clear
+              </button>
+            )}
             <span className="text-slate-300 select-none shrink-0">|</span>
             <label className="text-xs font-medium text-slate-500 shrink-0">Highlight</label>
             <input
@@ -2094,7 +2124,7 @@ export function LogsExplorer({
               }}
               placeholder="Highlight (space=AND, ||, ( ), &quot;phrase&quot;)…"
               className={cn(
-                "flex-1 text-xs rounded border px-2.5 py-1 font-mono focus:outline-none focus:ring-2",
+                "flex-1 min-w-0 text-xs rounded border px-2.5 py-1 font-mono focus:outline-none focus:ring-2",
                 highlightQuery.error
                   ? "border-rose-300 focus:ring-rose-400 focus:border-rose-400"
                   : "border-slate-200 focus:ring-amber-400 focus:border-amber-400",
@@ -2109,10 +2139,10 @@ export function LogsExplorer({
                 {keywords.length} keyword{keywords.length !== 1 ? "s" : ""}
               </span>
             )}
-            <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+            <div className="flex rounded border border-slate-300 overflow-hidden shrink-0" title="Applies to both Filter and Highlight">
               <button
                 type="button"
-                title="Case sensitive"
+                title="Case sensitive (applies to Filter and Highlight)"
                 onClick={() => setMatchCase((v) => !v)}
                 className={cn(
                   "px-2 py-0.5 text-[11px] font-medium font-mono transition-colors",
@@ -2121,7 +2151,7 @@ export function LogsExplorer({
               >Aa</button>
               <button
                 type="button"
-                title="Whole word"
+                title="Whole word (applies to Filter and Highlight)"
                 onClick={() => setWholeWord((v) => !v)}
                 className={cn(
                   "px-2 py-0.5 text-[11px] font-medium font-mono border-l border-slate-300 transition-colors",
@@ -2131,7 +2161,7 @@ export function LogsExplorer({
             </div>
             {matchIndices.length > 0 && (
               <>
-                <div className="flex items-center gap-1 text-[11px] text-slate-400 whitespace-nowrap tabular-nums">
+                <div className="flex items-center gap-1 text-[11px] text-slate-400 whitespace-nowrap tabular-nums shrink-0">
                   <input
                     type="number"
                     min={1}
@@ -2164,7 +2194,7 @@ export function LogsExplorer({
             )}
           </div>
 
-          {/* Row 2: view toggle + filter + count + height controls + fullscreen */}
+          {/* Row 3: view toggles + count + height controls + fullscreen */}
           <div className="flex items-center gap-3 px-4 py-2 border-t border-slate-100">
             {/* Terminal / Table / JSON toggle — available in all modes */}
             <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
@@ -2252,51 +2282,6 @@ export function LogsExplorer({
             >
               Dedupe
             </button>
-            <input
-              type="text"
-              value={rawSearch}
-              onChange={(e) => handleFilterChange(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") applySearch(rawSearch); }}
-              placeholder="Filter entries… (space=AND, ||, ( ), &quot;phrase&quot;; 3+ chars or Enter)"
-              className={cn(
-                "flex-1 text-xs rounded border px-3 py-1.5 font-mono focus:outline-none focus:ring-2",
-                filterQuery.error
-                  ? "border-rose-300 focus:ring-rose-400"
-                  : rawSearch && !search
-                    ? "border-amber-300 focus:ring-amber-400"   // typed but not yet active
-                    : "border-slate-300 focus:ring-sky-500"
-              )}
-            />
-            {filterQuery.error && (
-              <span className="text-xs text-rose-600 whitespace-nowrap" title={filterQuery.error}>
-                {filterQuery.error}
-              </span>
-            )}
-            {rawSearch && (
-              <button type="button" onClick={clearSearch} className="text-xs text-slate-400 hover:text-slate-600">
-                Clear
-              </button>
-            )}
-            <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
-              <button
-                type="button"
-                title="Case sensitive"
-                onClick={() => setMatchCase((v) => !v)}
-                className={cn(
-                  "px-2 py-0.5 text-[11px] font-medium font-mono transition-colors",
-                  matchCase ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-                )}
-              >Aa</button>
-              <button
-                type="button"
-                title="Whole word"
-                onClick={() => setWholeWord((v) => !v)}
-                className={cn(
-                  "px-2 py-0.5 text-[11px] font-medium font-mono border-l border-slate-300 transition-colors",
-                  wholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
-                )}
-              >[W]</button>
-            </div>
             {viewMode === "table" && (
               <label className="flex items-center gap-1.5 text-xs text-slate-500 whitespace-nowrap cursor-pointer shrink-0">
                 <input
