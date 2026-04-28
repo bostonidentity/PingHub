@@ -155,8 +155,17 @@ async function doFetch(env, sources, beginTime, endTime, queryFilter, fetchId) {
           searchParams = { env, sources, beginTime: chunk.beginTime, endTime: chunk.endTime, queryFilter };
 
           const isLastChunk = ci === chunks.length - 1;
+          // Format begin/end as the user's local YYYY-MM-DD (avoid UTC slice, which can
+          // roll the date forward when the local time is late evening).
+          const fmtLocalDate = (iso) => {
+            const d = new Date(iso);
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${y}-${m}-${day}`;
+          };
           const windowStr = chunk.beginTime
-            ? chunk.beginTime.slice(0, 10) + (chunk.endTime ? ' \u2192 ' + chunk.endTime.slice(0, 10) : '')
+            ? fmtLocalDate(chunk.beginTime) + (chunk.endTime ? ' \u2192 ' + fmtLocalDate(chunk.endTime) : '')
             : '';
           self.postMessage({ type: "entries", entries, append: !isVeryFirst });
           self.postMessage({ type: "progress", loaded: totalLoaded, page: pageNum, done: isLastSource && isLastChunk && !cookie, paused: false, source, window: windowStr, sourceIdx: si, sourceCount: validSources.length, lastTimestamp, overallBegin: beginTime, overallEnd: endTime });
