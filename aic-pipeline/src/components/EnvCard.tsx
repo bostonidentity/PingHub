@@ -117,10 +117,26 @@ function ReleaseStrip({ release }: { release: ReleaseCacheEntry | null }) {
   const { channel, currentVersion, nextUpgrade } = release.info;
   const urgency = classifyUpgrade(nextUpgrade);
   const days = daysUntil(nextUpgrade);
+  const plannedDate = nextUpgrade ? formatPlannedDate(nextUpgrade) : null;
   const urgencyBadge =
-    urgency === "overdue" ? <span className="text-rose-600 font-medium">overdue</span>
-    : urgency === "soon" ? <span className="text-amber-700 font-medium">upgrade in {days}d</span>
-    : urgency === "later" ? <span className="text-slate-500">upgrade in {days}d</span>
+    urgency === "overdue" ? (
+      <span className="text-rose-600 font-medium" title={nextUpgrade ?? undefined}>
+        overdue{days !== null ? ` by ${Math.abs(days)}d` : ""}
+        {plannedDate && <span className="ml-1 font-normal opacity-75">(planned {plannedDate})</span>}
+      </span>
+    )
+    : urgency === "soon" ? (
+      <span className="text-amber-700 font-medium" title={nextUpgrade ?? undefined}>
+        upgrade in {days}d
+        {plannedDate && <span className="ml-1 font-normal opacity-75">({plannedDate})</span>}
+      </span>
+    )
+    : urgency === "later" ? (
+      <span className="text-slate-500" title={nextUpgrade ?? undefined}>
+        upgrade in {days}d
+        {plannedDate && <span className="ml-1 opacity-75">({plannedDate})</span>}
+      </span>
+    )
     : <span className="text-slate-400">no upgrade scheduled</span>;
   return (
     <div className="border-t border-slate-100 pt-2.5 mt-2.5 text-[11px] flex items-center justify-between gap-2">
@@ -138,4 +154,16 @@ function ReleaseStrip({ release }: { release: ReleaseCacheEntry | null }) {
       <div className="text-right shrink-0">{urgencyBadge}</div>
     </div>
   );
+}
+
+function formatPlannedDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
