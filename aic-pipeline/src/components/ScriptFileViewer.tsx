@@ -19,6 +19,14 @@ interface Props {
   /** Path relative to environment config dir — used for last-modified lookup. */
   relPath?: string;
   highlightLine?: number;
+  /**
+   * When supplied alongside highlightLine, used to relocate the highlighted
+   * line after the content is reformatted by Prettier (or otherwise reflowed).
+   * Without this the deep-link `line` number refers to the raw file, but the
+   * viewer renders formatted content so the highlight lands on the wrong row.
+   * Also pre-fills the Find box so the user can step through other matches.
+   */
+  highlightQuery?: string;
   /** Called when the user clicks a reference (ESV / library / endpoint). */
   onNavigate?: (target: NavigateTarget) => void;
 }
@@ -498,7 +506,7 @@ interface LastCommit {
   subject: string;
 }
 
-export function ScriptFileViewer({ content, fileName, environment, relPath, highlightLine, onNavigate }: Props) {
+export function ScriptFileViewer({ content, fileName, environment, relPath, highlightLine, highlightQuery, onNavigate }: Props) {
   const language: "js" | "groovy" = fileName.toLowerCase().endsWith(".groovy") ? "groovy" : "js";
   const canFormat = language === "js";
 
@@ -542,7 +550,7 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
   // numbers which differ between files.
   const [wrap, setWrap] = useLocalConfig("wrap", true);
   const [commentMode, setCommentMode] = useLocalConfig<CommentMode>("commentMode", "hideAll");
-  const [findQuery, setFindQuery] = useState("");
+  const [findQuery, setFindQuery] = useState(highlightQuery ?? "");
   const [findIdx, setFindIdx] = useState(0);
   const [gotoLine, setGotoLine] = useState("");
   const [foldedStartLines, setFoldedStartLines] = useState<Set<number>>(new Set());
@@ -776,20 +784,49 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
 
   // Sync the highlightLine prop (deep-link from URL) into a one-shot scroll
   // request. Done via prop-compare at render time — no effect, so the rule
-  // against setState-in-effect doesn't trip. First render: prevHlProp is the
-  // sentinel "unset" and differs from the prop, so we schedule the scroll.
-  // If the prop later changes (another deep-link click in the same session)
-  // we re-scroll to the new target.
-  const [prevHlProp, setPrevHlProp] = useState<number | undefined | "unset">("unset");
-  if (prevHlProp !== highlightLine) {
-    setPrevHlProp(highlightLine);
-    if (highlightLine != null) {
-      // Use the line number itself as the nonce — deterministic so it's
-      // safe at render time, and in practice deep-links don't repeat the
-      // same line twice within one mount (ConfigsViewer remounts the
-      // component on file switch via its key prop).
-      setScrollRequest({ line: highlightLine, nonce: highlightLine });
+  // against setState-in-effect doesn't trip. We key the resolution off both
+  // the prop *and* the current effectiveContent identity so that when the
+  // formatter finishes asynchronously and effectiveContent flips from raw
+  // to formatted, we re-resolve the target line. Without that, the deep
+  // link would land on the raw-file line number even after Prettier
+  // renumbers the lines.
+  //
+  // When highlightQuery is also supplied, we look for the first line at or
+  // after `highlightLine` containing the query (case-insensitive); if none
+  // exists we fall back to the closest matching line anywhere; if no
+  // matches at all, we use highlightLine verbatim. This makes the deep
+  // link land on the actual ABC row even when formatting shifted line
+  // numbers.
+  const deepLinkKey =
+    highlightLine == null
+      ? null
+      : `${highlightLine}|${highlightQuery ?? ""}|${effectiveContent.length}`;
+  const [prevDeepLinkKey, setPrevDeepLinkKey] = useState<string | null>(null);
+  if (deepLinkKey != null && prevDeepLinkKey !== deepLinkKey) {
+    setPrevDeepLinkKey(deepLinkKey);
+    let target = highlightLine!;
+    if (highlightQuery) {
+      const q = highlightQuery.toLowerCase();
+      const lines = effectiveContent.split("\n");
+      let bestAfter = -1;
+      let bestAny = -1;
+      let bestAnyDist = Infinity;
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].toLowerCase().includes(q)) {
+          const ln = i + 1;
+          if (bestAfter < 0 && ln >= target) bestAfter = ln;
+          const d = Math.abs(ln - target);
+          if (d < bestAnyDist) { bestAnyDist = d; bestAny = ln; }
+        }
+      }
+      if (bestAfter > 0) target = bestAfter;
+      else if (bestAny > 0) target = bestAny;
     }
+    setCurrentLine(target);
+    // Use the line number itself as the nonce — deterministic so it's safe
+    // at render time. ConfigsViewer remounts the viewer on file switch via
+    // its key prop, so within one mount the same target won't repeat.
+    setScrollRequest({ line: target, nonce: target });
   }
 
   // Unfold any ancestor region that would hide a target line.
