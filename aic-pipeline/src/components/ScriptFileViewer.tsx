@@ -127,7 +127,7 @@ function detectSymbols(content: string, language: "js" | "groovy"): Symbol[] {
   // Matches (function …), (async function …), ((…) => …), preceded by the
   // optional unary/punctuation that minifiers sometimes use (!+~;).
   const IIFE_NAMED = /^\s*[!+~;]?\s*\(\s*(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/;
-  const IIFE_ANON  = /^\s*[!+~;]?\s*\(\s*(?:async\s+)?function\s*\(/;
+  const IIFE_ANON = /^\s*[!+~;]?\s*\(\s*(?:async\s+)?function\s*\(/;
   const IIFE_ARROW = /^\s*[!+~;]?\s*\(\s*(?:async\s+)?\([^)]*\)\s*=>/;
   // RHS patterns that mean "this binding is a function value" — normal
   // function expressions, arrow functions (with or without params).
@@ -144,7 +144,7 @@ function detectSymbols(content: string, language: "js" | "groovy"): Symbol[] {
         out.push({ line: i + 1, name: m[1], kind: "function" });
         continue;
       }
-      if (IIFE_ANON.test(line))  { out.push({ line: i + 1, name: "function", kind: "function" }); continue; }
+      if (IIFE_ANON.test(line)) { out.push({ line: i + 1, name: "function", kind: "function" }); continue; }
       if (IIFE_ARROW.test(line)) { out.push({ line: i + 1, name: "arrow", kind: "function" }); continue; }
       if ((m = line.match(FN))) { out.push({ line: i + 1, name: m[1], kind: "function" }); continue; }
       if ((m = line.match(VAR))) {
@@ -469,7 +469,7 @@ function useLocalConfig<T>(name: string, initial: T): [T, (next: T | ((cur: T) =
       if (raw != null) setValue(JSON.parse(raw) as T);
     } catch { /* ignore parse / access errors */ }
     setHydrated(true);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -586,9 +586,9 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
   const symbolGroups = useMemo<SymbolGroup[]>(() => {
     const defs: { id: string; label: string; match: (s: Symbol) => boolean }[] = [
       { id: "sym:function", label: "Functions", match: (s) => s.kind === "function" || s.kind === "method" },
-      { id: "sym:const",    label: "Constants", match: (s) => s.kind === "const" },
-      { id: "sym:let",      label: "Let",       match: (s) => s.kind === "let" },
-      { id: "sym:var",      label: "Var",       match: (s) => s.kind === "var" },
+      { id: "sym:const", label: "Constants", match: (s) => s.kind === "const" },
+      { id: "sym:let", label: "Let", match: (s) => s.kind === "let" },
+      { id: "sym:var", label: "Var", match: (s) => s.kind === "var" },
     ];
     return defs
       .map((d) => ({ id: d.id, label: d.label, items: symbols.filter(d.match) }))
@@ -597,8 +597,8 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
 
   const referenceGroups = useMemo<ReferenceGroup[]>(() => {
     const defs: { id: string; label: string; kind: Reference["kind"] }[] = [
-      { id: "ref:esv",      label: "ESVs",      kind: "esv" },
-      { id: "ref:library",  label: "Scripts",   kind: "library" },
+      { id: "ref:esv", label: "ESVs", kind: "esv" },
+      { id: "ref:library", label: "Scripts", kind: "library" },
       { id: "ref:endpoint", label: "Endpoints", kind: "endpoint" },
     ];
     return defs
@@ -693,6 +693,43 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
       .catch(() => { if (!cancelled) setLastCommit(null); });
     return () => { cancelled = true; };
   }, [environment, relPath]);
+
+  // Track text selection inside the viewer so the scope breadcrumb and
+  // outline highlight update when the user selects text (not just clicks a
+  // row). We resolve the selection's anchor / focus to the nearest [data-ln]
+  // row and pick the smaller line number so the scope reflects the start.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const handler = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+      const anchor = sel.anchorNode;
+      const focus = sel.focusNode;
+      if (!anchor || !focus) return;
+      if (!container.contains(anchor) && !container.contains(focus)) return;
+      const lineOf = (n: Node | null): number | null => {
+        let el: HTMLElement | null = (n instanceof HTMLElement ? n : n?.parentElement) ?? null;
+        while (el && el !== container) {
+          const ln = el.dataset?.ln;
+          if (ln) {
+            const v = Number(ln);
+            return Number.isFinite(v) ? v : null;
+          }
+          el = el.parentElement;
+        }
+        return null;
+      };
+      const a = lineOf(anchor);
+      const f = lineOf(focus);
+      const candidates = [a, f].filter((n): n is number => n != null);
+      if (candidates.length === 0) return;
+      const start = Math.min(...candidates);
+      setCurrentLine(start);
+    };
+    document.addEventListener("selectionchange", handler);
+    return () => document.removeEventListener("selectionchange", handler);
+  }, []);
 
   // Match lines for find
   const matches = useMemo<number[]>(() => {
@@ -865,16 +902,27 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
     return result;
   }, [symbolRanges, foldRegions, effectiveContent]);
 
-  const currentScope = useMemo(() => {
-    if (scopeFocusLine == null) return null;
-    let best: (typeof scopes)[number] | null = null;
-    for (const s of scopes) {
-      if (scopeFocusLine >= s.line && scopeFocusLine <= s.endLine) {
-        if (!best || s.line > best.line) best = s;
-      }
-    }
-    return best;
+  // Full chain of enclosing scopes (outermost → innermost) at the focus line.
+  // Used to render the breadcrumb header and to highlight every enclosing
+  // function in the outline sidebar — not just the innermost one.
+  const scopeChain = useMemo(() => {
+    if (scopeFocusLine == null) return [] as typeof scopes;
+    const enclosing = scopes.filter(
+      (s) => scopeFocusLine >= s.line && scopeFocusLine <= s.endLine,
+    );
+    enclosing.sort((a, b) => a.line - b.line);
+    return enclosing;
   }, [scopes, scopeFocusLine]);
+
+  const currentScope = scopeChain.length > 0 ? scopeChain[scopeChain.length - 1] : null;
+
+  // Set of declaration lines for every enclosing scope. Sidebar uses this to
+  // light up the whole call-path, not just the row whose `line` exactly
+  // equals the cursor's row.
+  const enclosingScopeLines = useMemo(
+    () => new Set(scopeChain.map((s) => s.line)),
+    [scopeChain],
+  );
 
   // Throttle scroll handling via rAF; find the first visible, non-folded row
   // and remember its line number.
@@ -1104,23 +1152,26 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
       {/* Content + Outline/References sidebar */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
         <div className="flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col">
-          <div className="flex items-center gap-2 px-4 py-0.5 border-b border-slate-800 bg-slate-900/95 backdrop-blur text-[11px] text-slate-400 shrink-0">
-            <span className="text-slate-500 text-[10px] uppercase tracking-wider">in</span>
-            {currentScope ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => goTo(currentScope.line)}
-                  className={cn(
-                    "code-mono truncate",
-                    currentScope.anonymous ? "text-slate-400 italic hover:text-slate-200" : "text-sky-300 hover:text-sky-200",
-                  )}
-                  title={`Jump to line ${currentScope.line}`}
-                >
-                  {currentScope.anonymous ? `(${currentScope.name})` : `${currentScope.name}()`}
-                </button>
-                <span className="text-slate-600 tabular-nums">:{currentScope.line}</span>
-              </>
+          <div className="flex items-center gap-1 px-4 py-0.5 border-b border-slate-800 bg-slate-900/95 backdrop-blur text-[11px] text-slate-400 shrink-0 overflow-x-auto scrollbar-thin">
+            <span className="text-slate-500 text-[10px] uppercase tracking-wider shrink-0 mr-1">in</span>
+            {scopeChain.length > 0 ? (
+              scopeChain.map((s, i) => (
+                <span key={`${s.line}-${i}`} className="flex items-center gap-1 shrink-0">
+                  {i > 0 && <span className="text-slate-600" aria-hidden>›</span>}
+                  <button
+                    type="button"
+                    onClick={() => goTo(s.line)}
+                    className={cn(
+                      "code-mono truncate",
+                      s.anonymous ? "text-slate-400 italic hover:text-slate-200" : "text-sky-300 hover:text-sky-200",
+                    )}
+                    title={`Jump to line ${s.line}`}
+                  >
+                    {s.anonymous ? `(${s.name})` : `${s.name}()`}
+                  </button>
+                  <span className="text-slate-600 tabular-nums">:{s.line}</span>
+                </span>
+              ))
             ) : (
               <span className="text-slate-500 italic">(top level)</span>
             )}
@@ -1164,6 +1215,7 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
               onExpandAllGroups={expandAllGroups}
               onCollapseAllGroups={collapseAllGroups}
               currentLine={currentLine}
+              enclosingScopeLines={enclosingScopeLines}
               onGoTo={goTo}
               onOpenRef={(r) => { goTo(r.line); onNavigate?.(r.target); }}
             />
@@ -1188,6 +1240,7 @@ function Sidebar({
   onExpandAllGroups,
   onCollapseAllGroups,
   currentLine,
+  enclosingScopeLines,
   onGoTo,
   onOpenRef,
 }: {
@@ -1199,6 +1252,7 @@ function Sidebar({
   onExpandAllGroups: () => void;
   onCollapseAllGroups: () => void;
   currentLine: number | undefined;
+  enclosingScopeLines: Set<number>;
   onGoTo: (line: number) => void;
   onOpenRef: (r: Reference) => void;
 }) {
@@ -1286,65 +1340,71 @@ function Sidebar({
         const accent = symbolAccent(g.id);
         const isCallable = g.id === "sym:function";
         return (
-        <GroupSection
-          key={g.id}
-          id={g.id}
-          label={g.label}
-          count={g.items.length}
-          collapsed={effectiveCollapsed.has(g.id)}
-          onToggle={onToggleGroup}
-          accent={accent}
-        >
-          {g.items.map((s, i) => (
-            <button
-              key={`${s.name}-${s.line}-${i}`}
-              type="button"
-              onClick={() => onGoTo(s.line)}
-              className={cn(
-                "flex items-baseline gap-2 w-full text-left px-3 py-0.5 text-xs font-mono truncate transition-colors",
-                currentLine === s.line
-                  ? "bg-sky-900/40 text-sky-200"
-                  : "hover:text-slate-100 hover:bg-slate-800",
-                currentLine !== s.line && (accent ?? "text-slate-300"),
-              )}
-              title={`Line ${s.line}`}
-            >
-              <span className="truncate">{isCallable && !s.name.startsWith("(") ? `${s.name}()` : s.name}</span>
-              <span className="ml-auto text-[10px] text-slate-500 tabular-nums shrink-0">{s.line}</span>
-            </button>
-          ))}
-        </GroupSection>
+          <GroupSection
+            key={g.id}
+            id={g.id}
+            label={g.label}
+            count={g.items.length}
+            collapsed={effectiveCollapsed.has(g.id)}
+            onToggle={onToggleGroup}
+            accent={accent}
+          >
+            {g.items.map((s, i) => {
+              const isExact = currentLine === s.line;
+              const isEnclosing = !isExact && enclosingScopeLines.has(s.line);
+              return (
+                <button
+                  key={`${s.name}-${s.line}-${i}`}
+                  type="button"
+                  onClick={() => onGoTo(s.line)}
+                  className={cn(
+                    "flex items-baseline gap-2 w-full text-left px-3 py-0.5 text-xs font-mono truncate transition-colors",
+                    isExact
+                      ? "bg-sky-900/40 text-sky-200"
+                      : isEnclosing
+                        ? "bg-sky-900/20 text-sky-300 border-l-2 border-sky-500/70"
+                        : "hover:text-slate-100 hover:bg-slate-800",
+                    !isExact && !isEnclosing && (accent ?? "text-slate-300"),
+                  )}
+                  title={isEnclosing ? `Line ${s.line} · encloses cursor` : `Line ${s.line}`}
+                >
+                  <span className="truncate">{isCallable && !s.name.startsWith("(") ? `${s.name}()` : s.name}</span>
+                  <span className="ml-auto text-[10px] text-slate-500 tabular-nums shrink-0">{s.line}</span>
+                </button>
+              );
+            })}
+          </GroupSection>
         );
       })}
 
       {filteredReferenceGroups.map((g) => {
         const accent = refAccent(g.id);
         return (
-        <GroupSection
-          key={g.id}
-          id={g.id}
-          label={g.label}
-          count={g.items.length}
-          collapsed={effectiveCollapsed.has(g.id)}
-          onToggle={onToggleGroup}
-          accent={accent}
-        >
-          {g.items.map((r, i) => (
-            <button
-              key={`${r.kind}-${r.label}-${r.line}-${i}`}
-              type="button"
-              onClick={() => onOpenRef(r)}
-              className={cn(
-                "flex items-baseline gap-2 w-full text-left px-3 py-0.5 text-xs font-mono truncate hover:text-slate-100 hover:bg-slate-800 transition-colors",
-                accent ?? "text-slate-300",
-              )}
-              title={`Line ${r.line} · Open ${r.kind}`}
-            >
-              <span className="truncate">{r.label}</span>
-              <span className="ml-auto text-[10px] text-slate-500 tabular-nums shrink-0">{r.line}</span>
-            </button>
-          ))}
-        </GroupSection>
+          <GroupSection
+            key={g.id}
+            id={g.id}
+            label={g.label}
+            count={g.items.length}
+            collapsed={effectiveCollapsed.has(g.id)}
+            onToggle={onToggleGroup}
+            accent={accent}
+          >
+            {g.items.map((r, i) => (
+              <button
+                key={`${r.kind}-${r.label}-${r.line}-${i}`}
+                type="button"
+                onClick={() => onOpenRef(r)}
+                className={cn(
+                  "flex items-baseline gap-2 w-full text-left px-3 py-0.5 text-xs font-mono truncate hover:text-slate-100 hover:bg-slate-800 transition-colors",
+                  accent ?? "text-slate-300",
+                )}
+                title={`Line ${r.line} · Open ${r.kind}`}
+              >
+                <span className="truncate">{r.label}</span>
+                <span className="ml-auto text-[10px] text-slate-500 tabular-nums shrink-0">{r.line}</span>
+              </button>
+            ))}
+          </GroupSection>
         );
       })}
     </aside>
@@ -1394,8 +1454,8 @@ function refAccent(id: string): string | undefined {
 // hues (emerald / rose) so all four groups are distinguishable at a glance.
 function symbolAccent(id: string): string | undefined {
   if (id === "sym:function") return "text-sky-400";
-  if (id === "sym:const")    return "text-amber-300";
-  if (id === "sym:let")      return "text-emerald-400";
-  if (id === "sym:var")      return "text-rose-400";
+  if (id === "sym:const") return "text-amber-300";
+  if (id === "sym:let") return "text-emerald-400";
+  if (id === "sym:var") return "text-rose-400";
   return undefined;
 }
