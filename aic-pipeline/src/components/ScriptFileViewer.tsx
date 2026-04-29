@@ -868,13 +868,38 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
   // Derive line ranges for each symbol so we can show a sticky header with
   // the enclosing function when the user scrolls past its declaration. Fold
   // regions are keyed by the line that opens a `{`; functions sometimes open
-  // the brace on the next line, so we check both.
+  // the brace on the next line, so we check both. When brace matching can't
+  // give us an end (e.g. stripNonCode missed a template literal somewhere
+  // and the brace stack desynced), fall back to "the function owns
+  // everything until the next top-level function declaration starts" — for
+  // big single-namespace files like ForgeRock endpoint scripts this is
+  // closer to the user's expectation than collapsing the range to a single
+  // line. We only do this for callable symbols (function / method); plain
+  // const/let/var declarations stay one-line because their "body" is just
+  // an expression.
+  const totalLines = useMemo(
+    () => effectiveContent.split("\n").length,
+    [effectiveContent],
+  );
   const symbolRanges = useMemo(() => {
-    return symbols.map((s) => {
-      const end = foldRegions.get(s.line) ?? foldRegions.get(s.line + 1) ?? s.line;
+    // Pre-compute next callable symbol's line for each index so the fallback
+    // is O(n) instead of O(n²).
+    const nextCallableLine: number[] = new Array(symbols.length);
+    let nextLine = totalLines + 1;
+    for (let i = symbols.length - 1; i >= 0; i--) {
+      nextCallableLine[i] = nextLine;
+      const s = symbols[i];
+      if (s.kind === "function" || s.kind === "method") nextLine = s.line;
+    }
+    return symbols.map((s, i) => {
+      const fold = foldRegions.get(s.line) ?? foldRegions.get(s.line + 1);
+      let end = fold ?? s.line;
+      if (end <= s.line && (s.kind === "function" || s.kind === "method")) {
+        end = Math.max(s.line, nextCallableLine[i] - 1);
+      }
       return { ...s, endLine: end };
     });
-  }, [symbols, foldRegions]);
+  }, [symbols, foldRegions, totalLines]);
 
   // Sticky-scope focus line — prefer the explicit active line (last clicked
   // row, goto, outline/find jump) so clicking a line updates the scope header
