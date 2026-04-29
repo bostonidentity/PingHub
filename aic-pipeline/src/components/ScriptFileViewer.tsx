@@ -949,6 +949,7 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
   }, [scopes, scopeFocusLine]);
 
   const currentScope = scopeChain.length > 0 ? scopeChain[scopeChain.length - 1] : null;
+  const innermostScopeLine = currentScope ? currentScope.line : null;
 
   // Set of declaration lines for every enclosing scope. Sidebar uses this to
   // light up the whole call-path, not just the row whose `line` exactly
@@ -1250,6 +1251,7 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
               onCollapseAllGroups={collapseAllGroups}
               currentLine={currentLine}
               enclosingScopeLines={enclosingScopeLines}
+              innermostScopeLine={innermostScopeLine}
               onGoTo={goTo}
               onOpenRef={(r) => { goTo(r.line); onNavigate?.(r.target); }}
             />
@@ -1275,6 +1277,7 @@ function Sidebar({
   onCollapseAllGroups,
   currentLine,
   enclosingScopeLines,
+  innermostScopeLine,
   onGoTo,
   onOpenRef,
 }: {
@@ -1287,11 +1290,27 @@ function Sidebar({
   onCollapseAllGroups: () => void;
   currentLine: number | undefined;
   enclosingScopeLines: Set<number>;
+  innermostScopeLine: number | null;
   onGoTo: (line: number) => void;
   onOpenRef: (r: Reference) => void;
 }) {
   const [search, setSearch] = useState("");
   const q = search.trim().toLowerCase();
+
+  // Auto-scroll the outline so the highlighted (innermost enclosing) symbol
+  // stays visible as the cursor / selection moves. Use scrollIntoView with
+  // block:"nearest" so we only scroll when the row is actually off-screen,
+  // and the panel doesn't yank when the symbol is already comfortably in
+  // view.
+  const asideRef = useRef<HTMLElement | null>(null);
+  const activeRowRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (innermostScopeLine == null) return;
+    const el = activeRowRef.current;
+    if (!el) return;
+    el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [innermostScopeLine]);
+
 
   // Filter groups by symbol / reference name (case-insensitive). Empty groups
   // are dropped so the sidebar shrinks to only matching sections.
@@ -1318,6 +1337,7 @@ function Sidebar({
 
   return (
     <aside
+      ref={asideRef}
       style={{ width }}
       className="shrink-0 border-l border-slate-800 bg-slate-900/70 overflow-auto scrollbar-thin"
     >
@@ -1385,22 +1405,33 @@ function Sidebar({
           >
             {g.items.map((s, i) => {
               const isExact = currentLine === s.line;
-              const isEnclosing = !isExact && enclosingScopeLines.has(s.line);
+              const isInnermost = !isExact && innermostScopeLine === s.line;
+              const isOuter = !isExact && !isInnermost && enclosingScopeLines.has(s.line);
+              const shouldScrollTo = isInnermost || (isExact && innermostScopeLine == null);
               return (
                 <button
                   key={`${s.name}-${s.line}-${i}`}
+                  ref={shouldScrollTo ? activeRowRef : undefined}
                   type="button"
                   onClick={() => onGoTo(s.line)}
                   className={cn(
                     "flex items-baseline gap-2 w-full text-left px-3 py-0.5 text-xs font-mono truncate transition-colors",
                     isExact
-                      ? "bg-sky-900/40 text-sky-200"
-                      : isEnclosing
-                        ? "bg-sky-900/20 text-sky-300 border-l-2 border-sky-500/70"
-                        : "hover:text-slate-100 hover:bg-slate-800",
-                    !isExact && !isEnclosing && (accent ?? "text-slate-300"),
+                      ? "bg-sky-500/30 text-sky-100 font-semibold border-l-4 border-sky-400 ring-1 ring-inset ring-sky-400/40"
+                      : isInnermost
+                        ? "bg-sky-500/25 text-sky-100 font-semibold border-l-4 border-sky-400 ring-1 ring-inset ring-sky-400/30"
+                        : isOuter
+                          ? "bg-sky-900/30 text-sky-300 border-l-2 border-sky-500/60"
+                          : "hover:text-slate-100 hover:bg-slate-800",
+                    !isExact && !isInnermost && !isOuter && (accent ?? "text-slate-300"),
                   )}
-                  title={isEnclosing ? `Line ${s.line} · encloses cursor` : `Line ${s.line}`}
+                  title={
+                    isInnermost
+                      ? `Line ${s.line} · current scope`
+                      : isOuter
+                        ? `Line ${s.line} · encloses cursor`
+                        : `Line ${s.line}`
+                  }
                 >
                   <span className="truncate">{isCallable && !s.name.startsWith("(") ? `${s.name}()` : s.name}</span>
                   <span className="ml-auto text-[10px] text-slate-500 tabular-nums shrink-0">{s.line}</span>
