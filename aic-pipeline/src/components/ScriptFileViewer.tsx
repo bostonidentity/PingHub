@@ -122,6 +122,14 @@ function detectSymbols(content: string, language: "js" | "groovy"): Symbol[] {
   const VAR = /^\s*(?:export\s+)?(const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(.*)$/;
   const GROOVY_DEF = /^\s*(?:private|public|protected|static|final|def)\s+(?:\w[\w<>?,\s]*\s+)?([A-Za-z_$][\w$]*)\s*\(/;
   const METHOD = /^\s*([A-Za-z_$][\w$]*)\s*(?::|=)\s*function\b/;
+  // Dotted assignment forms common in CommonJS / ForgeRock endpoint scripts:
+  //   exports.get = function (request) { ... }
+  //   module.exports.action = function (req) { ... }
+  //   exports.post = (req) => { ... }
+  // Capture the last segment of the LHS as the symbol name so the outline
+  // shows `get()`, `post()`, etc. The trailing group must be a function
+  // expression or arrow so we don't pick up plain object/value assignments.
+  const DOTTED_METHOD = /^\s*(?:[A-Za-z_$][\w$]*\.)+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/;
   // IIFEs — paren-wrapped function expressions invoked immediately. Common in
   // ForgeRock auth scripts that wrap the whole body in `(function () { ... })()`.
   // Matches (function …), (async function …), ((…) => …), preceded by the
@@ -155,6 +163,7 @@ function detectSymbols(content: string, language: "js" | "groovy"): Symbol[] {
         continue;
       }
       if ((m = line.match(METHOD))) { out.push({ line: i + 1, name: m[1], kind: "method" }); continue; }
+      if ((m = line.match(DOTTED_METHOD))) { out.push({ line: i + 1, name: m[1], kind: "method" }); continue; }
     } else {
       const m = line.match(GROOVY_DEF);
       if (m) out.push({ line: i + 1, name: m[1], kind: "function" });
