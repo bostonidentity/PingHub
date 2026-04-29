@@ -27,6 +27,30 @@ interface EnvWithLogApi extends Environment {
   hasLogApi: boolean;
 }
 
+/**
+ * Pre-process the Search keywords box before passing to parseQuery.
+ *
+ * The boolean parser treats whitespace between barewords as implicit AND,
+ * which is the right default for the Filter and Highlight boxes. For the
+ * Search keywords box, however, users typically paste a phrase (e.g. an
+ * error message or audit description) and expect it to match as-is. To make
+ * that work without forcing them to add quotes, when the input contains no
+ * boolean operators (`&&`, `||`, `,`), parens, or quotes, we wrap it as a
+ * single quoted phrase so the parser sees one literal TERM.
+ */
+function normalizeSearchKeywords(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return trimmed;
+  const hasOperator =
+    trimmed.includes("&&") ||
+    trimmed.includes("||") ||
+    /[,()"]/.test(trimmed);
+  if (hasOperator) return trimmed;
+  // Bareword phrase: escape backslashes (no quotes possible because of the
+  // regex above) and wrap in double quotes.
+  return `"${trimmed.replace(/\\/g, "\\\\")}"`;
+}
+
 interface LogEntry {
   timestamp: string;
   type: string;
@@ -1618,7 +1642,10 @@ export function LogsExplorer({
     function escapeFilterValue(v: string) { return v.replace(/\\/g, "\\\\").replace(/"/g, '\\"'); }
     // Parse the Search keywords box and pull out positive leaf terms. Server-side filtering is
     // a conservative OR over leaves; the client predicate (Filter box) still enforces && / () precisely.
-    const parsed = parseQuery(searchKeywordsRawRef.current, { matchCase: searchMatchCase, wholeWord: searchWholeWord });
+    const parsed = parseQuery(
+      normalizeSearchKeywords(searchKeywordsRawRef.current),
+      { matchCase: searchMatchCase, wholeWord: searchWholeWord },
+    );
     const allTerms = parsed.error ? [] : parsed.highlightTerms;
     const queryFilter = allTerms.length > 0
       ? allTerms.map((t) => {
@@ -1683,7 +1710,7 @@ export function LogsExplorer({
   // Drives both the client-side AND/OR enforcement and auto-highlighting; live
   // edits to the input are ignored until the user runs the search again.
   const searchKeywordsParsed = useMemo(
-    () => parseQuery(searchKeywordsApplied.raw, {
+    () => parseQuery(normalizeSearchKeywords(searchKeywordsApplied.raw), {
       matchCase: searchKeywordsApplied.matchCase,
       wholeWord: searchKeywordsApplied.wholeWord,
     }),
