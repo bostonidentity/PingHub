@@ -495,6 +495,17 @@ function SectionsView({
   const pendingFileSelection = useRef<{ fileName?: string; line?: number; query?: string } | null>(null);
   const [highlightLine, setHighlightLine] = useState<number | undefined>(undefined);
   const [highlightQuery, setHighlightQuery] = useState<string | undefined>(undefined);
+  // Ref to the currently-selected item button in the middle column so we can
+  // scroll it into view whenever selection changes (e.g. via deep-link or
+  // outline click). block:"nearest" keeps the panel still when the row is
+  // already visible.
+  const selectedItemRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (!selectedItem) return;
+    const el = selectedItemRef.current;
+    if (!el) return;
+    el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [selectedItem]);
 
   // Apply an incoming "Find in Browse" deep link once audit data is loaded.
   // Matches scope exactly; for the item we try exact id match, then
@@ -802,21 +813,25 @@ function SectionsView({
                   {itemFilter ? "No matches" : "No items"}
                 </p>
               )}
-              {filteredItems.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setSelectedItem(item)}
-                  className={cn(
-                    "w-full text-left px-3 py-1.5 text-xs transition-colors truncate border-l-2",
-                    selectedItem?.id === item.id
-                      ? "border-sky-500 bg-sky-50 text-sky-700 font-medium"
-                      : "border-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-800"
-                  )}
-                >
-                  {item.label}
-                </button>
-              ))}
+              {filteredItems.map((item) => {
+                const isSelected = selectedItem?.id === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    ref={isSelected ? selectedItemRef : undefined}
+                    type="button"
+                    onClick={() => setSelectedItem(item)}
+                    className={cn(
+                      "w-full text-left px-3 py-1.5 text-xs transition-colors truncate border-l-2",
+                      isSelected
+                        ? "border-sky-500 bg-sky-50 text-sky-700 font-medium"
+                        : "border-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-800"
+                    )}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
             </div>
           </>
         ) : (
