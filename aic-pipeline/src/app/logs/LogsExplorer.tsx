@@ -1695,13 +1695,21 @@ export function LogsExplorer({
   }, [highlightQuery, filterQuery, searchKeywordsParsed, mode, highlightMatchCase]);
 
   const rawFilteredWithIdx = useMemo(() => {
-    if (filterQuery.empty) return levelFiltered.map((e, i) => ({ e, i }));
+    // Server-side _queryFilter is a conservative OR over leaves of the Search box,
+    // so in search mode we also need to enforce the parsed Search query (which can
+    // contain && / () precedence) client-side. The Filter box query is always applied.
+    const applySearch =
+      mode === "search" && !searchKeywordsParsed.empty && !searchKeywordsParsed.error;
+    if (filterQuery.empty && !applySearch) return levelFiltered.map((e, i) => ({ e, i }));
     if (filterQuery.error) return [] as { e: LogEntry; i: number }[];
     return levelFiltered.reduce<{ e: LogEntry; i: number }[]>((acc, e, i) => {
-      if (filterQuery.test(entryStrings[i].json)) acc.push({ e, i });
+      const json = entryStrings[i].json;
+      if (!filterQuery.test(json)) return acc;
+      if (applySearch && !searchKeywordsParsed.test(json)) return acc;
+      acc.push({ e, i });
       return acc;
     }, []);
-  }, [levelFiltered, entryStrings, filterQuery]);
+  }, [levelFiltered, entryStrings, filterQuery, mode, searchKeywordsParsed]);
 
   // Dedupe pass — collapses exact-match duplicates to the first occurrence and tracks counts.
   // Key: source + level + message text. When off, dupeCounts is empty and everything passes through.

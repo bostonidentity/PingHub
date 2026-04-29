@@ -132,8 +132,8 @@ function UpcomingUpgradesBanner({ items }: { items: UpgradeItem[] }) {
                   ? `overdue by ${Math.abs(x.days)}d`
                   : "overdue"
                 : x.days !== null
-                ? `in ${x.days}d`
-                : "soon"}
+                  ? `in ${x.days}d`
+                  : "soon"}
             </span>
             {x.release?.info?.nextUpgrade && (
               <span className="text-xs opacity-75" title={x.release.info.nextUpgrade}>

@@ -14,29 +14,29 @@ import type { ReleaseCacheEntry } from "@/lib/release/types";
 import { classifyUpgrade, daysUntil } from "@/lib/release/urgency";
 
 const COLOR_OPTIONS: { value: Environment["color"]; label: string }[] = [
-  { value: "green",  label: "Green" },
-  { value: "blue",   label: "Blue" },
-  { value: "teal",   label: "Teal" },
+  { value: "green", label: "Green" },
+  { value: "blue", label: "Blue" },
+  { value: "teal", label: "Teal" },
   { value: "indigo", label: "Indigo" },
   { value: "purple", label: "Purple" },
-  { value: "pink",   label: "Pink" },
+  { value: "pink", label: "Pink" },
   { value: "yellow", label: "Yellow" },
   { value: "orange", label: "Orange" },
-  { value: "red",    label: "Red (Production)" },
-  { value: "gray",   label: "Gray" },
+  { value: "red", label: "Red (Production)" },
+  { value: "gray", label: "Gray" },
 ];
 
 const COLOR_SWATCHES: Record<Environment["color"], string> = {
-  green:  "bg-green-400",
-  blue:   "bg-blue-400",
-  teal:   "bg-teal-400",
+  green: "bg-green-400",
+  blue: "bg-blue-400",
+  teal: "bg-teal-400",
   indigo: "bg-indigo-400",
   purple: "bg-purple-400",
-  pink:   "bg-pink-400",
+  pink: "bg-pink-400",
   yellow: "bg-yellow-400",
   orange: "bg-orange-400",
-  red:    "bg-red-400",
-  gray:   "bg-gray-400",
+  red: "bg-red-400",
+  gray: "bg-gray-400",
 };
 
 interface NewEnvForm {
@@ -131,7 +131,7 @@ export function EnvironmentsManager({
         for (const e of data.envs) next[e.env] = e.info;
         setReleases(next);
       })
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   const setF = (key: keyof NewEnvForm, value: string | boolean) =>
@@ -333,8 +333,8 @@ export function EnvironmentsManager({
                   addStep === step
                     ? "bg-sky-50 text-sky-700 border-b-2 border-sky-500"
                     : i < stepIdx
-                    ? "text-slate-600 hover:bg-slate-50 cursor-pointer"
-                    : "text-slate-400 cursor-default"
+                      ? "text-slate-600 hover:bg-slate-50 cursor-pointer"
+                      : "text-slate-400 cursor-default"
                 )}
               >
                 {STEP_LABELS[step]}
@@ -718,19 +718,19 @@ function ReleaseStrip({ release }: { release: ReleaseCacheEntry | null | undefin
         {plannedDate && <span className="ml-1 font-normal opacity-75">(planned {plannedDate})</span>}
       </span>
     )
-    : urgency === "soon" ? (
-      <span className="text-amber-700 font-medium" title={nextUpgrade ?? undefined}>
-        upgrade in {days}d
-        {plannedDate && <span className="ml-1 font-normal opacity-75">({plannedDate})</span>}
-      </span>
-    )
-    : urgency === "later" ? (
-      <span className="text-slate-500" title={nextUpgrade ?? undefined}>
-        upgrade in {days}d
-        {plannedDate && <span className="ml-1 opacity-75">({plannedDate})</span>}
-      </span>
-    )
-    : <span className="text-slate-400">no upgrade scheduled</span>;
+      : urgency === "soon" ? (
+        <span className="text-amber-700 font-medium" title={nextUpgrade ?? undefined}>
+          upgrade in {days}d
+          {plannedDate && <span className="ml-1 font-normal opacity-75">({plannedDate})</span>}
+        </span>
+      )
+        : urgency === "later" ? (
+          <span className="text-slate-500" title={nextUpgrade ?? undefined}>
+            upgrade in {days}d
+            {plannedDate && <span className="ml-1 opacity-75">({plannedDate})</span>}
+          </span>
+        )
+          : <span className="text-slate-400">no upgrade scheduled</span>;
   return (
     <div className="border-t border-slate-100 pt-2.5 mt-3 flex items-center gap-1.5 text-[11px] min-w-0">
       <span className="font-mono text-slate-700 truncate" title={currentVersion}>v{currentVersion}</span>
