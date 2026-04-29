@@ -182,7 +182,7 @@ function TreeView({ environment }: { environment: string }) {
       fetch(`/api/configs/${environment}`)
         .then((r) => r.ok ? r.json() : null)
         .then((data) => { if (data) { setTree(data.tree ?? []); setConfigDir(data.configDir ?? ""); } })
-        .catch(() => {});
+        .catch(() => { });
     };
     const onFocus = () => refresh();
     const onVisibility = () => { if (document.visibilityState === "visible") refresh(); };
@@ -397,7 +397,7 @@ function SectionsView({
   onPreselectApplied,
 }: {
   environment: string;
-  preselect?: { scope: string; item: string; fileName?: string; line?: number } | null;
+  preselect?: { scope: string; item: string; fileName?: string; line?: number; query?: string } | null;
   onPreselectApplied?: () => void;
 }) {
   const [auditData, setAuditData] = useState<AuditEntry[]>([]);
@@ -473,7 +473,7 @@ function SectionsView({
     fetch(`/api/push/audit?${params}`)
       .then((r) => r.ok ? r.json() : null)
       .then((data: AuditEntry[] | null) => { if (data) setAuditData(data); })
-      .catch(() => {});
+      .catch(() => { });
   }, [environment]);
 
   useEffect(() => {
@@ -492,8 +492,9 @@ function SectionsView({
   useEffect(() => { setUsageOpen(false); setUsageData(null); setEndpointUsageData(null); setJourneyUsageData(null); }, [selectedItem]);
 
   // Track the file name + line to highlight after files load (deep-link flow).
-  const pendingFileSelection = useRef<{ fileName?: string; line?: number } | null>(null);
+  const pendingFileSelection = useRef<{ fileName?: string; line?: number; query?: string } | null>(null);
   const [highlightLine, setHighlightLine] = useState<number | undefined>(undefined);
+  const [highlightQuery, setHighlightQuery] = useState<string | undefined>(undefined);
 
   // Apply an incoming "Find in Browse" deep link once audit data is loaded.
   // Matches scope exactly; for the item we try exact id match, then
@@ -516,8 +517,8 @@ function SectionsView({
         setSelectedItem(match);
         // Remember the target file + line so we can activate the right tab
         // once /api/push/item returns the list of viewable files.
-        if (preselect.fileName || preselect.line) {
-          pendingFileSelection.current = { fileName: preselect.fileName, line: preselect.line };
+        if (preselect.fileName || preselect.line || preselect.query) {
+          pendingFileSelection.current = { fileName: preselect.fileName, line: preselect.line, query: preselect.query };
         }
       }
     }
@@ -525,7 +526,7 @@ function SectionsView({
   }, [preselect, auditData, auditLoading, onPreselectApplied]);
 
   // Clear highlight when the user navigates to a different item.
-  useEffect(() => { setHighlightLine(undefined); }, [selectedItem]);
+  useEffect(() => { setHighlightLine(undefined); setHighlightQuery(undefined); }, [selectedItem]);
 
   const fetchUsage = useCallback(() => {
     if (!selectedItem || selectedScope !== "scripts") return;
@@ -591,6 +592,7 @@ function SectionsView({
             if (idx >= 0) setActiveTab(idx);
           }
           if (pending.line) setHighlightLine(pending.line);
+          if (pending.query) setHighlightQuery(pending.query);
         }
       })
       .catch(() => setFiles([]))
@@ -650,9 +652,9 @@ function SectionsView({
   const filteredItems = scopeEntry
     ? filterLower
       ? scopeEntry.items.filter((i) =>
-          i.label.toLowerCase().includes(filterLower) ||
-          (i.value !== undefined && i.value.toLowerCase().includes(filterLower))
-        )
+        i.label.toLowerCase().includes(filterLower) ||
+        (i.value !== undefined && i.value.toLowerCase().includes(filterLower))
+      )
       : scopeEntry.items
     : [];
 
@@ -683,65 +685,65 @@ function SectionsView({
           )}
         </div>
         <div className="flex-1 overflow-y-auto">
-        {auditLoading ? (
-          <div className="p-3 space-y-2">
-            {[...Array(8)].map((_, i) => (
-              <div key={i} className="h-6 bg-slate-200 rounded animate-pulse" />
-            ))}
-          </div>
-        ) : (() => {
-          const q = scopeFilter.trim().toLowerCase();
-          return GROUPS.map((group) => {
-            const groupScopes = CONFIG_SCOPES.filter((s) => {
-              if (s.group !== group) return false;
-              if (!q) return true;
-              if (s.label.toLowerCase().includes(q)) return true;
-              if (s.value.toLowerCase().includes(q)) return true;
-              const entry = auditData.find((e) => e.scope === s.value);
-              return entry?.items.some((i) =>
-                i.label.toLowerCase().includes(q) ||
-                (i.value !== undefined && i.value.toLowerCase().includes(q))
-              ) ?? false;
+          {auditLoading ? (
+            <div className="p-3 space-y-2">
+              {[...Array(8)].map((_, i) => (
+                <div key={i} className="h-6 bg-slate-200 rounded animate-pulse" />
+              ))}
+            </div>
+          ) : (() => {
+            const q = scopeFilter.trim().toLowerCase();
+            return GROUPS.map((group) => {
+              const groupScopes = CONFIG_SCOPES.filter((s) => {
+                if (s.group !== group) return false;
+                if (!q) return true;
+                if (s.label.toLowerCase().includes(q)) return true;
+                if (s.value.toLowerCase().includes(q)) return true;
+                const entry = auditData.find((e) => e.scope === s.value);
+                return entry?.items.some((i) =>
+                  i.label.toLowerCase().includes(q) ||
+                  (i.value !== undefined && i.value.toLowerCase().includes(q))
+                ) ?? false;
+              });
+              if (groupScopes.length === 0) return null;
+              return (
+                <div key={group}>
+                  <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">{group}</p>
+                  {groupScopes.map((s) => {
+                    const isUnsupported = s.cliSupported === false;
+                    const entry = auditData.find((e) => e.scope === s.value);
+                    const count = entry?.items.length ?? 0;
+                    const hasFiles = (entry?.fileCount ?? 0) > 0;
+                    return (
+                      <button
+                        key={s.value}
+                        type="button"
+                        onClick={() => handleSelectScope(s.value)}
+                        className={cn(
+                          "w-full flex items-center justify-between gap-2 px-3 py-1.5 text-left text-xs transition-colors border-l-2",
+                          selectedScope === s.value
+                            ? "border-sky-500 bg-sky-50 text-sky-700 font-medium"
+                            : "border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-800",
+                          isUnsupported ? "opacity-50" : !hasFiles && "opacity-40"
+                        )}
+                      >
+                        <span className="truncate flex-1">{s.label}</span>
+                        {isUnsupported ? (
+                          <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-amber-100 text-amber-600 border border-amber-200 leading-none shrink-0">
+                            No CLI
+                          </span>
+                        ) : entry && (
+                          <span className="text-[10px] tabular-nums text-slate-400 shrink-0">
+                            {count}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
             });
-            if (groupScopes.length === 0) return null;
-            return (
-              <div key={group}>
-                <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">{group}</p>
-                {groupScopes.map((s) => {
-                  const isUnsupported = s.cliSupported === false;
-                  const entry = auditData.find((e) => e.scope === s.value);
-                  const count = entry?.items.length ?? 0;
-                  const hasFiles = (entry?.fileCount ?? 0) > 0;
-                  return (
-                    <button
-                      key={s.value}
-                      type="button"
-                      onClick={() => handleSelectScope(s.value)}
-                      className={cn(
-                        "w-full flex items-center justify-between gap-2 px-3 py-1.5 text-left text-xs transition-colors border-l-2",
-                        selectedScope === s.value
-                          ? "border-sky-500 bg-sky-50 text-sky-700 font-medium"
-                          : "border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-800",
-                        isUnsupported ? "opacity-50" : !hasFiles && "opacity-40"
-                      )}
-                    >
-                      <span className="truncate flex-1">{s.label}</span>
-                      {isUnsupported ? (
-                        <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-amber-100 text-amber-600 border border-amber-200 leading-none shrink-0">
-                          No CLI
-                        </span>
-                      ) : entry && (
-                        <span className="text-[10px] tabular-nums text-slate-400 shrink-0">
-                          {count}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            );
-          });
-        })()}
+          })()}
         </div>
       </div>
 
@@ -1195,6 +1197,7 @@ function SectionsView({
                       environment={environment}
                       relPath={activeFile.relPath}
                       highlightLine={highlightLine}
+                      highlightQuery={highlightQuery}
                       onNavigate={handleNavigateTarget}
                     />
                   </div>
@@ -1269,6 +1272,7 @@ export function ConfigsViewer({ environments }: { environments: Environment[] })
     item: string;
     fileName?: string;
     line?: number;
+    query?: string;
   } | null>(null);
 
   // Hydrate env/scope/item from URL query params on mount so a "Find in Browse"
@@ -1285,6 +1289,7 @@ export function ConfigsViewer({ environments }: { environments: Environment[] })
     const file = p.get("file");
     const lineStr = p.get("line");
     const line = lineStr ? Number(lineStr) || undefined : undefined;
+    const queryParam = p.get("q") ?? undefined;
 
     const envResolved = envParam && environments.some((e) => e.name === envParam) ? envParam : null;
     if (envResolved) setSelectedEnv(envResolved);
@@ -1300,12 +1305,13 @@ export function ConfigsViewer({ environments }: { environments: Environment[] })
             item: data.itemId,
             fileName: data.fileName,
             line,
+            query: queryParam,
           });
         })
         .catch(() => { /* ignore */ });
     } else if (scope || item) {
       setView("sections");
-      setPreselect({ scope: scope ?? "", item: item ?? "", line });
+      setPreselect({ scope: scope ?? "", item: item ?? "", line, query: queryParam });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [environments]);
