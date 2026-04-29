@@ -710,10 +710,26 @@ function ReleaseStrip({ release }: { release: ReleaseCacheEntry | null | undefin
   const { channel, currentVersion, nextUpgrade } = release.info;
   const urgency = classifyUpgrade(nextUpgrade);
   const days = daysUntil(nextUpgrade);
+  const plannedDate = nextUpgrade ? formatPlannedDate(nextUpgrade) : null;
   const urgencyText =
-    urgency === "overdue" ? <span className="text-rose-600 font-medium">overdue</span>
-    : urgency === "soon" ? <span className="text-amber-700 font-medium">upgrade in {days}d</span>
-    : urgency === "later" ? <span className="text-slate-500">upgrade in {days}d</span>
+    urgency === "overdue" ? (
+      <span className="text-rose-600 font-medium" title={nextUpgrade ?? undefined}>
+        overdue{days !== null ? ` by ${Math.abs(days)}d` : ""}
+        {plannedDate && <span className="ml-1 font-normal opacity-75">(planned {plannedDate})</span>}
+      </span>
+    )
+    : urgency === "soon" ? (
+      <span className="text-amber-700 font-medium" title={nextUpgrade ?? undefined}>
+        upgrade in {days}d
+        {plannedDate && <span className="ml-1 font-normal opacity-75">({plannedDate})</span>}
+      </span>
+    )
+    : urgency === "later" ? (
+      <span className="text-slate-500" title={nextUpgrade ?? undefined}>
+        upgrade in {days}d
+        {plannedDate && <span className="ml-1 opacity-75">({plannedDate})</span>}
+      </span>
+    )
     : <span className="text-slate-400">no upgrade scheduled</span>;
   return (
     <div className="border-t border-slate-100 pt-2.5 mt-3 flex items-center gap-1.5 text-[11px] min-w-0">
@@ -731,4 +747,16 @@ function ReleaseStrip({ release }: { release: ReleaseCacheEntry | null | undefin
       <span className="ml-auto shrink-0">{urgencyText}</span>
     </div>
   );
+}
+
+function formatPlannedDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
