@@ -29,7 +29,7 @@ export function openIndexDb(typeDir: string): Database.Database {
   db.pragma("synchronous = NORMAL");
   db.prepare(`
     CREATE TABLE IF NOT EXISTS records (
-      id TEXT PRIMARY KEY,
+      id TEXT PRIMARY KEY NOT NULL,
       ord INTEGER NOT NULL,
       offset INTEGER NOT NULL,
       length INTEGER NOT NULL,
