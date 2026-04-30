@@ -103,6 +103,7 @@ export function RecordDetailPane({
   const [depsRequested, setDepsRequested] = useState(false);
   const [titlesByRef, setTitlesByRef] = useState<Record<string, string | null>>({});
   const [fieldsByType, setFieldsByType] = useState<Record<string, string[]>>({});
+  const [titlesLoading, setTitlesLoading] = useState(false);
   const titleReqIdRef = useRef(0);
 
   // Reset deps when the selected record changes
@@ -113,6 +114,7 @@ export function RecordDetailPane({
     setDepsRequested(false);
     setTitlesByRef({});
     setFieldsByType({});
+    setTitlesLoading(false);
   }, [env, type, id]);
 
   // Fetch deps only when explicitly requested
@@ -172,10 +174,12 @@ export function RecordDetailPane({
       titleReqIdRef.current++;
       setTitlesByRef({});
       setFieldsByType({});
+      setTitlesLoading(false);
       return;
     }
     const reqId = ++titleReqIdRef.current;
     let cancelled = false;
+    setTitlesLoading(true);
     fetch(`/api/data/titles/${env}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -187,7 +191,10 @@ export function RecordDetailPane({
         setTitlesByRef(data.titles);
         setFieldsByType(data.fieldsByType);
       })
-      .catch(() => { /* keep prior labels on transient failure */ });
+      .catch(() => { /* keep prior labels on transient failure */ })
+      .finally(() => {
+        if (!cancelled && reqId === titleReqIdRef.current) setTitlesLoading(false);
+      });
     return () => { cancelled = true; };
   }, [env, allRefs, attrsByTypeKey]);
 
@@ -254,49 +261,55 @@ export function RecordDetailPane({
 
           {depsOpen && (
             <div className="px-3 pb-2 max-h-[200px] overflow-y-auto space-y-2 text-[11px]">
-              {/* Outgoing: records this one references */}
-              {outgoing.length > 0 && (
-                <div>
-                  <div className="text-slate-500 font-semibold mb-0.5">
-                    References <span className="font-normal text-slate-400">({outgoing.length})</span>
-                  </div>
-                  {[...outgoingByType.entries()].map(([refType, refs]) => (
-                    <DepGroup
-                      key={refType}
-                      refType={refType}
-                      refs={refs}
-                      fields={fieldsByType[refType] ?? []}
-                      chosen={titlePrefs[`${env}::${refType}`] ?? ""}
-                      env={env}
-                      titlesByRef={titlesByRef}
-                      onNavigate={onNavigate}
-                      onChooseField={setTitleFieldFor}
-                    />
-                  ))}
-                </div>
-              )}
+              {titlesLoading ? (
+                <div className="text-slate-400 italic">Loading dependencies…</div>
+              ) : (
+                <>
+                  {/* Outgoing: records this one references */}
+                  {outgoing.length > 0 && (
+                    <div>
+                      <div className="text-slate-500 font-semibold mb-0.5">
+                        References <span className="font-normal text-slate-400">({outgoing.length})</span>
+                      </div>
+                      {[...outgoingByType.entries()].map(([refType, refs]) => (
+                        <DepGroup
+                          key={refType}
+                          refType={refType}
+                          refs={refs}
+                          fields={fieldsByType[refType] ?? []}
+                          chosen={titlePrefs[`${env}::${refType}`] ?? ""}
+                          env={env}
+                          titlesByRef={titlesByRef}
+                          onNavigate={onNavigate}
+                          onChooseField={setTitleFieldFor}
+                        />
+                      ))}
+                    </div>
+                  )}
 
-              {/* Incoming: records that reference this one */}
-              {incoming.length > 0 && (
-                <div>
-                  <div className="text-slate-500 font-semibold mb-0.5">
-                    Referenced by <span className="font-normal text-slate-400">({incoming.length})</span>
-                  </div>
-                  {[...incomingByType.entries()].map(([refType, refs]) => (
-                    <DepGroup
-                      key={refType}
-                      refType={refType}
-                      refs={refs}
-                      fields={fieldsByType[refType] ?? []}
-                      chosen={titlePrefs[`${env}::${refType}`] ?? ""}
-                      env={env}
-                      titlesByRef={titlesByRef}
-                      onNavigate={onNavigate}
-                      onChooseField={setTitleFieldFor}
-                      titleSuffix=" → this record"
-                    />
-                  ))}
-                </div>
+                  {/* Incoming: records that reference this one */}
+                  {incoming.length > 0 && (
+                    <div>
+                      <div className="text-slate-500 font-semibold mb-0.5">
+                        Referenced by <span className="font-normal text-slate-400">({incoming.length})</span>
+                      </div>
+                      {[...incomingByType.entries()].map(([refType, refs]) => (
+                        <DepGroup
+                          key={refType}
+                          refType={refType}
+                          refs={refs}
+                          fields={fieldsByType[refType] ?? []}
+                          chosen={titlePrefs[`${env}::${refType}`] ?? ""}
+                          env={env}
+                          titlesByRef={titlesByRef}
+                          onNavigate={onNavigate}
+                          onChooseField={setTitleFieldFor}
+                          titleSuffix=" → this record"
+                        />
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
