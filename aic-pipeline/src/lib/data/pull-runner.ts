@@ -213,6 +213,12 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
   outer:
   for (const type of job.types) {
     if (signal.aborted) break;
+    // Skip types already completed in a prior run (resume after interrupt
+    // or manual suspend). Their data is in the canonical dir and the
+    // staging dir is gone, so attempting to "resume" would fail with
+    // "resume staging file missing".
+    const existingProgress = job.progress.find((p) => p.type === type);
+    if (existingProgress?.status === "done") continue;
     registry.updateProgress(job.id, type, { status: "running" });
 
     const typePullingDir = path.join(pullingRoot, type);
@@ -221,8 +227,15 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
     let refsIndex: Record<string, string[]> = {};
     /** Bytes already written to data.ndjson — used as the offset for the next record. */
     let bytesWritten = 0;
-    /** Set of ids already inserted. Replaces the legacy `id in offsets` dedupe. */
-    const seenIds = new Set<string>();
+    /**
+     * Set of ids already inserted, used ONLY to dedupe rows already on disk
+     * from a prior interrupted run when resuming. On a fresh pull this stays
+     * `null` — the tenant doesn't repeat ids across pages, and SQLite's
+     * `INSERT OR REPLACE` would absorb any anomaly anyway. Holding 10M+ UUID
+     * strings here was tripping Next.js's "approaching memory threshold"
+     * watchdog on very large types (alpha_user, etc.).
+     */
+    let seenIds: Set<string> | null = null;
 
     const ndjsonPath = path.join(typePullingDir, NDJSON_FILE);
 
@@ -259,6 +272,7 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
       fs.truncateSync(ndjsonPath, persistedProgress!.byteLength!);
       const rebuilt = await rebuildFromNDJson(ndjsonPath, pickIndexFields, extractRefs);
       refsIndex = rebuilt.refsIndex;
+      seenIds = new Set<string>();
       for (const id of Object.keys(rebuilt.offsets)) seenIds.add(id);
       bytesWritten = rebuilt.byteLength;
       fetched = rebuilt.fetched;
@@ -364,7 +378,7 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
                 : typeof item.id === "string"
                   ? item.id as string
                   : String(fetched + 1);
-              if (seenIds.has(id)) continue; // dedupe on resume
+              if (seenIds && seenIds.has(id)) continue; // dedupe on resume
               const lineStr = JSON.stringify(item);
               const lineLen = Buffer.byteLength(lineStr, "utf-8");
               const fields = pickIndexFields(item);
@@ -378,7 +392,7 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
                 line: lineStr,
                 refs: extractRefs(item),
               });
-              seenIds.add(id);
+              if (seenIds) seenIds.add(id);
               nextOrd++;
               bytesWritten += lineLen + 1; // +1 for newline
             }
@@ -519,12 +533,22 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
     }
   }
 
-  // Cleanup any lingering pulling dir (aborted or failed).
-  if (fs.existsSync(pullingRoot)) {
+  // Detect manual suspend: the suspend endpoint mutates job.status to
+  // "suspending" and then aborts the controller. Because `job` is the same
+  // reference held by the registry, we observe the status change here.
+  // On suspend we KEEP the staging dir intact so the resume can pick up
+  // from the persisted per-type cookie + byteLength.
+  const isSuspending = job.status === "suspending";
+
+  // Cleanup any lingering pulling dir (aborted or failed). Skipped when
+  // suspending so the resume can re-open the staging files.
+  if (!isSuspending && fs.existsSync(pullingRoot)) {
     fs.rmSync(pullingRoot, { recursive: true, force: true });
   }
 
-  if (signal.aborted) {
+  if (isSuspending) {
+    registry.setJobStatus(job.id, "suspended");
+  } else if (signal.aborted) {
     registry.setJobStatus(job.id, "aborted");
   } else if (anyFailed) {
     registry.setJobStatus(job.id, "failed", "one or more types failed");

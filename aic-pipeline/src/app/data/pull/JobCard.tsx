@@ -12,6 +12,8 @@ const STATUS_STYLE: Record<DataPullJob["status"], string> = {
   failed: "bg-rose-100 text-rose-700",
   aborted: "bg-slate-100 text-slate-500",
   interrupted: "bg-amber-100 text-amber-800",
+  suspending: "bg-indigo-100 text-indigo-700",
+  suspended: "bg-indigo-100 text-indigo-800",
 };
 
 const MIN_ELAPSED_FOR_ETA_MS = 10_000;
@@ -52,14 +54,18 @@ export function JobCard({
   probedCounts = {},
   onAbort,
   onResume,
+  onSuspend,
 }: {
   job: DataPullJob;
   probedCounts?: Record<string, number | null>;
   onAbort: () => void;
   onResume?: () => void;
+  onSuspend?: () => void;
 }) {
-  const canAbort = job.status === "running" || job.status === "queued";
-  const isRunning = job.status === "running" || job.status === "queued" || job.status === "aborting";
+  const canAbort = job.status === "running" || job.status === "queued" || job.status === "interrupted" || job.status === "suspended";
+  const canSuspend = job.status === "running" || job.status === "queued";
+  const canResume = job.status === "interrupted" || job.status === "suspended";
+  const isRunning = job.status === "running" || job.status === "queued" || job.status === "aborting" || job.status === "suspending";
   const elapsedMs = Date.now() - job.startedAt;
 
   // Aggregate progress across types for the header ETA. We only display an ETA
@@ -103,20 +109,31 @@ export function JobCard({
             · ~{formatDuration(etaMs)} remaining
           </span>
         )}
-        {canAbort && (
-          <button
-            type="button"
-            onClick={onAbort}
-            className="ml-auto px-2 py-0.5 text-xs border border-slate-300 rounded bg-white text-slate-700 hover:bg-slate-50"
-          >Abort</button>
-        )}
-        {job.status === "interrupted" && onResume && (
-          <button
-            type="button"
-            onClick={onResume}
-            className="ml-auto px-2 py-0.5 text-xs border border-amber-400 rounded bg-amber-50 text-amber-800 hover:bg-amber-100"
-          >Resume</button>
-        )}
+        <div className="ml-auto flex items-center gap-2">
+          {canSuspend && onSuspend && (
+            <button
+              type="button"
+              onClick={onSuspend}
+              title="Pause this pull. You can resume it later (even after a server restart) and it will continue from where it left off."
+              className="px-2 py-0.5 text-xs border border-indigo-400 rounded bg-indigo-50 text-indigo-800 hover:bg-indigo-100"
+            >Suspend</button>
+          )}
+          {canResume && onResume && (
+            <button
+              type="button"
+              onClick={onResume}
+              className="px-2 py-0.5 text-xs border border-amber-400 rounded bg-amber-50 text-amber-800 hover:bg-amber-100"
+            >Resume</button>
+          )}
+          {canAbort && (
+            <button
+              type="button"
+              onClick={onAbort}
+              title={canResume ? "Discard this paused pull and free the env so a fresh pull can start." : undefined}
+              className="px-2 py-0.5 text-xs border border-slate-300 rounded bg-white text-slate-700 hover:bg-slate-50"
+            >Abort</button>
+          )}
+        </div>
       </div>
       {job.fatalError && (
         <div className="px-2 py-1.5 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded font-mono break-all">

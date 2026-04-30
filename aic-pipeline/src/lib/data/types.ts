@@ -5,7 +5,9 @@ export type JobStatus =
   | "completed"
   | "failed"
   | "aborted"
-  | "interrupted";
+  | "interrupted"
+  | "suspending"
+  | "suspended";
 
 export type PerTypeProgress = {
   type: string;
