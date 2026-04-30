@@ -136,7 +136,12 @@ export function JobCard({
         </div>
       </div>
       {job.fatalError && (
-        <div className="px-2 py-1.5 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded font-mono break-all">
+        <div className={cn(
+          "px-2 py-1.5 border text-xs rounded font-mono break-all",
+          job.status === "suspended" || job.status === "suspending"
+            ? "bg-indigo-50 border-indigo-200 text-indigo-800"
+            : "bg-rose-50 border-rose-200 text-rose-700",
+        )}>
           {job.fatalError}
         </div>
       )}

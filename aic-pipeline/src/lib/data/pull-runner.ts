@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import readline from "readline";
+import v8 from "v8";
 import type { DataPullJob } from "./types";
 import type { Registry } from "./job-registry";
 import { NDJSON_FILE, type Offsets } from "./ndjson-format";
@@ -12,6 +13,38 @@ const MAX_RETRIES = 5;
 const DEFAULT_RETRY_DELAY_MS = 3000;
 const DEFAULT_PAGE_SIZE = 50000;
 const INDEX_FIELD_MAX_LEN = 200;
+
+/**
+ * Heap-pressure auto-suspend threshold (fraction of V8's heap_size_limit).
+ *
+ * Next.js's dev-server memory watchdog warns at ~50% used and restarts at
+ * higher pressure. By suspending ourselves at 70% we (a) finalize the
+ * current type's cookie/byteLength to disk, (b) preserve the staging dir,
+ * and (c) free our in-process accumulators (refsIndex, etc.) before the
+ * watchdog can decide to kill the process. The user just clicks Resume.
+ *
+ * Override with DATA_PULL_HEAP_SUSPEND_FRACTION (e.g. 0.6 for earlier
+ * suspend, 0.85 for more aggressive use of available heap).
+ */
+const DEFAULT_HEAP_SUSPEND_FRACTION = 0.7;
+
+function getHeapSuspendFraction(): number {
+  const raw = process.env.DATA_PULL_HEAP_SUSPEND_FRACTION;
+  if (!raw) return DEFAULT_HEAP_SUSPEND_FRACTION;
+  const n = parseFloat(raw);
+  return Number.isFinite(n) && n > 0 && n < 1 ? n : DEFAULT_HEAP_SUSPEND_FRACTION;
+}
+
+/**
+ * Returns true when V8's used heap is above the configured fraction of
+ * heap_size_limit. Cheap (~microseconds) — safe to call every page.
+ */
+function isHeapUnderPressure(fraction: number): boolean {
+  const { heap_size_limit, used_heap_size } = v8.getHeapStatistics();
+  if (!heap_size_limit) return false;
+  return used_heap_size / heap_size_limit >= fraction;
+}
+
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -156,6 +189,7 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
 
   const tenantUrl = envVars.TENANT_BASE_URL ?? "";
   const pullingRoot = path.join(envsRoot, job.env, "managed-data", `.pulling-${job.id}`);
+  const heapSuspendFraction = getHeapSuspendFraction();
   let token: string;
 
   try {
@@ -453,6 +487,25 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
           break;
         }
         if (!cookie) break; // last page
+
+        // Memory-pressure auto-suspend. Cookie + byteLength are now on disk
+        // (just persisted in the success branch above), so it's safe to
+        // bail out cleanly: the post-loop cleanup will see job.status ===
+        // "suspending", preserve the staging dir, and finalize as
+        // "suspended". The user clicks Resume to continue from here.
+        if (isHeapUnderPressure(heapSuspendFraction)) {
+          const stats = v8.getHeapStatistics();
+          const usedMb = Math.round(stats.used_heap_size / 1024 / 1024);
+          const limitMb = Math.round(stats.heap_size_limit / 1024 / 1024);
+          registry.setJobStatus(
+            job.id,
+            "suspending",
+            `auto-suspended at ${usedMb} MB / ${limitMb} MB heap (${Math.round(heapSuspendFraction * 100)}% threshold) — click Resume to continue`,
+          );
+          ndjsonStream.destroy();
+          if (indexDb.open) indexDb.close();
+          break outer;
+        }
       }
 
       if (signal.aborted) {
