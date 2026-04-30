@@ -80,14 +80,21 @@ export function PullPanel({
   const [probeProgress, setProbeProgress] = useState<Record<string, { fetched: number; pages: number }>>({});
   const [prePullChecking, setPrePullChecking] = useState(false);
 
-  const { jobs, start, abort, resume } = useDataPullJobs({ pollMs: 2000, includeFinished: true });
+  const { jobs, start, abort, resume, suspend } = useDataPullJobs({ pollMs: 2000, includeFinished: true });
   const types = useMemo(() => typesByEnv[env] ?? [], [typesByEnv, env]);
   const visibleTypes = useMemo(() => {
     const q = filter.trim().toLowerCase();
     return q ? types.filter((t) => t.toLowerCase().includes(q)) : types;
   }, [types, filter]);
   const active = useMemo(
-    () => jobs.find((j) => j.env === env && (j.status === "running" || j.status === "queued" || j.status === "aborting")),
+    () => jobs.find((j) => j.env === env && (
+      j.status === "running"
+      || j.status === "queued"
+      || j.status === "aborting"
+      || j.status === "suspending"
+      || j.status === "suspended"
+      || j.status === "interrupted"
+    )),
     [jobs, env],
   );
 
@@ -414,6 +421,7 @@ export function PullPanel({
               probedCounts={probedForJob}
               onAbort={() => abort(j.id)}
               onResume={() => resume(j.id)}
+              onSuspend={() => suspend(j.id)}
             />
           );
         })}
