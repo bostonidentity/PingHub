@@ -230,7 +230,7 @@ describe("runPull: page size", () => {
     }
   });
 
-  it("defaults to 5000 when pageSize is not provided", async () => {
+  it("defaults to 50000 when pageSize is not provided", async () => {
     const seenUrls: string[] = [];
     const fetchMock = vi.fn(async (url: URL | RequestInfo) => {
       seenUrls.push(typeof url === "string" ? url : url.toString());
@@ -250,7 +250,7 @@ describe("runPull: page size", () => {
 
     const pageRequests = seenUrls.filter((u) => u.includes("_pageSize="));
     for (const u of pageRequests) {
-      expect(u).toContain("_pageSize=5000");
+      expect(u).toContain("_pageSize=50000");
     }
   });
 });
