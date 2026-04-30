@@ -24,10 +24,28 @@ function DepGroup({
   onChooseField: (env: string, type: string, field: string) => void;
   titleSuffix?: string;
 }) {
+  const [expanded, setExpanded] = useState(true);
   return (
     <div className="ml-2 mb-1">
       <div className="flex items-center gap-2">
-        <span className="text-slate-400">{refType}</span>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          title={expanded ? "Collapse" : "Expand"}
+          className="flex items-center gap-1 text-slate-400 hover:text-slate-600 transition-colors"
+        >
+          <svg
+            className={cn("w-3 h-3 transition-transform", expanded && "rotate-90")}
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+          <span>{refType}</span>
+        </button>
         {fields.length > 0 && (
           <label className="flex items-center gap-1 text-[10px] text-slate-500">
             <span>Display:</span>
@@ -46,22 +64,24 @@ function DepGroup({
           </label>
         )}
       </div>
-      <div className="ml-2 flex flex-wrap gap-x-2 gap-y-0.5">
-        {refs.map((r) => {
-          const label = titlesByRef[`${r.type}/${r.id}`] ?? r.id;
-          return (
-            <button
-              key={`${r.type}:${r.id}`}
-              type="button"
-              onClick={() => onNavigate?.(r.type, r.id)}
-              title={`${r.type}/${r.id}${titleSuffix}`}
-              className="font-mono text-sky-600 hover:underline hover:text-sky-800 truncate max-w-[240px]"
-            >
-              {label}
-            </button>
-          );
-        })}
-      </div>
+      {expanded && (
+        <div className="ml-2 flex flex-wrap gap-x-2 gap-y-0.5">
+          {refs.map((r) => {
+            const label = titlesByRef[`${r.type}/${r.id}`] ?? r.id;
+            return (
+              <button
+                key={`${r.type}:${r.id}`}
+                type="button"
+                onClick={() => onNavigate?.(r.type, r.id)}
+                title={`${r.type}/${r.id}${titleSuffix}`}
+                className="font-mono text-sky-600 hover:underline hover:text-sky-800 truncate max-w-[240px]"
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
