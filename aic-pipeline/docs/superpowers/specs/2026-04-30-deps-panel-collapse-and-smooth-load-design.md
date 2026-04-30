@@ -27,7 +27,7 @@ For records with many dep groups or many refs per type, the swap is visible and 
 ### Smooth title load
 
 - Add `titlesLoading: boolean` to `RecordDetailPane`. Set `true` when the titles fetch starts, `false` when it settles or fails.
-- While `titlesLoading` is true (and refs are present), the deps panel body shows a single "Loading dependencies…" line instead of the type groups.
+- While `titlesLoading` is true (and refs are present), the deps panel body shows a single "Loading labels…" line instead of the type groups. The wording sidesteps the "Dependencies" header that already shows the resolved counts above it.
 - When titles settle, render all type groups in one paint — labels are correct from the first frame.
 - On titles-fetch failure, set `titlesLoading=false` so groups render with id-fallback labels (current behavior). Don't get stuck on the loading line.
 - Empty refs path is unchanged ("No dependencies found.").
