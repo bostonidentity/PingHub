@@ -262,7 +262,7 @@ export function RecordDetailPane({
           {depsOpen && (
             <div className="px-3 pb-2 max-h-[200px] overflow-y-auto space-y-2 text-[11px]">
               {titlesLoading ? (
-                <div className="text-slate-400 italic">Loading dependencies…</div>
+                <div className="text-slate-400 italic">Loading labels…</div>
               ) : (
                 <>
                   {/* Outgoing: records this one references */}
