@@ -103,7 +103,7 @@ describe("listRecords", () => {
     });
   });
 
-  it("returns all records paginated by id order", async () => {
+  it("returns all records paginated in pull order", async () => {
     const page = await listRecords(tmpDir, ENV, "alpha_user", {
       q: "",
       page: 1,

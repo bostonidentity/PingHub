@@ -1,7 +1,6 @@
 import fs from "fs";
 import { existsSync } from "fs";
 import fsp from "fs/promises";
-import readline from "readline";
 import path from "path";
 import type Database from "better-sqlite3";
 import type { DisplayFields, SnapshotType, SnapshotRecordPage } from "./types";
@@ -156,10 +155,6 @@ async function readRecordFromNDJson(
   } finally {
     await fd.close();
   }
-}
-
-function stringOrEmpty(v: unknown): string {
-  return typeof v === "string" ? v : v == null ? "" : String(v);
 }
 
 interface ListOpts {
