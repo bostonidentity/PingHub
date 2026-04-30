@@ -92,9 +92,14 @@ describe("data API lifecycle", () => {
     expect(status).toBe("completed");
 
     const typeDir = path.join(tmpDir, "environments", "test-env", "managed-data", "alpha_user");
-    expect(fs.readdirSync(typeDir).sort()).toEqual([
-      "_index.json", "_manifest.json", "_offsets.json", "_refs.json", "data.ndjson",
+    const entries = fs.readdirSync(typeDir).sort();
+    // Filter SQLite WAL/SHM sidecars — present only if WAL hasn't checkpointed yet.
+    const stable = entries.filter((e) => !e.endsWith("-wal") && !e.endsWith("-shm"));
+    expect(stable).toEqual([
+      "_manifest.json", "_refs.json", "data.ndjson", "index.sqlite",
     ]);
+    expect(stable).not.toContain("_index.json");
+    expect(stable).not.toContain("_offsets.json");
   });
 
   it("POST /pull returns 409 when an active job exists for the env", async () => {
@@ -196,5 +201,36 @@ describe("data API lifecycle", () => {
       { params: Promise.resolve({ jobId: job.id }) },
     );
     expect(res.status).toBe(409);
+  });
+
+  it("backfills index.sqlite for a pre-SQLite snapshot on first read", async () => {
+    vi.resetModules();
+    const recordsRoute = await import("@/app/api/data/records/[env]/[type]/route");
+
+    // Simulate a pre-SQLite snapshot: data.ndjson + _manifest.json only.
+    const typeDir = path.join(tmpDir, "environments", "test-env", "managed-data", "legacy_user");
+    fs.mkdirSync(typeDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(typeDir, "data.ndjson"),
+      [
+        JSON.stringify({ _id: "a", userName: "alice" }),
+        JSON.stringify({ _id: "b", userName: "bob" }),
+      ].join("\n") + "\n",
+    );
+    fs.writeFileSync(
+      path.join(typeDir, "_manifest.json"),
+      JSON.stringify({ type: "legacy_user", pulledAt: Date.now(), count: 2, jobId: "seed" }),
+    );
+
+    const req = new NextRequest("http://localhost/api/data/records/test-env/legacy_user?q=&page=1&limit=10");
+    const res = await recordsRoute.GET(
+      req,
+      { params: Promise.resolve({ env: "test-env", type: "legacy_user" }) },
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.total).toBe(2);
+    expect(json.records.map((r: { id: string }) => r.id).sort()).toEqual(["a", "b"]);
+    expect(fs.existsSync(path.join(typeDir, "index.sqlite"))).toBe(true);
   });
 });
