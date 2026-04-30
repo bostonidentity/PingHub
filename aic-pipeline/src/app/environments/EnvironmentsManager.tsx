@@ -405,14 +405,14 @@ export function EnvironmentsManager({
                       Pull page size <span className="text-slate-400 font-normal">(optional)</span>
                     </label>
                     <p className="text-xs text-slate-400">
-                      AIC pagination size for managed-data pulls. Leave blank to use the default (5000).
+                      AIC pagination size for managed-data pulls. Leave blank to use the default (50000).
                     </p>
                     <input
                       type="number"
                       min={1}
                       max={100000}
                       value={form.pageSize}
-                      placeholder="5000"
+                      placeholder="50000"
                       onChange={(e) => setF("pageSize", e.target.value)}
                       className="block w-32 rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
                     />

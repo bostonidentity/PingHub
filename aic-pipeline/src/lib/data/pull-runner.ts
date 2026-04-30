@@ -10,7 +10,7 @@ import type Database from "better-sqlite3";
 
 const MAX_RETRIES = 5;
 const DEFAULT_RETRY_DELAY_MS = 3000;
-const DEFAULT_PAGE_SIZE = 5000;
+const DEFAULT_PAGE_SIZE = 50000;
 const INDEX_FIELD_MAX_LEN = 200;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -141,7 +141,7 @@ export interface RunPullOpts {
    * call site (route handler resolves these into a single number):
    *   1. Environment.pageSize from environments.json
    *   2. process.env.DATA_PULL_PAGE_SIZE
-   *   3. DEFAULT_PAGE_SIZE (5000)
+   *   3. DEFAULT_PAGE_SIZE (50000)
    */
   pageSize?: number;
 }

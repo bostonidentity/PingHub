@@ -994,7 +994,7 @@ export const EnvEditor = forwardRef<EnvEditorHandle, EnvEditorProps>(function En
                 min={1}
                 max={100000}
                 value={pageSize}
-                placeholder="5000"
+                placeholder="50000"
                 onChange={(e) => {
                   const v = e.target.value;
                   setPageSize(v === "" ? "" : parseInt(v, 10) || "");
