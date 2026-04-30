@@ -35,7 +35,25 @@ function envVarsFor(env: string): Record<string, string> | null {
   return parseEnvFile(fs.readFileSync(envFile, "utf-8")) as Record<string, string>;
 }
 
-type ProbeResult = { count: number } | { count: null; reason: string };
+function readManifestCount(env: string, type: string): { count: number; pulledAt: number } | null {
+  const manifestPath = path.join(ENVIRONMENTS_DIR, env, "managed-data", type, "_manifest.json");
+  if (!fs.existsSync(manifestPath)) return null;
+  try {
+    const data = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as {
+      count?: unknown;
+      pulledAt?: unknown;
+    };
+    if (typeof data.count !== "number" || data.count < 0) return null;
+    if (typeof data.pulledAt !== "number") return null;
+    return { count: data.count, pulledAt: data.pulledAt };
+  } catch {
+    return null;
+  }
+}
+
+type ProbeResult =
+  | { count: number; reason?: string }
+  | { count: null; reason: string };
 
 async function probePolicy(
   tenantUrl: string,
@@ -69,6 +87,7 @@ async function probePolicy(
 
 async function probeType(
   tenantUrl: string,
+  env: string,
   type: string,
   token: string,
   emit: (ev: ProbeEvent) => void,
@@ -77,6 +96,19 @@ async function probeType(
   if (exact.count !== null) return exact;
   const estimate = await probePolicy(tenantUrl, type, token, "ESTIMATE");
   if (estimate.count !== null) return estimate;
+
+  // Manifest fallback: if both EXACT and ESTIMATE failed AND the type has
+  // been pulled before, return the snapshot's count. Skips the slow
+  // pagination fallback entirely. The `reason` field tags the value so the
+  // UI can show it differently from a live tenant count.
+  const manifest = readManifestCount(env, type);
+  if (manifest) {
+    const isoMinute = new Date(manifest.pulledAt).toISOString().slice(0, 16) + "Z";
+    return {
+      count: manifest.count,
+      reason: `from local snapshot pulled ${isoMinute}`,
+    };
+  }
 
   // Paginated ID-only count fallback. Progress events fire after each page.
   let cookie: string | null = null;
@@ -159,8 +191,8 @@ export async function POST(
       // count queries.
       for (const type of types) {
         emit({ event: "start", type });
-        const r = await probeType(tenantUrl, type, token, emit);
-        emit({ event: "done", type, count: r.count, reason: r.count === null ? (r as { reason: string }).reason : undefined });
+        const r = await probeType(tenantUrl, env, type, token, emit);
+        emit({ event: "done", type, count: r.count, reason: r.reason });
       }
 
       emit({ event: "end" });

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Managed-data index moved to SQLite**: per-type browse and search now use a `index.sqlite` file alongside `data.ndjson` instead of an in-memory `_index.json` cache. Snapshots from before this release are auto-upgraded on first read; `_index.json` and `_offsets.json` are no longer written. Embedded (`better-sqlite3`) — no new services. Legacy per-`{id}.json` snapshots continue to work unchanged.
+
 ## [0.2.3.1] - 2026-04-27
 
 ### Added

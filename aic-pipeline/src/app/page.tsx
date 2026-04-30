@@ -128,11 +128,18 @@ function UpcomingUpgradesBanner({ items }: { items: UpgradeItem[] }) {
             <span className="text-xs">·</span>
             <span className="text-xs">
               {x.urgency === "overdue"
-                ? "overdue"
+                ? x.days !== null
+                  ? `overdue by ${Math.abs(x.days)}d`
+                  : "overdue"
                 : x.days !== null
-                ? `in ${x.days}d`
-                : "soon"}
+                  ? `in ${x.days}d`
+                  : "soon"}
             </span>
+            {x.release?.info?.nextUpgrade && (
+              <span className="text-xs opacity-75" title={x.release.info.nextUpgrade}>
+                (planned {formatPlannedDate(x.release.info.nextUpgrade)})
+              </span>
+            )}
             {x.release?.info?.currentVersion && (
               <span className="text-xs font-mono opacity-75">v{x.release.info.currentVersion} → ?</span>
             )}
@@ -141,4 +148,16 @@ function UpcomingUpgradesBanner({ items }: { items: UpgradeItem[] }) {
       </ul>
     </div>
   );
+}
+
+function formatPlannedDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }

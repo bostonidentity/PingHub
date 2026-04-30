@@ -27,6 +27,30 @@ interface EnvWithLogApi extends Environment {
   hasLogApi: boolean;
 }
 
+/**
+ * Pre-process the Search keywords box before passing to parseQuery.
+ *
+ * The boolean parser treats whitespace between barewords as implicit AND,
+ * which is the right default for the Filter and Highlight boxes. For the
+ * Search keywords box, however, users typically paste a phrase (e.g. an
+ * error message or audit description) and expect it to match as-is. To make
+ * that work without forcing them to add quotes, when the input contains no
+ * boolean operators (`&&`, `||`, `,`), parens, or quotes, we wrap it as a
+ * single quoted phrase so the parser sees one literal TERM.
+ */
+function normalizeSearchKeywords(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return trimmed;
+  const hasOperator =
+    trimmed.includes("&&") ||
+    trimmed.includes("||") ||
+    /[,()"]/.test(trimmed);
+  if (hasOperator) return trimmed;
+  // Bareword phrase: escape backslashes (no quotes possible because of the
+  // regex above) and wrap in double quotes.
+  return `"${trimmed.replace(/\\/g, "\\\\")}"`;
+}
+
 interface LogEntry {
   timestamp: string;
   type: string;
@@ -1279,6 +1303,12 @@ export function LogsExplorer({
   // from the client-side Highlight box, which only colors matches).
   const [searchKeywordsRaw, setSearchKeywordsRaw] = useState("");
   const searchKeywordsRawRef = useRef("");
+  // Snapshot of the Search keywords (and their case/word options) as of the
+  // last executed search. Edits to the input do NOT alter the displayed
+  // results — those terms are only re-read when the search is executed again.
+  const [searchKeywordsApplied, setSearchKeywordsApplied] = useState<{
+    raw: string; matchCase: boolean; wholeWord: boolean;
+  }>({ raw: "", matchCase: false, wholeWord: false });
   const [matchCursor, setMatchCursor] = useState(-1); // index into matchRows; -1 = none selected
   const [activeMatchKey, setActiveMatchKey] = useState<string | null>(null);
   const [matchScrollNonce, setMatchScrollNonce] = useState(0);
@@ -1612,7 +1642,10 @@ export function LogsExplorer({
     function escapeFilterValue(v: string) { return v.replace(/\\/g, "\\\\").replace(/"/g, '\\"'); }
     // Parse the Search keywords box and pull out positive leaf terms. Server-side filtering is
     // a conservative OR over leaves; the client predicate (Filter box) still enforces && / () precisely.
-    const parsed = parseQuery(searchKeywordsRawRef.current, { matchCase: searchMatchCase, wholeWord: searchWholeWord });
+    const parsed = parseQuery(
+      normalizeSearchKeywords(searchKeywordsRawRef.current),
+      { matchCase: searchMatchCase, wholeWord: searchWholeWord },
+    );
     const allTerms = parsed.error ? [] : parsed.highlightTerms;
     const queryFilter = allTerms.length > 0
       ? allTerms.map((t) => {
@@ -1626,6 +1659,13 @@ export function LogsExplorer({
     setFetched(false);
     setExpandedIdx(null);
     setFetchProgress(null);
+    // Freeze the Search keywords + per-field options for this run so subsequent
+    // edits to the input don't re-filter the loaded results.
+    setSearchKeywordsApplied({
+      raw: searchKeywordsRawRef.current,
+      matchCase: searchMatchCase,
+      wholeWord: searchWholeWord,
+    });
     onConfigChange({ searching: true });
     workerRef.current?.postMessage({ type: "fetch", env, sources: selectedSources, beginTime, endTime, queryFilter });
     return doCleanup;
@@ -1666,11 +1706,15 @@ export function LogsExplorer({
     () => parseQuery(keywordsActive, { matchCase: highlightMatchCase, wholeWord: highlightWholeWord }),
     [keywordsActive, highlightMatchCase, highlightWholeWord],
   );
-  // Parsed Search keywords (search mode only). Used for the server _queryFilter
-  // AND for auto-highlighting search terms in the rendered results.
+  // Parsed Search keywords as of the last executed search (search mode only).
+  // Drives both the client-side AND/OR enforcement and auto-highlighting; live
+  // edits to the input are ignored until the user runs the search again.
   const searchKeywordsParsed = useMemo(
-    () => parseQuery(searchKeywordsRaw, { matchCase: searchMatchCase, wholeWord: searchWholeWord }),
-    [searchKeywordsRaw, searchMatchCase, searchWholeWord],
+    () => parseQuery(normalizeSearchKeywords(searchKeywordsApplied.raw), {
+      matchCase: searchKeywordsApplied.matchCase,
+      wholeWord: searchKeywordsApplied.wholeWord,
+    }),
+    [searchKeywordsApplied],
   );
   // Auto-highlight terms = union of Highlight + Filter + Search keyword leaves.
   // Rendering uses Highlight's matchCase / wholeWord (uniform regex required).
@@ -1695,13 +1739,21 @@ export function LogsExplorer({
   }, [highlightQuery, filterQuery, searchKeywordsParsed, mode, highlightMatchCase]);
 
   const rawFilteredWithIdx = useMemo(() => {
-    if (filterQuery.empty) return levelFiltered.map((e, i) => ({ e, i }));
+    // Server-side _queryFilter is a conservative OR over leaves of the Search box,
+    // so in search mode we also need to enforce the parsed Search query (which can
+    // contain && / () precedence) client-side. The Filter box query is always applied.
+    const applySearch =
+      mode === "search" && !searchKeywordsParsed.empty && !searchKeywordsParsed.error;
+    if (filterQuery.empty && !applySearch) return levelFiltered.map((e, i) => ({ e, i }));
     if (filterQuery.error) return [] as { e: LogEntry; i: number }[];
     return levelFiltered.reduce<{ e: LogEntry; i: number }[]>((acc, e, i) => {
-      if (filterQuery.test(entryStrings[i].json)) acc.push({ e, i });
+      const json = entryStrings[i].json;
+      if (!filterQuery.test(json)) return acc;
+      if (applySearch && !searchKeywordsParsed.test(json)) return acc;
+      acc.push({ e, i });
       return acc;
     }, []);
-  }, [levelFiltered, entryStrings, filterQuery]);
+  }, [levelFiltered, entryStrings, filterQuery, mode, searchKeywordsParsed]);
 
   // Dedupe pass — collapses exact-match duplicates to the first occurrence and tracks counts.
   // Key: source + level + message text. When off, dupeCounts is empty and everything passes through.

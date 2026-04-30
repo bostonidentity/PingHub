@@ -49,9 +49,11 @@ export function createRegistry(envsRoot: string): Registry {
         try {
           const job = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8")) as DataPullJob;
           if (isActive(job)) {
-            job.status = "failed";
-            job.fatalError = "server restart";
-            job.finishedAt = Date.now();
+            // Preserve per-type cookie + byteLength + fetched so a Resume
+            // (Task 9) can pick up exactly where the dead process left off.
+            // Old behavior marked these `failed` with fatalError="server restart";
+            // we now mark them `interrupted` instead.
+            job.status = "interrupted";
             writeJobFile(envsRoot, job);
           }
           byId.set(job.id, job);

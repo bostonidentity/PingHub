@@ -1,39 +1,30 @@
+import fs from "fs";
 import { existsSync } from "fs";
 import fsp from "fs/promises";
 import path from "path";
+import type Database from "better-sqlite3";
 import type { DisplayFields, SnapshotType, SnapshotRecordPage } from "./types";
+import { NDJSON_FILE } from "./ndjson-format";
+import { openIndexDb } from "./index-db";
 
 function managedDataDir(envsRoot: string, env: string): string {
   return path.join(envsRoot, env, "managed-data");
 }
 
-// ── Index types ────────────────────────────────────────────────────────────
-
-/** One entry in the _index.json written at pull time. */
-interface IndexEntry {
-  id: string;
-  /** Short scalar fields extracted from the record. */
-  f: Record<string, string>;
-}
-
-// ── In-memory cache ────────────────────────────────────────────────────────
-// Keyed by `<dir>` and invalidated when the manifest `pulledAt` changes, so
-// new pulls automatically bust the cache.
-
+/**
+ * Per-directory cached SQLite handle. Key = typeDir. Invalidated when the
+ * manifest's `pulledAt` differs from `pulledAt` recorded here at open time —
+ * a new pull writes a new `index.sqlite` plus a new `_manifest.json`.
+ */
 interface TypeCache {
   pulledAt: number;
-  /** All record filenames (sorted, excluding _ prefixed). */
-  files: string[];
-  /** Union of top-level keys from the index or a sample. */
+  /** Open `index.sqlite` connection. */
+  db: Database.Database;
+  /** Indexed scalar field names — derived once from a single SQLite query. */
   fields: string[];
-  /** Full index when _index.json is available, else null. */
-  index: IndexEntry[] | null;
 }
 
 const cache = new Map<string, TypeCache>();
-
-// In-flight cache loads — prevents duplicate readdir work when multiple
-// requests arrive for the same cold type simultaneously.
 const pending = new Map<string, Promise<TypeCache>>();
 
 async function getManifestPulledAt(dir: string): Promise<number> {
@@ -48,41 +39,29 @@ async function loadCache(dir: string): Promise<TypeCache> {
   const existing = cache.get(dir);
   if (existing && existing.pulledAt === pulledAt) return existing;
 
-  // Coalesce concurrent requests for the same cold directory.
   const inflight = pending.get(dir);
   if (inflight) return inflight;
 
   const work = (async () => {
-    const files = (await fsp.readdir(dir))
-      .filter((f) => f.endsWith(".json") && !f.startsWith("_"))
-      .sort();
-
-    // Try to load the index built at pull time.
-    let index: IndexEntry[] | null = null;
-    const indexPath = path.join(dir, "_index.json");
-    if (existsSync(indexPath)) {
-      try {
-        index = JSON.parse(await fsp.readFile(indexPath, "utf-8")) as IndexEntry[];
-      } catch { /* fall back to file reads */ }
+    if (existing) {
+      try { existing.db.close(); } catch { /* ignore */ }
+      cache.delete(dir);
     }
 
-    // Derive fields from the index (every scalar field seen). If no index,
-    // sample a few files like before.
+    const db = openIndexDb(dir);
+    // Derive field list from a sample of fields_json — same shape as before.
+    const sampleRows = db.prepare(
+      "SELECT fields_json FROM records ORDER BY ord LIMIT ?",
+    ).all(FIELD_SAMPLE_SIZE) as { fields_json: string }[];
     const fieldSet = new Set<string>();
-    if (index) {
-      for (const entry of index.slice(0, FIELD_SAMPLE_SIZE)) {
-        for (const k of Object.keys(entry.f)) fieldSet.add(k);
-      }
-    } else {
-      for (const f of files.slice(0, FIELD_SAMPLE_SIZE)) {
-        try {
-          const record = JSON.parse(await fsp.readFile(path.join(dir, f), "utf-8")) as Record<string, unknown>;
-          for (const k of Object.keys(record)) fieldSet.add(k);
-        } catch { /* skip */ }
-      }
+    for (const row of sampleRows) {
+      try {
+        for (const k of Object.keys(JSON.parse(row.fields_json) as Record<string, unknown>)) {
+          fieldSet.add(k);
+        }
+      } catch { /* skip malformed */ }
     }
-
-    const entry: TypeCache = { pulledAt, files, fields: [...fieldSet].sort(), index };
+    const entry: TypeCache = { pulledAt, db, fields: [...fieldSet].sort() };
     cache.set(dir, entry);
     return entry;
   })();
@@ -116,16 +95,30 @@ export async function listSnapshotTypes(envsRoot: string, env: string): Promise<
 export async function readRecord(
   envsRoot: string, env: string, type: string, id: string,
 ): Promise<Record<string, unknown> | null> {
-  const filePath = path.join(managedDataDir(envsRoot, env), type, `${id}.json`);
-  try {
-    return JSON.parse(await fsp.readFile(filePath, "utf-8"));
-  } catch {
-    return null;
-  }
+  const typeDir = path.join(managedDataDir(envsRoot, env), type);
+  return readRecordFromNDJson(typeDir, id);
 }
 
-function stringOrEmpty(v: unknown): string {
-  return typeof v === "string" ? v : v == null ? "" : String(v);
+async function readRecordFromNDJson(
+  typeDir: string,
+  id: string,
+): Promise<Record<string, unknown> | null> {
+  const tc = await loadCache(typeDir);
+  const row = tc.db.prepare(
+    "SELECT offset, length FROM records WHERE id = ?",
+  ).get(id) as { offset: number; length: number } | undefined;
+  if (!row) return null;
+
+  const ndjsonPath = path.join(typeDir, NDJSON_FILE);
+  const fd = await fsp.open(ndjsonPath, "r");
+  try {
+    const buf = Buffer.alloc(row.length);
+    await fd.read(buf, 0, row.length, row.offset);
+    try { return JSON.parse(buf.toString("utf-8")) as Record<string, unknown>; }
+    catch { return null; }
+  } finally {
+    await fd.close();
+  }
 }
 
 interface ListOpts {
@@ -156,98 +149,110 @@ export async function listRecords(
 
   const q = opts.q.trim().toLowerCase();
   const tc = await loadCache(dir);
-  const { files, fields, index } = tc;
+  const { db, fields } = tc;
   const titleField = opts.titleField ?? opts.display.title;
   const start = (opts.page - 1) * opts.limit;
 
   if (!q) {
-    // No search — use the cached file list + index for O(1) pagination.
-    const total = files.length;
-    const pageFiles = files.slice(start, start + opts.limit);
-
-    if (index) {
-      // Fast path: look up titles from the in-memory index.
-      const byId = new Map<string, IndexEntry>();
-      for (const e of index) byId.set(e.id, e);
-      const records = pageFiles.map((f) => {
-        const id = f.replace(/\.json$/, "");
-        const entry = byId.get(id);
-        if (entry) {
-          const key = findKeyCI(entry.f, titleField);
-          const title = (key && entry.f[key]) || id;
-          return { id, title };
-        }
-        return { id, title: id };
-      });
-      return { total, page: opts.page, limit: opts.limit, fields, records };
-    }
-
-    // No index — read only the page slice files (legacy data).
-    const records = await Promise.all(pageFiles.map((f) => {
-      const id = f.replace(/\.json$/, "");
-      return readTitleFromFile(dir, f, id, titleField);
-    }));
-    return { total, page: opts.page, limit: opts.limit, fields, records };
-  }
-
-  // Search path.
-  if (index) {
-    // Fast search: scan the in-memory index fields for matches, avoiding
-    // file I/O entirely for the common case where the query hits indexed fields.
-    const matchingEntries: IndexEntry[] = [];
-    for (const entry of index) {
-      for (const v of Object.values(entry.f)) {
-        if (v.toLowerCase().includes(q)) {
-          matchingEntries.push(entry);
-          break;
-        }
-      }
-    }
-    const total = matchingEntries.length;
-    const pageEntries = matchingEntries.slice(start, start + opts.limit);
-    const records = pageEntries.map((entry) => {
-      const key = findKeyCI(entry.f, titleField);
-      const title = (key && entry.f[key]) || entry.id;
-      return { id: entry.id, title };
+    const total = (db.prepare("SELECT COUNT(*) AS c FROM records").get() as { c: number }).c;
+    const rows = db.prepare(
+      "SELECT id, fields_json FROM records ORDER BY ord LIMIT ? OFFSET ?",
+    ).all(opts.limit, start) as { id: string; fields_json: string }[];
+    const records = rows.map((r) => {
+      const f = JSON.parse(r.fields_json) as Record<string, string>;
+      const key = findKeyCI(f, titleField);
+      const title = (key && f[key]) || r.id;
+      return { id: r.id, title };
     });
     return { total, page: opts.page, limit: opts.limit, fields, records };
   }
 
-  // No index — fall back to scanning raw files.
-  const matchingFiles: string[] = [];
-  for (const f of files) {
-    try {
-      const raw = await fsp.readFile(path.join(dir, f), "utf-8");
-      if (raw.toLowerCase().includes(q)) {
-        matchingFiles.push(f);
-      }
-    } catch { /* skip unreadable file */ }
-  }
-
-  const total = matchingFiles.length;
-  const pageFiles = matchingFiles.slice(start, start + opts.limit);
-  const records = await Promise.all(pageFiles.map((f) => {
-    const id = f.replace(/\.json$/, "");
-    return readTitleFromFile(dir, f, id, titleField);
-  }));
+  // Search path — substring LIKE on the precomputed lowercased `searchable`
+  // column. Same semantics as the legacy String.includes() comparison.
+  const like = `%${q.replace(/[\\_%]/g, (c) => `\\${c}`)}%`;
+  const total = (db.prepare(
+    "SELECT COUNT(*) AS c FROM records WHERE searchable LIKE ? ESCAPE '\\'",
+  ).get(like) as { c: number }).c;
+  const rows = db.prepare(
+    "SELECT id, fields_json FROM records WHERE searchable LIKE ? ESCAPE '\\' ORDER BY ord LIMIT ? OFFSET ?",
+  ).all(like, opts.limit, start) as { id: string; fields_json: string }[];
+  const records = rows.map((r) => {
+    const f = JSON.parse(r.fields_json) as Record<string, string>;
+    const key = findKeyCI(f, titleField);
+    const title = (key && f[key]) || r.id;
+    return { id: r.id, title };
+  });
   return { total, page: opts.page, limit: opts.limit, fields, records };
 }
 
-/** Read a single file to extract its title — fallback for legacy (pre-index) data. */
-async function readTitleFromFile(
-  dir: string, filename: string, id: string, titleField: string,
-): Promise<{ id: string; title: string }> {
-  try {
-    const record = JSON.parse(await fsp.readFile(path.join(dir, filename), "utf-8")) as Record<string, unknown>;
-    const key = findKeyCI(record, titleField);
-    const title = (key && stringOrEmpty(record[key])) || id;
-    return { id, title };
-  } catch {
-    return { id, title: id };
+
+export interface TitleRef { type: string; id: string }
+export interface ResolveTitlesResult {
+  /** key = `${type}/${id}`. null = type not pulled OR id not in that type's index. */
+  titles: Record<string, string | null>;
+  /** Sorted scalar fields per referenced type. [] when the type isn't pulled. */
+  fieldsByType: Record<string, string[]>;
+}
+
+/**
+ * Resolve a list of (type, id) refs to display titles using the chosen
+ * attribute per type. Looks up `fields_json` from each type's SQLite index
+ * (no NDJSON read), picks the attr case-insensitively, falls back to id.
+ *
+ * Used by the data tab's deps panel so users can label dependencies the
+ * same way as the left-panel record list.
+ */
+export async function resolveTitles(
+  envsRoot: string,
+  env: string,
+  refs: TitleRef[],
+  attrs: Record<string, string>,
+): Promise<ResolveTitlesResult> {
+  const titles: Record<string, string | null> = {};
+  const fieldsByType: Record<string, string[]> = {};
+  if (refs.length === 0) return { titles, fieldsByType };
+
+  // Group refs by type to issue one SQLite session per type.
+  const byType = new Map<string, string[]>();
+  for (const r of refs) {
+    if (!byType.has(r.type)) byType.set(r.type, []);
+    byType.get(r.type)!.push(r.id);
   }
+
+  for (const [type, ids] of byType.entries()) {
+    const dir = path.join(managedDataDir(envsRoot, env), type);
+    if (!existsSync(dir)) {
+      fieldsByType[type] = [];
+      for (const id of ids) titles[`${type}/${id}`] = null;
+      continue;
+    }
+    const tc = await loadCache(dir);
+    fieldsByType[type] = tc.fields;
+    const attrWanted = attrs[type] ?? "";
+    const stmt = tc.db.prepare("SELECT fields_json FROM records WHERE id = ?");
+    for (const id of ids) {
+      const row = stmt.get(id) as { fields_json: string } | undefined;
+      if (!row) { titles[`${type}/${id}`] = null; continue; }
+      if (!attrWanted) { titles[`${type}/${id}`] = id; continue; }
+      try {
+        const f = JSON.parse(row.fields_json) as Record<string, string>;
+        const key = findKeyCI(f, attrWanted);
+        const val = key ? f[key] : "";
+        titles[`${type}/${id}`] = val || id;
+      } catch {
+        titles[`${type}/${id}`] = id;
+      }
+    }
+  }
+
+  return { titles, fieldsByType };
 }
 
 /** Evict the cache for a specific type directory. Exposed for testing. */
 export function evictCache(dir: string): void {
-  cache.delete(dir);
+  const entry = cache.get(dir);
+  if (entry) {
+    try { entry.db.close(); } catch { /* ignore */ }
+    cache.delete(dir);
+  }
 }

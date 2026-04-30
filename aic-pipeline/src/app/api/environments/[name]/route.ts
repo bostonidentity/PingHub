@@ -43,6 +43,16 @@ export async function PUT(
       delete envs[idx].devEnvironment;
     }
   }
+  if (body.pageSize !== undefined) {
+    if (body.pageSize === null || body.pageSize === "") {
+      delete envs[idx].pageSize;
+    } else {
+      const n = typeof body.pageSize === "number" ? body.pageSize : parseInt(String(body.pageSize), 10);
+      if (Number.isFinite(n) && n > 0 && n <= 100000) {
+        envs[idx].pageSize = n;
+      }
+    }
+  }
   saveEnvironments(envs);
 
   if (body.envContent !== undefined) {

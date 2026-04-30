@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import path from "path";
 import fs from "fs";
+import readline from "readline";
 import { cwd } from "process";
 import { ENVIRONMENTS_DIR } from "@/lib/paths";
 
@@ -79,19 +80,32 @@ export async function GET(
     const manifestPath = path.join(typeDir, "_manifest.json");
     if (!fs.existsSync(manifestPath)) continue; // unpulled / partial
 
-    for (const f of fs.readdirSync(typeDir)) {
-      if (!f.endsWith(".json") || f === "_manifest.json") continue;
-      try {
-        const raw = fs.readFileSync(path.join(typeDir, f), "utf-8");
-        const idx = findIndex(raw);
+    const ndjsonPath = path.join(typeDir, "data.ndjson");
+    if (fs.existsSync(ndjsonPath)) {
+      // NDJSON format: stream the file line by line so a 1GB NDJSON
+      // doesn't materialize in heap during search.
+      const stream = fs.createReadStream(ndjsonPath, { encoding: "utf-8" });
+      const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+      let hitCap = false;
+      for await (const line of rl) {
+        if (!line) continue;
+        const idx = findIndex(line);
         if (idx < 0) continue;
+        let parsed: Record<string, unknown>;
+        try { parsed = JSON.parse(line) as Record<string, unknown>; }
+        catch { continue; }
+        const id = typeof parsed._id === "string" ? parsed._id : "";
+        if (!id) continue;
         hits.push({
           type: typeEntry.name,
-          id: f.replace(/\.json$/, ""),
-          preview: previewFrom(raw, idx),
+          id,
+          preview: previewFrom(line, idx),
         });
-        if (hits.length >= limit) { truncated = true; break outer; }
-      } catch { /* skip unreadable */ }
+        if (hits.length >= limit) { truncated = true; hitCap = true; break; }
+      }
+      rl.close();
+      stream.destroy();
+      if (hitCap) break outer;
     }
   }
 

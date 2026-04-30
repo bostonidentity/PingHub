@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import Database from "better-sqlite3";
 import { runPull } from "./pull-runner";
 import { createRegistry } from "./job-registry";
 
@@ -65,9 +66,32 @@ describe("runPull: happy path", () => {
     });
 
     const typeDir = path.join(tmpDir, "uat", "managed-data", "alpha_user");
-    expect(fs.readdirSync(typeDir).sort()).toEqual([
-      "_index.json", "_manifest.json", "_refs.json", "u1.json", "u2.json", "u3.json",
+    expect(fs.existsSync(path.join(typeDir, "index.sqlite"))).toBe(true);
+    // _offsets.json is no longer written; offsets live in index.sqlite.
+    expect(fs.existsSync(path.join(typeDir, "_offsets.json"))).toBe(false);
+
+    const ndjson = fs.readFileSync(path.join(typeDir, "data.ndjson"), "utf-8");
+    const lines = ndjson.split("\n").filter((l) => l.length > 0);
+    expect(lines.map((l) => JSON.parse(l))).toEqual([
+      { _id: "u1", userName: "a" },
+      { _id: "u2", userName: "b" },
+      { _id: "u3", userName: "c" },
     ]);
+
+    // Verify SQLite index has the correct rows and offsets.
+    const db = new Database(path.join(typeDir, "index.sqlite"), { readonly: true });
+    const rows = db.prepare("SELECT id, offset, fields_json FROM records ORDER BY ord").all() as { id: string; offset: number; fields_json: string }[];
+    db.close();
+    expect(rows.map((r) => r.id)).toEqual(["u1", "u2", "u3"]);
+    // Sanity-check u2's offset by seeking and reading the line.
+    const u2Row = rows.find((r) => r.id === "u2")!;
+    const fd = fs.openSync(path.join(typeDir, "data.ndjson"), "r");
+    const buf = Buffer.alloc(64);
+    fs.readSync(fd, buf, 0, 64, u2Row.offset);
+    fs.closeSync(fd);
+    const u2Line = buf.toString("utf-8").split("\n")[0];
+    expect(JSON.parse(u2Line)).toEqual({ _id: "u2", userName: "b" });
+
     const manifest = JSON.parse(fs.readFileSync(path.join(typeDir, "_manifest.json"), "utf-8"));
     expect(manifest.count).toBe(3);
 
@@ -103,6 +127,9 @@ describe("runPull: auth refresh on 401", () => {
 describe("runPull: transient 5xx retries, then fails", () => {
   it("retries up to MAX_RETRIES then marks type failed", async () => {
     const fetchMock = mockFetchSequence([
+      { status: 500, body: {} },
+      { status: 502, body: {} },
+      { status: 503, body: {} },
       { status: 500, body: {} },
       { status: 502, body: {} },
       { status: 503, body: {} },
@@ -176,6 +203,58 @@ describe("runPull: preserves previous snapshot on failure", () => {
   });
 });
 
+describe("runPull: page size", () => {
+  it("uses opts.pageSize in the _pageSize query param", async () => {
+    const seenUrls: string[] = [];
+    const fetchMock = vi.fn(async (url: URL | RequestInfo) => {
+      seenUrls.push(typeof url === "string" ? url : url.toString());
+      return {
+        ok: true, status: 200,
+        json: async () => ({ result: [{ _id: "u1" }], pagedResultsCookie: null, totalPagedResults: 1 }),
+      } as Response;
+    });
+
+    const job = registry.startJob("uat", ["alpha_user"]);
+    await runPull({
+      job, registry, envsRoot: tmpDir, envVars: ENV_VARS,
+      mintToken: async () => "tok", fetchFn: fetchMock,
+      preflightCount: async () => null,
+      signal: new AbortController().signal,
+      pageSize: 7777,
+    });
+
+    const pageRequests = seenUrls.filter((u) => u.includes("_pageSize="));
+    expect(pageRequests.length).toBeGreaterThan(0);
+    for (const u of pageRequests) {
+      expect(u).toContain("_pageSize=7777");
+    }
+  });
+
+  it("defaults to 50000 when pageSize is not provided", async () => {
+    const seenUrls: string[] = [];
+    const fetchMock = vi.fn(async (url: URL | RequestInfo) => {
+      seenUrls.push(typeof url === "string" ? url : url.toString());
+      return {
+        ok: true, status: 200,
+        json: async () => ({ result: [{ _id: "u1" }], pagedResultsCookie: null, totalPagedResults: 1 }),
+      } as Response;
+    });
+
+    const job = registry.startJob("uat", ["alpha_user"]);
+    await runPull({
+      job, registry, envsRoot: tmpDir, envVars: ENV_VARS,
+      mintToken: async () => "tok", fetchFn: fetchMock,
+      preflightCount: async () => null,
+      signal: new AbortController().signal,
+    });
+
+    const pageRequests = seenUrls.filter((u) => u.includes("_pageSize="));
+    for (const u of pageRequests) {
+      expect(u).toContain("_pageSize=50000");
+    }
+  });
+});
+
 describe("runPull: preflight count", () => {
   it("seeds progress.total from preflightCount before paginating", async () => {
     const fetchMock = mockFetchSequence([
@@ -224,5 +303,207 @@ describe("runPull: preflight count", () => {
     const after = registry.getJob(job.id)!;
     expect(after.status).toBe("completed");
     expect(after.progress[0].total).toBeNull();
+  });
+});
+
+describe("runPull: cookie persistence", () => {
+  it("persists cookie + byteLength on registry after each page", async () => {
+    const fetchMock = mockFetchSequence([
+      {
+        status: 200, body: {
+          result: [{ _id: "u1" }, { _id: "u2" }],
+          pagedResultsCookie: "page2",
+        }
+      },
+      {
+        status: 200, body: {
+          result: [{ _id: "u3" }],
+          pagedResultsCookie: null,
+        }
+      },
+    ]);
+
+    const job = registry.startJob("uat", ["alpha_user"]);
+    const updates: Array<{ cookie?: string | null; byteLength?: number; fetched?: number }> = [];
+    const origUpdate = registry.updateProgress.bind(registry);
+    registry.updateProgress = (id, type, patch) => {
+      if ("cookie" in patch || "byteLength" in patch || "fetched" in patch) {
+        updates.push({ ...patch });
+      }
+      origUpdate(id, type, patch);
+    };
+
+    await runPull({
+      job, registry, envsRoot: tmpDir, envVars: ENV_VARS,
+      mintToken: async () => "tok", fetchFn: fetchMock,
+      preflightCount: async () => null,
+      signal: new AbortController().signal,
+    });
+
+    // After page 1 we should have seen cookie="page2" with a positive byteLength.
+    const afterPage1 = updates.find((u) => u.cookie === "page2");
+    expect(afterPage1).toBeDefined();
+    expect(afterPage1!.byteLength).toBeGreaterThan(0);
+
+    // After the final page we should have seen cookie=null (last page reached).
+    const afterFinal = updates.find((u) => u.cookie === null);
+    expect(afterFinal).toBeDefined();
+  });
+});
+
+describe("runPull: resume from cookie", () => {
+  it("truncates half-written tail, rebuilds in-memory state, and continues from the persisted cookie", async () => {
+    // Pre-state: a previous run wrote 2 pages + a half-written third record,
+    // then crashed before the third record's offset was persisted.
+    const typeStagingDir = path.join(tmpDir, "uat", "managed-data");
+    const job = registry.startJob("uat", ["alpha_user"]);
+    const pullingDir = path.join(typeStagingDir, `.pulling-${job.id}`, "alpha_user");
+    fs.mkdirSync(pullingDir, { recursive: true });
+
+    // Page 1: u1, u2. Page 2: u3, u4. Half-line: '{"_id":"u5...'.
+    const page1 = `${JSON.stringify({ _id: "u1" })}\n${JSON.stringify({ _id: "u2" })}\n`;
+    const page2 = `${JSON.stringify({ _id: "u3" })}\n${JSON.stringify({ _id: "u4" })}\n`;
+    const halfLine = `{"_id":"u5"`;
+    fs.writeFileSync(path.join(pullingDir, "data.ndjson"), page1 + page2 + halfLine);
+
+    const byteAfterPage2 = Buffer.byteLength(page1 + page2, "utf-8");
+
+    // Mark job interrupted with persisted cookie + byteLength matching end-of-page-2.
+    registry.updateProgress(job.id, "alpha_user", {
+      status: "running",
+      fetched: 4,
+      cookie: "page3",
+      byteLength: byteAfterPage2,
+    });
+    registry.setJobStatus(job.id, "interrupted");
+
+    // Resume: tenant returns one final page with u5 + u6, then null.
+    const fetchMock = mockFetchSequence([
+      {
+        status: 200, body: {
+          result: [{ _id: "u5" }, { _id: "u6" }],
+          pagedResultsCookie: null,
+        }
+      },
+    ]);
+
+    await runPull({
+      job: registry.getJob(job.id)!,
+      registry, envsRoot: tmpDir, envVars: ENV_VARS,
+      mintToken: async () => "tok", fetchFn: fetchMock,
+      preflightCount: async () => null,
+      signal: new AbortController().signal,
+    });
+
+    const typeDir = path.join(tmpDir, "uat", "managed-data", "alpha_user");
+    expect(fs.existsSync(typeDir)).toBe(true);
+    const lines = fs.readFileSync(path.join(typeDir, "data.ndjson"), "utf-8")
+      .split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    expect(lines.map((r) => r._id)).toEqual(["u1", "u2", "u3", "u4", "u5", "u6"]);
+
+    const db = new Database(path.join(typeDir, "index.sqlite"), { readonly: true });
+    const ids = (db.prepare("SELECT id FROM records ORDER BY id").all() as { id: string }[]).map((r) => r.id);
+    db.close();
+    expect(ids).toEqual(["u1", "u2", "u3", "u4", "u5", "u6"]);
+
+    expect(registry.getJob(job.id)?.status).toBe("completed");
+  });
+
+  it("dedupes a duplicated page when registry persisted cookie but the next fetch returns the same records", async () => {
+    const job = registry.startJob("uat", ["alpha_user"]);
+    const pullingDir = path.join(tmpDir, "uat", "managed-data", `.pulling-${job.id}`, "alpha_user");
+    fs.mkdirSync(pullingDir, { recursive: true });
+
+    const page1 = `${JSON.stringify({ _id: "u1" })}\n${JSON.stringify({ _id: "u2" })}\n`;
+    fs.writeFileSync(path.join(pullingDir, "data.ndjson"), page1);
+    const byteAfterPage1 = Buffer.byteLength(page1, "utf-8");
+
+    registry.updateProgress(job.id, "alpha_user", {
+      status: "running",
+      fetched: 2,
+      cookie: "page1-cookie",
+      byteLength: byteAfterPage1,
+    });
+    registry.setJobStatus(job.id, "interrupted");
+
+    // Tenant returns the same u1, u2 again, then a fresh u3, then end.
+    const fetchMock = mockFetchSequence([
+      {
+        status: 200, body: {
+          result: [{ _id: "u1" }, { _id: "u2" }, { _id: "u3" }],
+          pagedResultsCookie: null,
+        }
+      },
+    ]);
+
+    await runPull({
+      job: registry.getJob(job.id)!,
+      registry, envsRoot: tmpDir, envVars: ENV_VARS,
+      mintToken: async () => "tok", fetchFn: fetchMock,
+      preflightCount: async () => null,
+      signal: new AbortController().signal,
+    });
+
+    const typeDir = path.join(tmpDir, "uat", "managed-data", "alpha_user");
+    const lines = fs.readFileSync(path.join(typeDir, "data.ndjson"), "utf-8")
+      .split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    expect(lines.map((r) => r._id)).toEqual(["u1", "u2", "u3"]);
+  });
+});
+
+describe("runPull: cookie expiry on resume", () => {
+  it("marks the type failed with a clear message when tenant rejects a stale cookie", async () => {
+    const job = registry.startJob("uat", ["alpha_user"]);
+    const pullingDir = path.join(tmpDir, "uat", "managed-data", `.pulling-${job.id}`, "alpha_user");
+    fs.mkdirSync(pullingDir, { recursive: true });
+    const page1 = `${JSON.stringify({ _id: "u1" })}\n`;
+    fs.writeFileSync(path.join(pullingDir, "data.ndjson"), page1);
+    registry.updateProgress(job.id, "alpha_user", {
+      status: "running", fetched: 1,
+      cookie: "stale-cookie", byteLength: page1.length,
+    });
+    registry.setJobStatus(job.id, "interrupted");
+
+    // Tenant rejects the stale cookie with 400.
+    const fetchMock = mockFetchSequence([
+      { status: 400, body: { code: 400, message: "Invalid pagedResultsCookie" } },
+    ]);
+
+    await runPull({
+      job: registry.getJob(job.id)!,
+      registry, envsRoot: tmpDir, envVars: ENV_VARS,
+      mintToken: async () => "tok", fetchFn: fetchMock,
+      preflightCount: async () => null,
+      signal: new AbortController().signal,
+      retryDelayMs: 0,
+    });
+
+    const after = registry.getJob(job.id)!;
+    expect(after.progress[0].status).toBe("failed");
+    expect(after.progress[0].error).toMatch(/cookie/i);
+  });
+});
+
+describe("runPull: retry budget", () => {
+  it("absorbs up to 5 transient 5xx retries before giving up", async () => {
+    // 4 transient failures then success.
+    const fetchMock = mockFetchSequence([
+      { status: 500, body: {} },
+      { status: 502, body: {} },
+      { status: 503, body: {} },
+      { status: 500, body: {} },
+      { status: 200, body: { result: [{ _id: "u1" }], pagedResultsCookie: null, totalPagedResults: 1 } },
+    ]);
+
+    const job = registry.startJob("uat", ["alpha_user"]);
+    await runPull({
+      job, registry, envsRoot: tmpDir, envVars: ENV_VARS,
+      mintToken: async () => "tok", fetchFn: fetchMock,
+      preflightCount: async () => null,
+      signal: new AbortController().signal,
+      retryDelayMs: 0,
+    });
+
+    expect(registry.getJob(job.id)?.status).toBe("completed");
   });
 });

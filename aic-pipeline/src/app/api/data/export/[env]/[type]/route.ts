@@ -2,6 +2,7 @@
 import { NextRequest } from "next/server";
 import path from "path";
 import fs from "fs";
+import readline from "readline";
 import { cwd } from "process";
 import { ENVIRONMENTS_DIR } from "@/lib/paths";
 
@@ -30,27 +31,35 @@ export async function GET(
   const dir = path.join(envsRoot, env, "managed-data", type);
   if (!fs.existsSync(dir)) return new Response("snapshot not found", { status: 404 });
 
-  const files = fs.readdirSync(dir)
-    .filter((f) => f.endsWith(".json") && f !== "_manifest.json")
-    .sort();
+  const ndjsonPath = path.join(dir, "data.ndjson");
+  if (!fs.existsSync(ndjsonPath)) return new Response("snapshot not pulled", { status: 404 });
 
   const matching: Record<string, unknown>[] = [];
   const scalarKeys = new Set<string>();
-  for (const f of files) {
-    try {
-      const raw = fs.readFileSync(path.join(dir, f), "utf-8");
-      if (q && !raw.toLowerCase().includes(q)) continue;
-      const record = JSON.parse(raw) as Record<string, unknown>;
-      matching.push(record);
-      if (format === "csv") {
-        for (const [k, v] of Object.entries(record)) {
-          if (typeof v === "string" || typeof v === "number" || typeof v === "boolean" || v == null) {
-            scalarKeys.add(k);
-          }
+
+  function maybeAdd(record: Record<string, unknown>, raw: string) {
+    if (q && !raw.toLowerCase().includes(q)) return;
+    matching.push(record);
+    if (format === "csv") {
+      for (const [k, v] of Object.entries(record)) {
+        if (typeof v === "string" || typeof v === "number" || typeof v === "boolean" || v == null) {
+          scalarKeys.add(k);
         }
       }
-    } catch { /* skip */ }
+    }
   }
+
+  const fileStream = fs.createReadStream(ndjsonPath, { encoding: "utf-8" });
+  const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+  for await (const line of rl) {
+    if (!line) continue;
+    try {
+      const record = JSON.parse(line) as Record<string, unknown>;
+      maybeAdd(record, line);
+    } catch { /* skip malformed */ }
+  }
+  rl.close();
+  fileStream.destroy();
 
   const filename = `${env}-${type}-${tsStamp()}.${format}`;
   const headers = {

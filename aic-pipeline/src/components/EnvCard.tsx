@@ -17,20 +17,20 @@ export interface EnvCardProps {
 }
 
 const DOT: Record<string, string> = {
-  blue:   "bg-blue-400",
-  green:  "bg-emerald-400",
+  blue: "bg-blue-400",
+  green: "bg-emerald-400",
   yellow: "bg-amber-400",
-  red:    "bg-rose-400",
-  slate:  "bg-slate-400",
+  red: "bg-rose-400",
+  slate: "bg-slate-400",
 };
 
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const m = Math.floor(diff / 60_000);
-  if (m < 1)   return "just now";
-  if (m < 60)  return `${m}m ago`;
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
-  if (h < 24)  return `${h}h ago`;
+  if (h < 24) return `${h}h ago`;
   const d = Math.floor(h / 24);
   return `${d}d ago`;
 }
@@ -38,9 +38,9 @@ function timeAgo(iso: string): string {
 export function EnvCard({ env, health, lastPull, lastPush, release, onClick }: EnvCardProps) {
   const pill =
     health === "healthy" ? <StatusPill tone="success">healthy</StatusPill>
-    : health === "stale" ? <StatusPill tone="warning">stale</StatusPill>
-    : health === "locked" ? <StatusPill tone="danger">locked</StatusPill>
-    : <StatusPill tone="danger">error</StatusPill>;
+      : health === "stale" ? <StatusPill tone="warning">stale</StatusPill>
+        : health === "locked" ? <StatusPill tone="danger">locked</StatusPill>
+          : <StatusPill tone="danger">error</StatusPill>;
 
   return (
     <div
@@ -117,11 +117,27 @@ function ReleaseStrip({ release }: { release: ReleaseCacheEntry | null }) {
   const { channel, currentVersion, nextUpgrade } = release.info;
   const urgency = classifyUpgrade(nextUpgrade);
   const days = daysUntil(nextUpgrade);
+  const plannedDate = nextUpgrade ? formatPlannedDate(nextUpgrade) : null;
   const urgencyBadge =
-    urgency === "overdue" ? <span className="text-rose-600 font-medium">overdue</span>
-    : urgency === "soon" ? <span className="text-amber-700 font-medium">upgrade in {days}d</span>
-    : urgency === "later" ? <span className="text-slate-500">upgrade in {days}d</span>
-    : <span className="text-slate-400">no upgrade scheduled</span>;
+    urgency === "overdue" ? (
+      <span className="text-rose-600 font-medium" title={nextUpgrade ?? undefined}>
+        overdue{days !== null ? ` by ${Math.abs(days)}d` : ""}
+        {plannedDate && <span className="ml-1 font-normal opacity-75">(planned {plannedDate})</span>}
+      </span>
+    )
+      : urgency === "soon" ? (
+        <span className="text-amber-700 font-medium" title={nextUpgrade ?? undefined}>
+          upgrade in {days}d
+          {plannedDate && <span className="ml-1 font-normal opacity-75">({plannedDate})</span>}
+        </span>
+      )
+        : urgency === "later" ? (
+          <span className="text-slate-500" title={nextUpgrade ?? undefined}>
+            upgrade in {days}d
+            {plannedDate && <span className="ml-1 opacity-75">({plannedDate})</span>}
+          </span>
+        )
+          : <span className="text-slate-400">no upgrade scheduled</span>;
   return (
     <div className="border-t border-slate-100 pt-2.5 mt-2.5 text-[11px] flex items-center justify-between gap-2">
       <div className="flex items-center gap-1.5 min-w-0">
@@ -138,4 +154,16 @@ function ReleaseStrip({ release }: { release: ReleaseCacheEntry | null }) {
       <div className="text-right shrink-0">{urgencyBadge}</div>
     </div>
   );
+}
+
+function formatPlannedDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }

@@ -19,6 +19,14 @@ interface Props {
   /** Path relative to environment config dir — used for last-modified lookup. */
   relPath?: string;
   highlightLine?: number;
+  /**
+   * When supplied alongside highlightLine, used to relocate the highlighted
+   * line after the content is reformatted by Prettier (or otherwise reflowed).
+   * Without this the deep-link `line` number refers to the raw file, but the
+   * viewer renders formatted content so the highlight lands on the wrong row.
+   * Also pre-fills the Find box so the user can step through other matches.
+   */
+  highlightQuery?: string;
   /** Called when the user clicks a reference (ESV / library / endpoint). */
   onNavigate?: (target: NavigateTarget) => void;
 }
@@ -122,12 +130,20 @@ function detectSymbols(content: string, language: "js" | "groovy"): Symbol[] {
   const VAR = /^\s*(?:export\s+)?(const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(.*)$/;
   const GROOVY_DEF = /^\s*(?:private|public|protected|static|final|def)\s+(?:\w[\w<>?,\s]*\s+)?([A-Za-z_$][\w$]*)\s*\(/;
   const METHOD = /^\s*([A-Za-z_$][\w$]*)\s*(?::|=)\s*function\b/;
+  // Dotted assignment forms common in CommonJS / ForgeRock endpoint scripts:
+  //   exports.get = function (request) { ... }
+  //   module.exports.action = function (req) { ... }
+  //   exports.post = (req) => { ... }
+  // Capture the last segment of the LHS as the symbol name so the outline
+  // shows `get()`, `post()`, etc. The trailing group must be a function
+  // expression or arrow so we don't pick up plain object/value assignments.
+  const DOTTED_METHOD = /^\s*(?:[A-Za-z_$][\w$]*\.)+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/;
   // IIFEs — paren-wrapped function expressions invoked immediately. Common in
   // ForgeRock auth scripts that wrap the whole body in `(function () { ... })()`.
   // Matches (function …), (async function …), ((…) => …), preceded by the
   // optional unary/punctuation that minifiers sometimes use (!+~;).
   const IIFE_NAMED = /^\s*[!+~;]?\s*\(\s*(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/;
-  const IIFE_ANON  = /^\s*[!+~;]?\s*\(\s*(?:async\s+)?function\s*\(/;
+  const IIFE_ANON = /^\s*[!+~;]?\s*\(\s*(?:async\s+)?function\s*\(/;
   const IIFE_ARROW = /^\s*[!+~;]?\s*\(\s*(?:async\s+)?\([^)]*\)\s*=>/;
   // RHS patterns that mean "this binding is a function value" — normal
   // function expressions, arrow functions (with or without params).
@@ -144,7 +160,7 @@ function detectSymbols(content: string, language: "js" | "groovy"): Symbol[] {
         out.push({ line: i + 1, name: m[1], kind: "function" });
         continue;
       }
-      if (IIFE_ANON.test(line))  { out.push({ line: i + 1, name: "function", kind: "function" }); continue; }
+      if (IIFE_ANON.test(line)) { out.push({ line: i + 1, name: "function", kind: "function" }); continue; }
       if (IIFE_ARROW.test(line)) { out.push({ line: i + 1, name: "arrow", kind: "function" }); continue; }
       if ((m = line.match(FN))) { out.push({ line: i + 1, name: m[1], kind: "function" }); continue; }
       if ((m = line.match(VAR))) {
@@ -155,6 +171,7 @@ function detectSymbols(content: string, language: "js" | "groovy"): Symbol[] {
         continue;
       }
       if ((m = line.match(METHOD))) { out.push({ line: i + 1, name: m[1], kind: "method" }); continue; }
+      if ((m = line.match(DOTTED_METHOD))) { out.push({ line: i + 1, name: m[1], kind: "method" }); continue; }
     } else {
       const m = line.match(GROOVY_DEF);
       if (m) out.push({ line: i + 1, name: m[1], kind: "function" });
@@ -469,7 +486,7 @@ function useLocalConfig<T>(name: string, initial: T): [T, (next: T | ((cur: T) =
       if (raw != null) setValue(JSON.parse(raw) as T);
     } catch { /* ignore parse / access errors */ }
     setHydrated(true);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -489,7 +506,7 @@ interface LastCommit {
   subject: string;
 }
 
-export function ScriptFileViewer({ content, fileName, environment, relPath, highlightLine, onNavigate }: Props) {
+export function ScriptFileViewer({ content, fileName, environment, relPath, highlightLine, highlightQuery, onNavigate }: Props) {
   const language: "js" | "groovy" = fileName.toLowerCase().endsWith(".groovy") ? "groovy" : "js";
   const canFormat = language === "js";
 
@@ -533,7 +550,7 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
   // numbers which differ between files.
   const [wrap, setWrap] = useLocalConfig("wrap", true);
   const [commentMode, setCommentMode] = useLocalConfig<CommentMode>("commentMode", "hideAll");
-  const [findQuery, setFindQuery] = useState("");
+  const [findQuery, setFindQuery] = useState(highlightQuery ?? "");
   const [findIdx, setFindIdx] = useState(0);
   const [gotoLine, setGotoLine] = useState("");
   const [foldedStartLines, setFoldedStartLines] = useState<Set<number>>(new Set());
@@ -586,9 +603,9 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
   const symbolGroups = useMemo<SymbolGroup[]>(() => {
     const defs: { id: string; label: string; match: (s: Symbol) => boolean }[] = [
       { id: "sym:function", label: "Functions", match: (s) => s.kind === "function" || s.kind === "method" },
-      { id: "sym:const",    label: "Constants", match: (s) => s.kind === "const" },
-      { id: "sym:let",      label: "Let",       match: (s) => s.kind === "let" },
-      { id: "sym:var",      label: "Var",       match: (s) => s.kind === "var" },
+      { id: "sym:const", label: "Constants", match: (s) => s.kind === "const" },
+      { id: "sym:let", label: "Let", match: (s) => s.kind === "let" },
+      { id: "sym:var", label: "Var", match: (s) => s.kind === "var" },
     ];
     return defs
       .map((d) => ({ id: d.id, label: d.label, items: symbols.filter(d.match) }))
@@ -597,8 +614,8 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
 
   const referenceGroups = useMemo<ReferenceGroup[]>(() => {
     const defs: { id: string; label: string; kind: Reference["kind"] }[] = [
-      { id: "ref:esv",      label: "ESVs",      kind: "esv" },
-      { id: "ref:library",  label: "Scripts",   kind: "library" },
+      { id: "ref:esv", label: "ESVs", kind: "esv" },
+      { id: "ref:library", label: "Scripts", kind: "library" },
       { id: "ref:endpoint", label: "Endpoints", kind: "endpoint" },
     ];
     return defs
@@ -694,6 +711,43 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
     return () => { cancelled = true; };
   }, [environment, relPath]);
 
+  // Track text selection inside the viewer so the scope breadcrumb and
+  // outline highlight update when the user selects text (not just clicks a
+  // row). We resolve the selection's anchor / focus to the nearest [data-ln]
+  // row and pick the smaller line number so the scope reflects the start.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const handler = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+      const anchor = sel.anchorNode;
+      const focus = sel.focusNode;
+      if (!anchor || !focus) return;
+      if (!container.contains(anchor) && !container.contains(focus)) return;
+      const lineOf = (n: Node | null): number | null => {
+        let el: HTMLElement | null = (n instanceof HTMLElement ? n : n?.parentElement) ?? null;
+        while (el && el !== container) {
+          const ln = el.dataset?.ln;
+          if (ln) {
+            const v = Number(ln);
+            return Number.isFinite(v) ? v : null;
+          }
+          el = el.parentElement;
+        }
+        return null;
+      };
+      const a = lineOf(anchor);
+      const f = lineOf(focus);
+      const candidates = [a, f].filter((n): n is number => n != null);
+      if (candidates.length === 0) return;
+      const start = Math.min(...candidates);
+      setCurrentLine(start);
+    };
+    document.addEventListener("selectionchange", handler);
+    return () => document.removeEventListener("selectionchange", handler);
+  }, []);
+
   // Match lines for find
   const matches = useMemo<number[]>(() => {
     if (!findQuery) return [];
@@ -730,20 +784,49 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
 
   // Sync the highlightLine prop (deep-link from URL) into a one-shot scroll
   // request. Done via prop-compare at render time — no effect, so the rule
-  // against setState-in-effect doesn't trip. First render: prevHlProp is the
-  // sentinel "unset" and differs from the prop, so we schedule the scroll.
-  // If the prop later changes (another deep-link click in the same session)
-  // we re-scroll to the new target.
-  const [prevHlProp, setPrevHlProp] = useState<number | undefined | "unset">("unset");
-  if (prevHlProp !== highlightLine) {
-    setPrevHlProp(highlightLine);
-    if (highlightLine != null) {
-      // Use the line number itself as the nonce — deterministic so it's
-      // safe at render time, and in practice deep-links don't repeat the
-      // same line twice within one mount (ConfigsViewer remounts the
-      // component on file switch via its key prop).
-      setScrollRequest({ line: highlightLine, nonce: highlightLine });
+  // against setState-in-effect doesn't trip. We key the resolution off both
+  // the prop *and* the current effectiveContent identity so that when the
+  // formatter finishes asynchronously and effectiveContent flips from raw
+  // to formatted, we re-resolve the target line. Without that, the deep
+  // link would land on the raw-file line number even after Prettier
+  // renumbers the lines.
+  //
+  // When highlightQuery is also supplied, we look for the first line at or
+  // after `highlightLine` containing the query (case-insensitive); if none
+  // exists we fall back to the closest matching line anywhere; if no
+  // matches at all, we use highlightLine verbatim. This makes the deep
+  // link land on the actual ABC row even when formatting shifted line
+  // numbers.
+  const deepLinkKey =
+    highlightLine == null
+      ? null
+      : `${highlightLine}|${highlightQuery ?? ""}|${effectiveContent.length}`;
+  const [prevDeepLinkKey, setPrevDeepLinkKey] = useState<string | null>(null);
+  if (deepLinkKey != null && prevDeepLinkKey !== deepLinkKey) {
+    setPrevDeepLinkKey(deepLinkKey);
+    let target = highlightLine!;
+    if (highlightQuery) {
+      const q = highlightQuery.toLowerCase();
+      const lines = effectiveContent.split("\n");
+      let bestAfter = -1;
+      let bestAny = -1;
+      let bestAnyDist = Infinity;
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].toLowerCase().includes(q)) {
+          const ln = i + 1;
+          if (bestAfter < 0 && ln >= target) bestAfter = ln;
+          const d = Math.abs(ln - target);
+          if (d < bestAnyDist) { bestAnyDist = d; bestAny = ln; }
+        }
+      }
+      if (bestAfter > 0) target = bestAfter;
+      else if (bestAny > 0) target = bestAny;
     }
+    setCurrentLine(target);
+    // Use the line number itself as the nonce — deterministic so it's safe
+    // at render time. ConfigsViewer remounts the viewer on file switch via
+    // its key prop, so within one mount the same target won't repeat.
+    setScrollRequest({ line: target, nonce: target });
   }
 
   // Unfold any ancestor region that would hide a target line.
@@ -766,6 +849,13 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
     setCurrentLine(n);
     requestScrollTo(n);
   }, [gotoLine, unfoldAncestors, requestScrollTo]);
+
+  // Stable reference so FileContentViewer's memoized <Row> components don't
+  // re-render every visible row whenever any state in this component changes.
+  // setCurrentLine is a stable setter, so the dep array is empty.
+  const handleLineClick = useCallback((ln: number) => {
+    setCurrentLine(ln);
+  }, []);
 
   const goTo = useCallback((ln: number) => {
     unfoldAncestors(ln);
@@ -815,13 +905,38 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
   // Derive line ranges for each symbol so we can show a sticky header with
   // the enclosing function when the user scrolls past its declaration. Fold
   // regions are keyed by the line that opens a `{`; functions sometimes open
-  // the brace on the next line, so we check both.
+  // the brace on the next line, so we check both. When brace matching can't
+  // give us an end (e.g. stripNonCode missed a template literal somewhere
+  // and the brace stack desynced), fall back to "the function owns
+  // everything until the next top-level function declaration starts" — for
+  // big single-namespace files like ForgeRock endpoint scripts this is
+  // closer to the user's expectation than collapsing the range to a single
+  // line. We only do this for callable symbols (function / method); plain
+  // const/let/var declarations stay one-line because their "body" is just
+  // an expression.
+  const totalLines = useMemo(
+    () => effectiveContent.split("\n").length,
+    [effectiveContent],
+  );
   const symbolRanges = useMemo(() => {
-    return symbols.map((s) => {
-      const end = foldRegions.get(s.line) ?? foldRegions.get(s.line + 1) ?? s.line;
+    // Pre-compute next callable symbol's line for each index so the fallback
+    // is O(n) instead of O(n²).
+    const nextCallableLine: number[] = new Array(symbols.length);
+    let nextLine = totalLines + 1;
+    for (let i = symbols.length - 1; i >= 0; i--) {
+      nextCallableLine[i] = nextLine;
+      const s = symbols[i];
+      if (s.kind === "function" || s.kind === "method") nextLine = s.line;
+    }
+    return symbols.map((s, i) => {
+      const fold = foldRegions.get(s.line) ?? foldRegions.get(s.line + 1);
+      let end = fold ?? s.line;
+      if (end <= s.line && (s.kind === "function" || s.kind === "method")) {
+        end = Math.max(s.line, nextCallableLine[i] - 1);
+      }
       return { ...s, endLine: end };
     });
-  }, [symbols, foldRegions]);
+  }, [symbols, foldRegions, totalLines]);
 
   // Sticky-scope focus line — prefer the explicit active line (last clicked
   // row, goto, outline/find jump) so clicking a line updates the scope header
@@ -858,16 +973,28 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
     return result;
   }, [symbolRanges, foldRegions, effectiveContent]);
 
-  const currentScope = useMemo(() => {
-    if (scopeFocusLine == null) return null;
-    let best: (typeof scopes)[number] | null = null;
-    for (const s of scopes) {
-      if (scopeFocusLine >= s.line && scopeFocusLine <= s.endLine) {
-        if (!best || s.line > best.line) best = s;
-      }
-    }
-    return best;
+  // Full chain of enclosing scopes (outermost → innermost) at the focus line.
+  // Used to render the breadcrumb header and to highlight every enclosing
+  // function in the outline sidebar — not just the innermost one.
+  const scopeChain = useMemo(() => {
+    if (scopeFocusLine == null) return [] as typeof scopes;
+    const enclosing = scopes.filter(
+      (s) => scopeFocusLine >= s.line && scopeFocusLine <= s.endLine,
+    );
+    enclosing.sort((a, b) => a.line - b.line);
+    return enclosing;
   }, [scopes, scopeFocusLine]);
+
+  const currentScope = scopeChain.length > 0 ? scopeChain[scopeChain.length - 1] : null;
+  const innermostScopeLine = currentScope ? currentScope.line : null;
+
+  // Set of declaration lines for every enclosing scope. Sidebar uses this to
+  // light up the whole call-path, not just the row whose `line` exactly
+  // equals the cursor's row.
+  const enclosingScopeLines = useMemo(
+    () => new Set(scopeChain.map((s) => s.line)),
+    [scopeChain],
+  );
 
   // Throttle scroll handling via rAF; find the first visible, non-folded row
   // and remember its line number.
@@ -1097,23 +1224,26 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
       {/* Content + Outline/References sidebar */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
         <div className="flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col">
-          <div className="flex items-center gap-2 px-4 py-0.5 border-b border-slate-800 bg-slate-900/95 backdrop-blur text-[11px] text-slate-400 shrink-0">
-            <span className="text-slate-500 text-[10px] uppercase tracking-wider">in</span>
-            {currentScope ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => goTo(currentScope.line)}
-                  className={cn(
-                    "code-mono truncate",
-                    currentScope.anonymous ? "text-slate-400 italic hover:text-slate-200" : "text-sky-300 hover:text-sky-200",
-                  )}
-                  title={`Jump to line ${currentScope.line}`}
-                >
-                  {currentScope.anonymous ? `(${currentScope.name})` : `${currentScope.name}()`}
-                </button>
-                <span className="text-slate-600 tabular-nums">:{currentScope.line}</span>
-              </>
+          <div className="flex items-center gap-1 px-4 py-0.5 border-b border-slate-800 bg-slate-900/95 backdrop-blur text-[11px] text-slate-400 shrink-0 overflow-x-auto scrollbar-thin">
+            <span className="text-slate-500 text-[10px] uppercase tracking-wider shrink-0 mr-1">in</span>
+            {scopeChain.length > 0 ? (
+              scopeChain.map((s, i) => (
+                <span key={`${s.line}-${i}`} className="flex items-center gap-1 shrink-0">
+                  {i > 0 && <span className="text-slate-600" aria-hidden>›</span>}
+                  <button
+                    type="button"
+                    onClick={() => goTo(s.line)}
+                    className={cn(
+                      "code-mono truncate",
+                      s.anonymous ? "text-slate-400 italic hover:text-slate-200" : "text-sky-300 hover:text-sky-200",
+                    )}
+                    title={`Jump to line ${s.line}`}
+                  >
+                    {s.anonymous ? `(${s.name})` : `${s.name}()`}
+                  </button>
+                  <span className="text-slate-600 tabular-nums">:{s.line}</span>
+                </span>
+              ))
             ) : (
               <span className="text-slate-500 italic">(top level)</span>
             )}
@@ -1134,7 +1264,7 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
               indentGuides
               onScroll={handleViewerScroll}
               scrollRequest={scrollRequest ?? undefined}
-              onLineClick={(ln) => setCurrentLine(ln)}
+              onLineClick={handleLineClick}
             />
           </div>
         </div>
@@ -1157,6 +1287,8 @@ export function ScriptFileViewer({ content, fileName, environment, relPath, high
               onExpandAllGroups={expandAllGroups}
               onCollapseAllGroups={collapseAllGroups}
               currentLine={currentLine}
+              enclosingScopeLines={enclosingScopeLines}
+              innermostScopeLine={innermostScopeLine}
               onGoTo={goTo}
               onOpenRef={(r) => { goTo(r.line); onNavigate?.(r.target); }}
             />
@@ -1181,6 +1313,8 @@ function Sidebar({
   onExpandAllGroups,
   onCollapseAllGroups,
   currentLine,
+  enclosingScopeLines,
+  innermostScopeLine,
   onGoTo,
   onOpenRef,
 }: {
@@ -1192,11 +1326,28 @@ function Sidebar({
   onExpandAllGroups: () => void;
   onCollapseAllGroups: () => void;
   currentLine: number | undefined;
+  enclosingScopeLines: Set<number>;
+  innermostScopeLine: number | null;
   onGoTo: (line: number) => void;
   onOpenRef: (r: Reference) => void;
 }) {
   const [search, setSearch] = useState("");
   const q = search.trim().toLowerCase();
+
+  // Auto-scroll the outline so the highlighted (innermost enclosing) symbol
+  // stays visible as the cursor / selection moves. Use scrollIntoView with
+  // block:"nearest" so we only scroll when the row is actually off-screen,
+  // and the panel doesn't yank when the symbol is already comfortably in
+  // view.
+  const asideRef = useRef<HTMLElement | null>(null);
+  const activeRowRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (innermostScopeLine == null) return;
+    const el = activeRowRef.current;
+    if (!el) return;
+    el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [innermostScopeLine]);
+
 
   // Filter groups by symbol / reference name (case-insensitive). Empty groups
   // are dropped so the sidebar shrinks to only matching sections.
@@ -1223,6 +1374,7 @@ function Sidebar({
 
   return (
     <aside
+      ref={asideRef}
       style={{ width }}
       className="shrink-0 border-l border-slate-800 bg-slate-900/70 overflow-auto scrollbar-thin"
     >
@@ -1279,65 +1431,82 @@ function Sidebar({
         const accent = symbolAccent(g.id);
         const isCallable = g.id === "sym:function";
         return (
-        <GroupSection
-          key={g.id}
-          id={g.id}
-          label={g.label}
-          count={g.items.length}
-          collapsed={effectiveCollapsed.has(g.id)}
-          onToggle={onToggleGroup}
-          accent={accent}
-        >
-          {g.items.map((s, i) => (
-            <button
-              key={`${s.name}-${s.line}-${i}`}
-              type="button"
-              onClick={() => onGoTo(s.line)}
-              className={cn(
-                "flex items-baseline gap-2 w-full text-left px-3 py-0.5 text-xs font-mono truncate transition-colors",
-                currentLine === s.line
-                  ? "bg-sky-900/40 text-sky-200"
-                  : "hover:text-slate-100 hover:bg-slate-800",
-                currentLine !== s.line && (accent ?? "text-slate-300"),
-              )}
-              title={`Line ${s.line}`}
-            >
-              <span className="truncate">{isCallable && !s.name.startsWith("(") ? `${s.name}()` : s.name}</span>
-              <span className="ml-auto text-[10px] text-slate-500 tabular-nums shrink-0">{s.line}</span>
-            </button>
-          ))}
-        </GroupSection>
+          <GroupSection
+            key={g.id}
+            id={g.id}
+            label={g.label}
+            count={g.items.length}
+            collapsed={effectiveCollapsed.has(g.id)}
+            onToggle={onToggleGroup}
+            accent={accent}
+          >
+            {g.items.map((s, i) => {
+              const isExact = currentLine === s.line;
+              const isInnermost = !isExact && innermostScopeLine === s.line;
+              const isOuter = !isExact && !isInnermost && enclosingScopeLines.has(s.line);
+              const shouldScrollTo = isInnermost || (isExact && innermostScopeLine == null);
+              return (
+                <button
+                  key={`${s.name}-${s.line}-${i}`}
+                  ref={shouldScrollTo ? activeRowRef : undefined}
+                  type="button"
+                  onClick={() => onGoTo(s.line)}
+                  className={cn(
+                    "flex items-baseline gap-2 w-full text-left px-3 py-0.5 text-xs font-mono truncate transition-colors",
+                    isExact
+                      ? "bg-sky-500/30 text-sky-100 font-semibold border-l-4 border-sky-400 ring-1 ring-inset ring-sky-400/40"
+                      : isInnermost
+                        ? "bg-sky-500/25 text-sky-100 font-semibold border-l-4 border-sky-400 ring-1 ring-inset ring-sky-400/30"
+                        : isOuter
+                          ? "bg-sky-900/30 text-sky-300 border-l-2 border-sky-500/60"
+                          : "hover:text-slate-100 hover:bg-slate-800",
+                    !isExact && !isInnermost && !isOuter && (accent ?? "text-slate-300"),
+                  )}
+                  title={
+                    isInnermost
+                      ? `Line ${s.line} · current scope`
+                      : isOuter
+                        ? `Line ${s.line} · encloses cursor`
+                        : `Line ${s.line}`
+                  }
+                >
+                  <span className="truncate">{isCallable && !s.name.startsWith("(") ? `${s.name}()` : s.name}</span>
+                  <span className="ml-auto text-[10px] text-slate-500 tabular-nums shrink-0">{s.line}</span>
+                </button>
+              );
+            })}
+          </GroupSection>
         );
       })}
 
       {filteredReferenceGroups.map((g) => {
         const accent = refAccent(g.id);
         return (
-        <GroupSection
-          key={g.id}
-          id={g.id}
-          label={g.label}
-          count={g.items.length}
-          collapsed={effectiveCollapsed.has(g.id)}
-          onToggle={onToggleGroup}
-          accent={accent}
-        >
-          {g.items.map((r, i) => (
-            <button
-              key={`${r.kind}-${r.label}-${r.line}-${i}`}
-              type="button"
-              onClick={() => onOpenRef(r)}
-              className={cn(
-                "flex items-baseline gap-2 w-full text-left px-3 py-0.5 text-xs font-mono truncate hover:text-slate-100 hover:bg-slate-800 transition-colors",
-                accent ?? "text-slate-300",
-              )}
-              title={`Line ${r.line} · Open ${r.kind}`}
-            >
-              <span className="truncate">{r.label}</span>
-              <span className="ml-auto text-[10px] text-slate-500 tabular-nums shrink-0">{r.line}</span>
-            </button>
-          ))}
-        </GroupSection>
+          <GroupSection
+            key={g.id}
+            id={g.id}
+            label={g.label}
+            count={g.items.length}
+            collapsed={effectiveCollapsed.has(g.id)}
+            onToggle={onToggleGroup}
+            accent={accent}
+          >
+            {g.items.map((r, i) => (
+              <button
+                key={`${r.kind}-${r.label}-${r.line}-${i}`}
+                type="button"
+                onClick={() => onOpenRef(r)}
+                className={cn(
+                  "flex items-baseline gap-2 w-full text-left px-3 py-0.5 text-xs font-mono truncate hover:text-slate-100 hover:bg-slate-800 transition-colors",
+                  accent ?? "text-slate-300",
+                )}
+                title={`Line ${r.line} · Open ${r.kind}`}
+              >
+                <span className="truncate">{r.label}</span>
+                <span className="ml-auto text-[10px] text-slate-500 tabular-nums shrink-0">{r.line}</span>
+              </button>
+            ))}
+          </GroupSection>
         );
       })}
     </aside>
@@ -1387,8 +1556,8 @@ function refAccent(id: string): string | undefined {
 // hues (emerald / rose) so all four groups are distinguishable at a glance.
 function symbolAccent(id: string): string | undefined {
   if (id === "sym:function") return "text-sky-400";
-  if (id === "sym:const")    return "text-amber-300";
-  if (id === "sym:let")      return "text-emerald-400";
-  if (id === "sym:var")      return "text-rose-400";
+  if (id === "sym:const") return "text-amber-300";
+  if (id === "sym:let") return "text-emerald-400";
+  if (id === "sym:var") return "text-rose-400";
   return undefined;
 }

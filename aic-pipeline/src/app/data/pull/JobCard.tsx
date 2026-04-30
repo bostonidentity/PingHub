@@ -5,12 +5,13 @@ import type { DataPullJob } from "@/lib/data/types";
 import { cn } from "@/lib/utils";
 
 const STATUS_STYLE: Record<DataPullJob["status"], string> = {
-  queued:     "bg-slate-100 text-slate-600",
-  running:    "bg-sky-100 text-sky-700",
-  aborting:   "bg-amber-100 text-amber-700",
-  completed:  "bg-emerald-100 text-emerald-700",
-  failed:     "bg-rose-100 text-rose-700",
-  aborted:    "bg-slate-100 text-slate-500",
+  queued:      "bg-slate-100 text-slate-600",
+  running:     "bg-sky-100 text-sky-700",
+  aborting:    "bg-amber-100 text-amber-700",
+  completed:   "bg-emerald-100 text-emerald-700",
+  failed:      "bg-rose-100 text-rose-700",
+  aborted:     "bg-slate-100 text-slate-500",
+  interrupted: "bg-amber-100 text-amber-800",
 };
 
 const MIN_ELAPSED_FOR_ETA_MS = 10_000;
@@ -50,10 +51,12 @@ export function JobCard({
   job,
   probedCounts = {},
   onAbort,
+  onResume,
 }: {
   job: DataPullJob;
   probedCounts?: Record<string, number | null>;
   onAbort: () => void;
+  onResume?: () => void;
 }) {
   const canAbort = job.status === "running" || job.status === "queued";
   const isRunning = job.status === "running" || job.status === "queued" || job.status === "aborting";
@@ -106,6 +109,13 @@ export function JobCard({
             onClick={onAbort}
             className="ml-auto px-2 py-0.5 text-xs border border-slate-300 rounded bg-white text-slate-700 hover:bg-slate-50"
           >Abort</button>
+        )}
+        {job.status === "interrupted" && onResume && (
+          <button
+            type="button"
+            onClick={onResume}
+            className="ml-auto px-2 py-0.5 text-xs border border-amber-400 rounded bg-amber-50 text-amber-800 hover:bg-amber-100"
+          >Resume</button>
         )}
         {job.fatalError && <span className="ml-auto text-xs text-rose-600">{job.fatalError}</span>}
       </div>
