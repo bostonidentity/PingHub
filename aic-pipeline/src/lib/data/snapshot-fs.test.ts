@@ -351,3 +351,43 @@ describe("listRecords (NDJSON format)", () => {
     expect(page.records[0].id).toBe("u3");
   });
 });
+
+describe("listRecords on legacy {id}.json snapshots", () => {
+  it("paginates by filename order", async () => {
+    writeManifest("legacy_user", 3);
+    writeRecord("legacy_user", "u1", { _id: "u1", userName: "alice" });
+    writeRecord("legacy_user", "u2", { _id: "u2", userName: "bob" });
+    writeRecord("legacy_user", "u3", { _id: "u3", userName: "carol" });
+
+    const page = await listRecords(tmpDir, ENV, "legacy_user", {
+      q: "", page: 1, limit: 10, display: { title: "userName", searchFields: [] },
+    });
+    expect(page.total).toBe(3);
+    expect(page.records.map((r) => r.id)).toEqual(["u1", "u2", "u3"]);
+    expect(page.records.map((r) => r.title)).toEqual(["alice", "bob", "carol"]);
+  });
+
+  it("substring-search across the full JSON text", async () => {
+    writeManifest("legacy_user", 3);
+    writeRecord("legacy_user", "u1", { _id: "u1", userName: "alice" });
+    writeRecord("legacy_user", "u2", { _id: "u2", userName: "bob" });
+    writeRecord("legacy_user", "u3", { _id: "u3", userName: "alice2" });
+
+    const page = await listRecords(tmpDir, ENV, "legacy_user", {
+      q: "alice", page: 1, limit: 10, display: { title: "userName", searchFields: [] },
+    });
+    expect(page.total).toBe(2);
+    expect(page.records.map((r) => r.id).sort()).toEqual(["u1", "u3"]);
+  });
+
+  it("does not create index.sqlite for legacy snapshots", async () => {
+    writeManifest("legacy_user", 1);
+    writeRecord("legacy_user", "u1", { _id: "u1", userName: "alice" });
+
+    await listRecords(tmpDir, ENV, "legacy_user", {
+      q: "", page: 1, limit: 10, display: { title: "userName", searchFields: [] },
+    });
+    const typeDir = path.join(tmpDir, ENV, "managed-data", "legacy_user");
+    expect(fs.existsSync(path.join(typeDir, "index.sqlite"))).toBe(false);
+  });
+});

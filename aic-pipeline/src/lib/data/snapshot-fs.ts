@@ -175,12 +175,75 @@ function findKeyCI(record: Record<string, unknown>, wanted: string): string | un
 
 const FIELD_SAMPLE_SIZE = 20;
 
+async function listRecordsLegacy(
+  dir: string,
+  opts: ListOpts,
+): Promise<SnapshotRecordPage> {
+  const q = opts.q.trim().toLowerCase();
+  const titleField = opts.titleField ?? opts.display.title;
+  const start = (opts.page - 1) * opts.limit;
+
+  const files = (await fsp.readdir(dir))
+    .filter((f) => f.endsWith(".json") && !f.startsWith("_"))
+    .sort();
+  const ids = files.map((f) => f.replace(/\.json$/, ""));
+
+  // Derive fields from a sample.
+  const fieldSet = new Set<string>();
+  for (const id of ids.slice(0, FIELD_SAMPLE_SIZE)) {
+    try {
+      const rec = JSON.parse(
+        await fsp.readFile(path.join(dir, `${id}.json`), "utf-8"),
+      ) as Record<string, unknown>;
+      for (const k of Object.keys(rec)) fieldSet.add(k);
+    } catch { /* skip */ }
+  }
+  const fields = [...fieldSet].sort();
+
+  let candidateIds: string[];
+  if (!q) {
+    candidateIds = ids;
+  } else {
+    candidateIds = [];
+    for (const id of ids) {
+      try {
+        const raw = await fsp.readFile(path.join(dir, `${id}.json`), "utf-8");
+        if (raw.toLowerCase().includes(q)) candidateIds.push(id);
+      } catch { /* skip */ }
+    }
+  }
+
+  const total = candidateIds.length;
+  const pageIds = candidateIds.slice(start, start + opts.limit);
+  const records = await Promise.all(pageIds.map(async (id) => {
+    try {
+      const rec = JSON.parse(
+        await fsp.readFile(path.join(dir, `${id}.json`), "utf-8"),
+      ) as Record<string, unknown>;
+      const key = findKeyCI(rec, titleField);
+      const v = key ? rec[key] : undefined;
+      const title = (typeof v === "string" && v) || id;
+      return { id, title };
+    } catch {
+      return { id, title: id };
+    }
+  }));
+  return { total, page: opts.page, limit: opts.limit, fields, records };
+}
+
 export async function listRecords(
   envsRoot: string, env: string, type: string, opts: ListOpts,
 ): Promise<SnapshotRecordPage> {
   const dir = path.join(managedDataDir(envsRoot, env), type);
   if (!existsSync(dir)) {
     return { total: 0, page: opts.page, limit: opts.limit, records: [], fields: [] };
+  }
+
+  // Legacy per-{id}.json snapshots — predate the NDJSON+SQLite migration.
+  // Some environments still hold this format; readRecord already supports it
+  // via the same isNDJsonFormat check, so listRecords must too.
+  if (!isNDJsonFormat(dir)) {
+    return listRecordsLegacy(dir, opts);
   }
 
   const q = opts.q.trim().toLowerCase();
