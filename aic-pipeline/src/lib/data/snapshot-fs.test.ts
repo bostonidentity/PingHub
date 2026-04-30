@@ -115,7 +115,7 @@ describe("listRecords", () => {
     expect(page.records[0]).toEqual({ id: "u1", title: "alice" });
   });
 
-  it("full-JSON search matches any key or value in the record", async () => {
+  it("substring-search matches values across all indexed fields", async () => {
     const page = await listRecords(tmpDir, ENV, "alpha_user", {
       q: "alice",
       page: 1,

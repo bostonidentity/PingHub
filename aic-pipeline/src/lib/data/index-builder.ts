@@ -32,9 +32,11 @@ export async function buildIndexFromNDJson(
   const ndjsonPath = path.join(typeDir, NDJSON_FILE);
   if (!fs.existsSync(ndjsonPath)) return 0;
 
-  // Stream NDJSON to collect rows. The whole row set fits in memory because
-  // each row is just id + offset + length + scalar-fields JSON — small even
-  // for millions of records (< 1 GB at 5M rows).
+  // Stream NDJSON to collect rows. Each row is small (id + offset + length +
+  // scalar-fields JSON), but the full set is held in memory before the bulk
+  // insert. Order-of-magnitude: ~350 bytes/row, so ~3.5 GB at 10M rows. For
+  // smaller (<1M-row) types this is a non-issue; for very large types the
+  // indexer should be revisited if memory pressure becomes a problem.
   const rows: Row[] = [];
   const stream = fs.createReadStream(ndjsonPath);
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -48,7 +50,11 @@ export async function buildIndexFromNDJson(
     const length = Buffer.byteLength(line, "utf-8");
     try {
       const r = JSON.parse(line) as Record<string, unknown>;
-      const id = typeof r._id === "string" ? r._id : "";
+      const id = typeof r._id === "string"
+        ? r._id
+        : typeof r.id === "string"
+          ? r.id
+          : "";
       if (id) {
         const fields = pickIndexFields(r);
         rows.push({
