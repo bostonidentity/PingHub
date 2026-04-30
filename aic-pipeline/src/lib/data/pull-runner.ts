@@ -3,7 +3,10 @@ import path from "path";
 import readline from "readline";
 import type { DataPullJob } from "./types";
 import type { Registry } from "./job-registry";
-import { NDJSON_FILE, OFFSETS_FILE, type Offsets } from "./ndjson-format";
+import { NDJSON_FILE, type Offsets } from "./ndjson-format";
+import { openIndexDb } from "./index-db";
+import { buildIndexFromNDJson } from "./index-builder";
+import type Database from "better-sqlite3";
 
 const MAX_RETRIES = 5;
 const DEFAULT_RETRY_DELAY_MS = 3000;
@@ -215,16 +218,17 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
     const typePullingDir = path.join(pullingRoot, type);
     fs.mkdirSync(typePullingDir, { recursive: true });
 
-    let indexEntries: { id: string; f: Record<string, string> }[] = [];
     let refsIndex: Record<string, string[]> = {};
-    let offsets: Offsets = {};
+    /** Bytes already written to data.ndjson — used as the offset for the next record. */
+    let bytesWritten = 0;
+    /** Set of ids already inserted. Replaces the legacy `id in offsets` dedupe. */
+    const seenIds = new Set<string>();
 
     const ndjsonPath = path.join(typePullingDir, NDJSON_FILE);
 
     let cookie: string | null = null;
     let total: number | null = null;
     let fetched = 0;
-    let bytesWritten = 0;
     let typeFailed = false;
 
     // Resume detection: per-type progress already has cookie/byteLength from
@@ -254,11 +258,10 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
     if (isResuming) {
       fs.truncateSync(ndjsonPath, persistedProgress!.byteLength!);
       const rebuilt = await rebuildFromNDJson(ndjsonPath, pickIndexFields, extractRefs);
-      offsets = rebuilt.offsets;
-      indexEntries = rebuilt.indexEntries;
       refsIndex = rebuilt.refsIndex;
-      fetched = rebuilt.fetched;
+      for (const id of Object.keys(rebuilt.offsets)) seenIds.add(id);
       bytesWritten = rebuilt.byteLength;
+      fetched = rebuilt.fetched;
       cookie = persistedProgress!.cookie ?? null;
       total = persistedProgress!.total ?? null;
     } else {
@@ -270,6 +273,13 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
 
     const ndjsonStream = fs.createWriteStream(ndjsonPath, { flags: "a" });
     ndjsonStream.on("error", () => { /* swallow post-destroy ENOENT */ });
+
+    const indexDb: Database.Database = openIndexDb(typePullingDir);
+    indexDb.prepare("DELETE FROM records").run(); // resume case — idempotent rebuild
+    const insertStmt = indexDb.prepare(
+      "INSERT OR REPLACE INTO records(id, ord, offset, length, fields_json, searchable) VALUES (?, ?, ?, ?, ?, ?)",
+    );
+    let nextOrd = 0; // restarts from 0; the post-pull buildIndexFromNDJson re-numbers from disk truth
 
     pages:
     while (true) {
@@ -342,6 +352,10 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
           };
 
           const items = data.result ?? [];
+          // Build the page's index rows first so the SQLite insert can run in
+          // a single transaction (~50× faster than autocommit on better-sqlite3).
+          interface PageRow { id: string; ord: number; offset: number; length: number; fields_json: string; searchable: string; line: string; refs: string[]; }
+          const pageRows: PageRow[] = [];
           for (const item of items) {
             if (signal.aborted) { ndjsonStream.destroy(); break outer; }
             const id = typeof item._id === "string"
@@ -349,14 +363,35 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
               : typeof item.id === "string"
                 ? item.id as string
                 : String(fetched + 1);
-            if (id in offsets) continue; // dedupe on resume
-            const line = JSON.stringify(item) + "\n";
-            offsets[id] = bytesWritten;
-            ndjsonStream.write(line);
-            bytesWritten += Buffer.byteLength(line, "utf-8");
-            indexEntries.push({ id, f: pickIndexFields(item) });
-            const itemRefs = extractRefs(item);
-            if (itemRefs.length > 0) refsIndex[id] = itemRefs;
+            if (seenIds.has(id)) continue; // dedupe on resume
+            const lineStr = JSON.stringify(item);
+            const lineLen = Buffer.byteLength(lineStr, "utf-8");
+            const fields = pickIndexFields(item);
+            pageRows.push({
+              id,
+              ord: nextOrd,
+              offset: bytesWritten,
+              length: lineLen,
+              fields_json: JSON.stringify(fields),
+              searchable: Object.values(fields).join(" ").toLowerCase(),
+              line: lineStr,
+              refs: extractRefs(item),
+            });
+            seenIds.add(id);
+            nextOrd++;
+            bytesWritten += lineLen + 1; // +1 for newline
+          }
+          // NDJSON write goes outside the transaction (different file/handle).
+          for (const r of pageRows) ndjsonStream.write(r.line + "\n");
+          // SQLite inserts in one transaction.
+          const insertPage = indexDb.transaction((batch: PageRow[]) => {
+            for (const r of batch) {
+              insertStmt.run(r.id, r.ord, r.offset, r.length, r.fields_json, r.searchable);
+            }
+          });
+          insertPage(pageRows);
+          for (const r of pageRows) {
+            if (r.refs.length > 0) refsIndex[r.id] = r.refs;
             fetched++;
           }
           // Only accept a non-negative total. Default tenant behavior returns
@@ -407,12 +442,14 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
 
     if (signal.aborted) {
       ndjsonStream.destroy();
+      indexDb.close();
       break;
     }
 
     if (typeFailed) {
       anyFailed = true;
       ndjsonStream.destroy();
+      indexDb.close();
       fs.rmSync(typePullingDir, { recursive: true, force: true });
       continue;
     }
@@ -440,17 +477,18 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
         JSON.stringify({ type, pulledAt, count: fetched, jobId: job.id }, null, 2),
       );
       fs.writeFileSync(
-        path.join(currentDir, "_index.json"),
-        JSON.stringify(indexEntries),
-      );
-      fs.writeFileSync(
         path.join(currentDir, "_refs.json"),
         JSON.stringify(refsIndex),
       );
-      fs.writeFileSync(
-        path.join(currentDir, OFFSETS_FILE),
-        JSON.stringify(offsets),
-      );
+      // Rebuild SQLite from the now-canonical data.ndjson. Cheap because reading
+      // is sequential and inserts go in one transaction. Also covers the resume
+      // case where rebuilt-but-not-inserted rows existed at the start of the run.
+      indexDb.close();
+      await buildIndexFromNDJson(currentDir, pickIndexFields);
+      // Mirror manifest pulledAt into meta for parity.
+      const finalDb = openIndexDb(currentDir);
+      finalDb.prepare("INSERT OR REPLACE INTO meta(key,value) VALUES ('pulledAt', ?)").run(String(pulledAt));
+      finalDb.close();
       if (fs.existsSync(backupDir)) fs.rmSync(backupDir, { recursive: true, force: true });
 
       registry.updateProgress(job.id, type, { status: "done", fetched, total });
