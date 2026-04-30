@@ -276,229 +276,244 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
 
     const indexDb: Database.Database = openIndexDb(typePullingDir);
     try {
-    indexDb.prepare("DELETE FROM records").run(); // resume case — idempotent rebuild
-    const insertStmt = indexDb.prepare(
-      "INSERT OR REPLACE INTO records(id, ord, offset, length, fields_json, searchable) VALUES (?, ?, ?, ?, ?, ?)",
-    );
-    let nextOrd = 0; // restarts from 0; the post-pull buildIndexFromNDJson re-numbers from disk truth
+      indexDb.prepare("DELETE FROM records").run(); // resume case — idempotent rebuild
+      const insertStmt = indexDb.prepare(
+        "INSERT OR REPLACE INTO records(id, ord, offset, length, fields_json, searchable) VALUES (?, ?, ?, ?, ?, ?)",
+      );
+      let nextOrd = 0; // restarts from 0; the post-pull buildIndexFromNDJson re-numbers from disk truth
 
-    pages:
-    while (true) {
-      if (signal.aborted) { ndjsonStream.destroy(); break outer; }
-
-      const url = new URL(`${tenantUrl}/openidm/managed/${type}`);
-      url.searchParams.set("_queryFilter", "true");
-      url.searchParams.set("_pageSize", String(pageSize));
-      if (cookie) url.searchParams.set("_pagedResultsCookie", cookie);
-
-      let attempt = 0;
-      let success = false;
-      let refreshedThisPage = false;
-
-      while (attempt <= MAX_RETRIES) {
+      pages:
+      while (true) {
         if (signal.aborted) { ndjsonStream.destroy(); break outer; }
-        try {
-          const res = await fetchFn(url.toString(), {
-            headers: { Authorization: `Bearer ${token}` },
-            signal,
-          });
 
-          if ((res.status === 401 || res.status === 403) && !refreshedThisPage) {
-            token = await mintToken(envVars);
-            refreshedThisPage = true;
-            continue; // same attempt count
-          }
+        const url = new URL(`${tenantUrl}/openidm/managed/${type}`);
+        url.searchParams.set("_queryFilter", "true");
+        url.searchParams.set("_pageSize", String(pageSize));
+        if (cookie) url.searchParams.set("_pagedResultsCookie", cookie);
 
-          if (res.status === 429) {
-            const backoff = [5000, 10000, 20000, 40000, 60000][attempt] ?? 60000;
-            attempt++;
-            if (attempt > MAX_RETRIES) break;
-            await sleep(backoff);
-            continue;
-          }
+        let attempt = 0;
+        let success = false;
+        let refreshedThisPage = false;
 
-          if (res.status >= 500) {
-            attempt++;
-            if (attempt > MAX_RETRIES) break;
-            await sleep(retryDelayMs);
-            continue;
-          }
-
-          if (!res.ok) {
-            // If we were resuming with a persisted cookie and the tenant
-            // rejected the request with a 4xx, the cookie is most likely
-            // stale (AIC's _pagedResultsCookie isn't documented as durable
-            // across long gaps). Surface a clear message so the user knows
-            // to start a fresh pull rather than keep retrying.
-            const isResumeFailure = isResuming && cookie && res.status >= 400 && res.status < 500;
-            let body = "";
-            if (isResumeFailure) {
-              try { body = await res.text(); } catch { body = ""; }
-            }
-            const errorMsg = isResumeFailure
-              ? `paged results cookie expired — please start a fresh pull (HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ""})`
-              : `HTTP ${res.status}`;
-            registry.updateProgress(job.id, type, {
-              status: "failed",
-              error: errorMsg,
-            });
-            typeFailed = true;
-            break pages;
-          }
-
-          const data = await res.json() as {
-            result?: Record<string, unknown>[];
-            pagedResultsCookie?: string | null;
-            totalPagedResults?: number;
-          };
-
-          const items = data.result ?? [];
-          // Build the page's index rows first so the SQLite insert can run in
-          // a single transaction (~50× faster than autocommit on better-sqlite3).
-          interface PageRow { id: string; ord: number; offset: number; length: number; fields_json: string; searchable: string; line: string; refs: string[]; }
-          const pageRows: PageRow[] = [];
-          for (const item of items) {
-            if (signal.aborted) { ndjsonStream.destroy(); break outer; }
-            const id = typeof item._id === "string"
-              ? item._id
-              : typeof item.id === "string"
-                ? item.id as string
-                : String(fetched + 1);
-            if (seenIds.has(id)) continue; // dedupe on resume
-            const lineStr = JSON.stringify(item);
-            const lineLen = Buffer.byteLength(lineStr, "utf-8");
-            const fields = pickIndexFields(item);
-            pageRows.push({
-              id,
-              ord: nextOrd,
-              offset: bytesWritten,
-              length: lineLen,
-              fields_json: JSON.stringify(fields),
-              searchable: Object.values(fields).join(" ").toLowerCase(),
-              line: lineStr,
-              refs: extractRefs(item),
-            });
-            seenIds.add(id);
-            nextOrd++;
-            bytesWritten += lineLen + 1; // +1 for newline
-          }
-          // NDJSON write goes outside the transaction (different file/handle).
-          for (const r of pageRows) ndjsonStream.write(r.line + "\n");
-          // SQLite inserts in one transaction.
-          const insertPage = indexDb.transaction((batch: PageRow[]) => {
-            for (const r of batch) {
-              insertStmt.run(r.id, r.ord, r.offset, r.length, r.fields_json, r.searchable);
-            }
-          });
-          insertPage(pageRows);
-          for (const r of pageRows) {
-            if (r.refs.length > 0) refsIndex[r.id] = r.refs;
-            fetched++;
-          }
-          // Only accept a non-negative total. Default tenant behavior returns
-          // -1 ("unknown"); accepting it would make the UI show `N / -1`.
-          if (typeof data.totalPagedResults === "number" && data.totalPagedResults >= 0) {
-            total = data.totalPagedResults;
-          }
-
-          // Drain the write stream so byteLength accurately reflects what's on disk.
-          if (ndjsonStream.writableNeedDrain) {
-            await new Promise<void>((resolve) => ndjsonStream.once("drain", resolve));
-          }
-
-          cookie = data.pagedResultsCookie ?? null;
-          registry.updateProgress(job.id, type, {
-            fetched,
-            total,
-            cookie,
-            byteLength: bytesWritten,
-          });
-          success = true;
-          break;
-        } catch (err) {
+        while (attempt <= MAX_RETRIES) {
           if (signal.aborted) { ndjsonStream.destroy(); break outer; }
-          attempt++;
-          if (attempt > MAX_RETRIES) {
-            registry.updateProgress(job.id, type, {
-              status: "failed",
-              error: (err as Error).message,
+          try {
+            const res = await fetchFn(url.toString(), {
+              headers: { Authorization: `Bearer ${token}` },
+              signal,
             });
-            typeFailed = true;
-            break pages;
+
+            if ((res.status === 401 || res.status === 403) && !refreshedThisPage) {
+              token = await mintToken(envVars);
+              refreshedThisPage = true;
+              continue; // same attempt count
+            }
+
+            if (res.status === 429) {
+              const backoff = [5000, 10000, 20000, 40000, 60000][attempt] ?? 60000;
+              attempt++;
+              if (attempt > MAX_RETRIES) break;
+              await sleep(backoff);
+              continue;
+            }
+
+            if (res.status >= 500) {
+              attempt++;
+              if (attempt > MAX_RETRIES) break;
+              await sleep(retryDelayMs);
+              continue;
+            }
+
+            if (!res.ok) {
+              // If we were resuming with a persisted cookie and the tenant
+              // rejected the request with a 4xx, the cookie is most likely
+              // stale (AIC's _pagedResultsCookie isn't documented as durable
+              // across long gaps). Surface a clear message so the user knows
+              // to start a fresh pull rather than keep retrying.
+              const isResumeFailure = isResuming && cookie && res.status >= 400 && res.status < 500;
+              let body = "";
+              if (isResumeFailure) {
+                try { body = await res.text(); } catch { body = ""; }
+              }
+              const errorMsg = isResumeFailure
+                ? `paged results cookie expired — please start a fresh pull (HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ""})`
+                : `HTTP ${res.status}`;
+              registry.updateProgress(job.id, type, {
+                status: "failed",
+                error: errorMsg,
+              });
+              typeFailed = true;
+              break pages;
+            }
+
+            const data = await res.json() as {
+              result?: Record<string, unknown>[];
+              pagedResultsCookie?: string | null;
+              totalPagedResults?: number;
+            };
+
+            const items = data.result ?? [];
+            // Build the page's index rows first so the SQLite insert can run in
+            // a single transaction (~50× faster than autocommit on better-sqlite3).
+            interface PageRow { id: string; ord: number; offset: number; length: number; fields_json: string; searchable: string; line: string; refs: string[]; }
+            const pageRows: PageRow[] = [];
+            for (const item of items) {
+              if (signal.aborted) { ndjsonStream.destroy(); break outer; }
+              const id = typeof item._id === "string"
+                ? item._id
+                : typeof item.id === "string"
+                  ? item.id as string
+                  : String(fetched + 1);
+              if (seenIds.has(id)) continue; // dedupe on resume
+              const lineStr = JSON.stringify(item);
+              const lineLen = Buffer.byteLength(lineStr, "utf-8");
+              const fields = pickIndexFields(item);
+              pageRows.push({
+                id,
+                ord: nextOrd,
+                offset: bytesWritten,
+                length: lineLen,
+                fields_json: JSON.stringify(fields),
+                searchable: Object.values(fields).join(" ").toLowerCase(),
+                line: lineStr,
+                refs: extractRefs(item),
+              });
+              seenIds.add(id);
+              nextOrd++;
+              bytesWritten += lineLen + 1; // +1 for newline
+            }
+            // NDJSON write goes outside the transaction (different file/handle).
+            for (const r of pageRows) ndjsonStream.write(r.line + "\n");
+            // SQLite inserts in one transaction.
+            const insertPage = indexDb.transaction((batch: PageRow[]) => {
+              for (const r of batch) {
+                insertStmt.run(r.id, r.ord, r.offset, r.length, r.fields_json, r.searchable);
+              }
+            });
+            insertPage(pageRows);
+            for (const r of pageRows) {
+              if (r.refs.length > 0) refsIndex[r.id] = r.refs;
+              fetched++;
+            }
+            // Only accept a non-negative total. Default tenant behavior returns
+            // -1 ("unknown"); accepting it would make the UI show `N / -1`.
+            if (typeof data.totalPagedResults === "number" && data.totalPagedResults >= 0) {
+              total = data.totalPagedResults;
+            }
+
+            // Drain the write stream so byteLength accurately reflects what's on disk.
+            if (ndjsonStream.writableNeedDrain) {
+              await new Promise<void>((resolve) => ndjsonStream.once("drain", resolve));
+            }
+
+            cookie = data.pagedResultsCookie ?? null;
+            registry.updateProgress(job.id, type, {
+              fetched,
+              total,
+              cookie,
+              byteLength: bytesWritten,
+            });
+            success = true;
+            break;
+          } catch (err) {
+            if (signal.aborted) { ndjsonStream.destroy(); break outer; }
+            attempt++;
+            if (attempt > MAX_RETRIES) {
+              registry.updateProgress(job.id, type, {
+                status: "failed",
+                error: (err as Error).message,
+              });
+              typeFailed = true;
+              break pages;
+            }
+            await sleep(retryDelayMs);
           }
-          await sleep(retryDelayMs);
         }
+
+        if (!success) {
+          registry.updateProgress(job.id, type, {
+            status: "failed",
+            error: "max retries exceeded",
+          });
+          typeFailed = true;
+          break;
+        }
+        if (!cookie) break; // last page
       }
 
-      if (!success) {
-        registry.updateProgress(job.id, type, {
-          status: "failed",
-          error: "max retries exceeded",
-        });
-        typeFailed = true;
+      if (signal.aborted) {
+        ndjsonStream.destroy();
+        // Close indexDb before the outer-for break — leaving it open would
+        // hold a Windows file lock on the staging dir's index.sqlite, blocking
+        // the post-loop cleanup `fs.rmSync(pullingRoot)` (EPERM/EACCES).
+        if (indexDb.open) indexDb.close();
         break;
       }
-      if (!cookie) break; // last page
-    }
 
-    if (signal.aborted) {
-      ndjsonStream.destroy();
-      break;
-    }
+      if (typeFailed) {
+        anyFailed = true;
+        ndjsonStream.destroy();
+        // CRITICAL on Windows: close the SQLite handle before rm-rf'ing the
+        // staging dir, otherwise rmSync fails with EPERM because index.sqlite
+        // is still open.
+        if (indexDb.open) indexDb.close();
+        fs.rmSync(typePullingDir, { recursive: true, force: true });
+        continue;
+      }
 
-    if (typeFailed) {
-      anyFailed = true;
-      ndjsonStream.destroy();
-      fs.rmSync(typePullingDir, { recursive: true, force: true });
-      continue;
-    }
-
-    // Close the NDJSON stream and flush before the atomic swap.
-    await new Promise<void>((resolve, reject) => {
-      ndjsonStream.end((err: NodeJS.ErrnoException | null | undefined) =>
-        err ? reject(err) : resolve(),
-      );
-    });
-
-    // Atomic swap: prev → .prev-<job>-<type>, new → current, delete prev.
-    // Uses renameWithRetry so transient Windows file-handle locks don't
-    // fail the pull after we've already fetched every record.
-    // Wrapped in try/catch so a persistent lock doesn't leave the job
-    // stuck as "running" forever (which would block all future pulls).
-    try {
-      const currentDir = path.join(envsRoot, job.env, "managed-data", type);
-      const backupDir = path.join(envsRoot, job.env, "managed-data", `.prev-${job.id}-${type}`);
-      if (fs.existsSync(currentDir)) await renameWithRetry(currentDir, backupDir);
-      await renameWithRetry(typePullingDir, currentDir);
-      const pulledAt = Date.now();
-      fs.writeFileSync(
-        path.join(currentDir, "_manifest.json"),
-        JSON.stringify({ type, pulledAt, count: fetched, jobId: job.id }, null, 2),
-      );
-      fs.writeFileSync(
-        path.join(currentDir, "_refs.json"),
-        JSON.stringify(refsIndex),
-      );
-      // Rebuild SQLite from the now-canonical data.ndjson. Cheap because reading
-      // is sequential and inserts go in one transaction. Also covers the resume
-      // case where rebuilt-but-not-inserted rows existed at the start of the run.
-      indexDb.close();
-      await buildIndexFromNDJson(currentDir, pickIndexFields);
-      // Mirror manifest pulledAt into meta for parity.
-      const finalDb = openIndexDb(currentDir);
-      finalDb.prepare("INSERT OR REPLACE INTO meta(key,value) VALUES ('pulledAt', ?)").run(String(pulledAt));
-      finalDb.close();
-      if (fs.existsSync(backupDir)) fs.rmSync(backupDir, { recursive: true, force: true });
-
-      registry.updateProgress(job.id, type, { status: "done", fetched, total });
-    } catch (swapErr) {
-      anyFailed = true;
-      registry.updateProgress(job.id, type, {
-        status: "failed",
-        error: (swapErr as Error).message,
+      // Close the NDJSON stream and flush before the atomic swap.
+      await new Promise<void>((resolve, reject) => {
+        ndjsonStream.end((err: NodeJS.ErrnoException | null | undefined) =>
+          err ? reject(err) : resolve(),
+        );
       });
-      fs.rmSync(typePullingDir, { recursive: true, force: true });
-    }
+
+      // Atomic swap: prev → .prev-<job>-<type>, new → current, delete prev.
+      // Uses renameWithRetry so transient Windows file-handle locks don't
+      // fail the pull after we've already fetched every record.
+      // Wrapped in try/catch so a persistent lock doesn't leave the job
+      // stuck as "running" forever (which would block all future pulls).
+      //
+      // CRITICAL: close the SQLite handle on `index.sqlite` BEFORE renaming
+      // `typePullingDir`. On Windows, an open file handle inside a directory
+      // prevents the directory itself from being renamed (EPERM/EACCES) — this
+      // is what caused the "EPERM: operation not permitted, rename ..." failures
+      // observed in production. The post-swap `buildIndexFromNDJson` opens its
+      // own connection on the renamed path, so closing here is safe.
+      indexDb.close();
+      try {
+        const currentDir = path.join(envsRoot, job.env, "managed-data", type);
+        const backupDir = path.join(envsRoot, job.env, "managed-data", `.prev-${job.id}-${type}`);
+        if (fs.existsSync(currentDir)) await renameWithRetry(currentDir, backupDir);
+        await renameWithRetry(typePullingDir, currentDir);
+        const pulledAt = Date.now();
+        fs.writeFileSync(
+          path.join(currentDir, "_manifest.json"),
+          JSON.stringify({ type, pulledAt, count: fetched, jobId: job.id }, null, 2),
+        );
+        fs.writeFileSync(
+          path.join(currentDir, "_refs.json"),
+          JSON.stringify(refsIndex),
+        );
+        // Rebuild SQLite from the now-canonical data.ndjson. Cheap because reading
+        // is sequential and inserts go in one transaction. Also covers the resume
+        // case where rebuilt-but-not-inserted rows existed at the start of the run.
+        await buildIndexFromNDJson(currentDir, pickIndexFields);
+        // Mirror manifest pulledAt into meta for parity.
+        const finalDb = openIndexDb(currentDir);
+        finalDb.prepare("INSERT OR REPLACE INTO meta(key,value) VALUES ('pulledAt', ?)").run(String(pulledAt));
+        finalDb.close();
+        if (fs.existsSync(backupDir)) fs.rmSync(backupDir, { recursive: true, force: true });
+
+        registry.updateProgress(job.id, type, { status: "done", fetched, total });
+      } catch (swapErr) {
+        anyFailed = true;
+        registry.updateProgress(job.id, type, {
+          status: "failed",
+          error: (swapErr as Error).message,
+        });
+        fs.rmSync(typePullingDir, { recursive: true, force: true });
+      }
     } finally {
       if (indexDb.open) indexDb.close();
     }

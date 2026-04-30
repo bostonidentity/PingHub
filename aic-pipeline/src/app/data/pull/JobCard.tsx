@@ -5,12 +5,12 @@ import type { DataPullJob } from "@/lib/data/types";
 import { cn } from "@/lib/utils";
 
 const STATUS_STYLE: Record<DataPullJob["status"], string> = {
-  queued:      "bg-slate-100 text-slate-600",
-  running:     "bg-sky-100 text-sky-700",
-  aborting:    "bg-amber-100 text-amber-700",
-  completed:   "bg-emerald-100 text-emerald-700",
-  failed:      "bg-rose-100 text-rose-700",
-  aborted:     "bg-slate-100 text-slate-500",
+  queued: "bg-slate-100 text-slate-600",
+  running: "bg-sky-100 text-sky-700",
+  aborting: "bg-amber-100 text-amber-700",
+  completed: "bg-emerald-100 text-emerald-700",
+  failed: "bg-rose-100 text-rose-700",
+  aborted: "bg-slate-100 text-slate-500",
   interrupted: "bg-amber-100 text-amber-800",
 };
 
@@ -117,8 +117,12 @@ export function JobCard({
             className="ml-auto px-2 py-0.5 text-xs border border-amber-400 rounded bg-amber-50 text-amber-800 hover:bg-amber-100"
           >Resume</button>
         )}
-        {job.fatalError && <span className="ml-auto text-xs text-rose-600">{job.fatalError}</span>}
       </div>
+      {job.fatalError && (
+        <div className="px-2 py-1.5 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded font-mono break-all">
+          {job.fatalError}
+        </div>
+      )}
       <div className="space-y-1">
         {job.progress.map((p) => {
           const expected = expectedFor(p.total, probedCounts[p.type]);
@@ -127,23 +131,33 @@ export function JobCard({
             : null;
           const denomFromProbe = (p.total === null || p.total === undefined) && expected !== null;
           return (
-            <div key={p.type} className="flex items-center gap-2 text-xs">
-              <span className="font-mono text-slate-700 w-40 truncate">{p.type}</span>
-              <div className="flex-1 h-1.5 bg-slate-100 rounded overflow-hidden">
-                {pct !== null && (
-                  <div className="h-full bg-sky-500" style={{ width: `${pct}%` }} />
-                )}
+            <div key={p.type} className="space-y-0.5">
+              <div className="flex items-center gap-2 text-xs">
+                <span className="font-mono text-slate-700 w-40 truncate" title={p.type}>{p.type}</span>
+                <div className="flex-1 h-1.5 bg-slate-100 rounded overflow-hidden">
+                  {pct !== null && (
+                    <div
+                      className={cn("h-full", p.status === "failed" ? "bg-rose-400" : "bg-sky-500")}
+                      style={{ width: `${pct}%` }}
+                    />
+                  )}
+                </div>
+                <span
+                  className="text-slate-500 tabular-nums w-28 text-right"
+                  title={denomFromProbe ? "Denominator from the Probe counts value" : undefined}
+                >
+                  {p.fetched.toLocaleString()}
+                  {expected !== null ? ` / ${expected.toLocaleString()}${denomFromProbe ? "*" : ""}` : ""}
+                </span>
+                <span className={cn("text-[10px] w-16", p.status === "failed" ? "text-rose-600 font-semibold" : "text-slate-400")}>
+                  {p.status}
+                </span>
               </div>
-              <span
-                className="text-slate-500 tabular-nums w-28 text-right"
-                title={denomFromProbe ? "Denominator from the Probe counts value" : undefined}
-              >
-                {p.fetched.toLocaleString()}
-                {expected !== null ? ` / ${expected.toLocaleString()}${denomFromProbe ? "*" : ""}` : ""}
-              </span>
-              <span className={cn("text-[10px] w-16", p.status === "failed" ? "text-rose-600" : "text-slate-400")}>
-                {p.status}
-              </span>
+              {p.status === "failed" && p.error && (
+                <div className="ml-40 pl-2 text-[11px] text-rose-700 bg-rose-50 border-l-2 border-rose-300 px-2 py-1 rounded-r font-mono break-all">
+                  {p.error}
+                </div>
+              )}
             </div>
           );
         })}
