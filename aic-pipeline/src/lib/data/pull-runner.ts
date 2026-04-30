@@ -275,6 +275,7 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
     ndjsonStream.on("error", () => { /* swallow post-destroy ENOENT */ });
 
     const indexDb: Database.Database = openIndexDb(typePullingDir);
+    try {
     indexDb.prepare("DELETE FROM records").run(); // resume case — idempotent rebuild
     const insertStmt = indexDb.prepare(
       "INSERT OR REPLACE INTO records(id, ord, offset, length, fields_json, searchable) VALUES (?, ?, ?, ?, ?, ?)",
@@ -442,14 +443,12 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
 
     if (signal.aborted) {
       ndjsonStream.destroy();
-      indexDb.close();
       break;
     }
 
     if (typeFailed) {
       anyFailed = true;
       ndjsonStream.destroy();
-      indexDb.close();
       fs.rmSync(typePullingDir, { recursive: true, force: true });
       continue;
     }
@@ -499,6 +498,9 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
         error: (swapErr as Error).message,
       });
       fs.rmSync(typePullingDir, { recursive: true, force: true });
+    }
+    } finally {
+      if (indexDb.open) indexDb.close();
     }
   }
 
