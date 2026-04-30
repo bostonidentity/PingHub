@@ -3,45 +3,48 @@ import { existsSync } from "fs";
 import fsp from "fs/promises";
 import readline from "readline";
 import path from "path";
+import type Database from "better-sqlite3";
 import type { DisplayFields, SnapshotType, SnapshotRecordPage } from "./types";
-import { isNDJsonFormat, NDJSON_FILE, OFFSETS_FILE, type Offsets } from "./ndjson-format";
+import { isNDJsonFormat, NDJSON_FILE } from "./ndjson-format";
+import { openIndexDb } from "./index-db";
+import { buildIndexFromNDJson, type PickIndexFields } from "./index-builder";
 
 function managedDataDir(envsRoot: string, env: string): string {
   return path.join(envsRoot, env, "managed-data");
 }
 
-// ── Index types ────────────────────────────────────────────────────────────
-
-/** One entry in the _index.json written at pull time. */
-interface IndexEntry {
-  id: string;
-  /** Short scalar fields extracted from the record. */
-  f: Record<string, string>;
-}
-
-// ── In-memory cache ────────────────────────────────────────────────────────
-// Keyed by `<dir>` and invalidated when the manifest `pulledAt` changes, so
-// new pulls automatically bust the cache.
-
+/**
+ * Per-directory cached SQLite handle. Key = typeDir. Invalidated when the
+ * manifest's `pulledAt` differs from `pulledAt` recorded here at open time —
+ * a new pull writes a new `index.sqlite` plus a new `_manifest.json`.
+ */
 interface TypeCache {
   pulledAt: number;
-  /** All record ids in deterministic order (sorted by id for legacy parity). */
-  ids: string[];
-  /** Union of top-level keys from the index or a sample. */
+  /** Open `index.sqlite` connection. */
+  db: Database.Database;
+  /** Indexed scalar field names — derived once from a single SQLite query. */
   fields: string[];
-  /** Full index when _index.json is available, else null. */
-  index: IndexEntry[] | null;
-  /** True when the directory uses NDJSON storage. */
-  ndjson: boolean;
-  /** Offsets map for NDJSON format; null otherwise. */
-  offsets: Offsets | null;
 }
 
 const cache = new Map<string, TypeCache>();
-
-// In-flight cache loads — prevents duplicate readdir work when multiple
-// requests arrive for the same cold type simultaneously.
 const pending = new Map<string, Promise<TypeCache>>();
+
+/**
+ * Bridge function for the lazy-backfill path. The pull runner uses its own
+ * picker; this duplicates the rule (short scalar fields only, skip underscore
+ * keys except _id, length cap 200) so the read path can rebuild a missing
+ * SQLite DB without importing pull-runner internals.
+ */
+const INDEX_FIELD_MAX_LEN = 200;
+const pickIndexFieldsForBackfill: PickIndexFields = (record) => {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(record)) {
+    if (k.startsWith("_") && k !== "_id") continue;
+    if (typeof v === "string" && v.length <= INDEX_FIELD_MAX_LEN) out[k] = v;
+    else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+  }
+  return out;
+};
 
 async function getManifestPulledAt(dir: string): Promise<number> {
   try {
@@ -59,71 +62,32 @@ async function loadCache(dir: string): Promise<TypeCache> {
   if (inflight) return inflight;
 
   const work = (async () => {
-    const ndjson = isNDJsonFormat(dir);
-
-    // Try to load the index built at pull time.
-    let index: IndexEntry[] | null = null;
-    const indexPath = path.join(dir, "_index.json");
-    if (existsSync(indexPath)) {
-      try {
-        index = JSON.parse(await fsp.readFile(indexPath, "utf-8")) as IndexEntry[];
-      } catch { /* fall back to file reads / NDJSON streaming */ }
+    if (existing) {
+      try { existing.db.close(); } catch { /* ignore */ }
+      cache.delete(dir);
     }
 
-    let offsets: Offsets | null = null;
-    let ids: string[];
-
-    if (ndjson) {
-      try {
-        offsets = JSON.parse(await fsp.readFile(path.join(dir, OFFSETS_FILE), "utf-8")) as Offsets;
-      } catch { offsets = {}; }
-      // Use index order if available (matches pull order); else sort offset keys.
-      ids = index ? index.map((e) => e.id) : Object.keys(offsets).sort();
-    } else {
-      const files = (await fsp.readdir(dir))
-        .filter((f) => f.endsWith(".json") && !f.startsWith("_"))
-        .sort();
-      ids = files.map((f) => f.replace(/\.json$/, ""));
+    const dbPath = path.join(dir, "index.sqlite");
+    // Lazy backfill: existing snapshots from before SQLite was introduced
+    // have data.ndjson but no index.sqlite. Build it once on first read.
+    if (!existsSync(dbPath) && existsSync(path.join(dir, NDJSON_FILE))) {
+      await buildIndexFromNDJson(dir, pickIndexFieldsForBackfill);
     }
 
-    // Derive fields.
+    const db = openIndexDb(dir);
+    // Derive field list from a sample of fields_json — same shape as before.
+    const sampleRows = db.prepare(
+      "SELECT fields_json FROM records ORDER BY ord LIMIT ?",
+    ).all(FIELD_SAMPLE_SIZE) as { fields_json: string }[];
     const fieldSet = new Set<string>();
-    if (index) {
-      for (const entry of index.slice(0, FIELD_SAMPLE_SIZE)) {
-        for (const k of Object.keys(entry.f)) fieldSet.add(k);
-      }
-    } else if (ndjson) {
-      // Sample the first FIELD_SAMPLE_SIZE lines of data.ndjson.
+    for (const row of sampleRows) {
       try {
-        const stream = fs.createReadStream(path.join(dir, NDJSON_FILE), { encoding: "utf-8" });
-        const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-        let n = 0;
-        for await (const line of rl) {
-          if (!line) continue;
-          try {
-            const r = JSON.parse(line) as Record<string, unknown>;
-            for (const k of Object.keys(r)) fieldSet.add(k);
-          } catch { /* skip */ }
-          if (++n >= FIELD_SAMPLE_SIZE) break;
+        for (const k of Object.keys(JSON.parse(row.fields_json) as Record<string, unknown>)) {
+          fieldSet.add(k);
         }
-        rl.close();
-        stream.destroy();
-      } catch { /* skip */ }
-    } else {
-      // Legacy per-record sample.
-      for (const id of ids.slice(0, FIELD_SAMPLE_SIZE)) {
-        try {
-          const record = JSON.parse(
-            await fsp.readFile(path.join(dir, `${id}.json`), "utf-8"),
-          ) as Record<string, unknown>;
-          for (const k of Object.keys(record)) fieldSet.add(k);
-        } catch { /* skip */ }
-      }
+      } catch { /* skip malformed */ }
     }
-
-    const entry: TypeCache = {
-      pulledAt, ids, fields: [...fieldSet].sort(), index, ndjson, offsets,
-    };
+    const entry: TypeCache = { pulledAt, db, fields: [...fieldSet].sort() };
     cache.set(dir, entry);
     return entry;
   })();
@@ -176,34 +140,18 @@ async function readRecordFromNDJson(
   typeDir: string,
   id: string,
 ): Promise<Record<string, unknown> | null> {
-  const offsetsPath = path.join(typeDir, OFFSETS_FILE);
-  let offsets: Offsets;
-  try {
-    offsets = JSON.parse(await fsp.readFile(offsetsPath, "utf-8")) as Offsets;
-  } catch { return null; }
-
-  const off = offsets[id];
-  if (typeof off !== "number") return null;
+  const tc = await loadCache(typeDir);
+  const row = tc.db.prepare(
+    "SELECT offset, length FROM records WHERE id = ?",
+  ).get(id) as { offset: number; length: number } | undefined;
+  if (!row) return null;
 
   const ndjsonPath = path.join(typeDir, NDJSON_FILE);
   const fd = await fsp.open(ndjsonPath, "r");
   try {
-    // Read a chunk starting at the offset; expand if we don't see a newline.
-    const initialChunk = 8192;
-    let buf = Buffer.alloc(initialChunk);
-    let { bytesRead } = await fd.read(buf, 0, initialChunk, off);
-    let lineEnd = buf.indexOf(0x0a /* \n */, 0);
-    while (lineEnd === -1 && bytesRead === buf.length) {
-      const next = Buffer.alloc(buf.length * 2);
-      buf.copy(next, 0, 0, bytesRead);
-      const r = await fd.read(next, bytesRead, next.length - bytesRead, off + bytesRead);
-      bytesRead += r.bytesRead;
-      buf = next;
-      lineEnd = buf.indexOf(0x0a, 0);
-      if (r.bytesRead === 0) break;
-    }
-    const line = buf.slice(0, lineEnd === -1 ? bytesRead : lineEnd).toString("utf-8");
-    try { return JSON.parse(line) as Record<string, unknown>; }
+    const buf = Buffer.alloc(row.length);
+    await fd.read(buf, 0, row.length, row.offset);
+    try { return JSON.parse(buf.toString("utf-8")) as Record<string, unknown>; }
     catch { return null; }
   } finally {
     await fd.close();
@@ -242,144 +190,48 @@ export async function listRecords(
 
   const q = opts.q.trim().toLowerCase();
   const tc = await loadCache(dir);
-  const { ids, fields, index, ndjson } = tc;
+  const { db, fields } = tc;
   const titleField = opts.titleField ?? opts.display.title;
   const start = (opts.page - 1) * opts.limit;
 
   if (!q) {
-    // No search — paginate over ids.
-    const total = ids.length;
-    const pageIds = ids.slice(start, start + opts.limit);
-
-    if (index) {
-      const byId = new Map<string, IndexEntry>();
-      for (const e of index) byId.set(e.id, e);
-      const records = pageIds.map((id) => {
-        const entry = byId.get(id);
-        if (entry) {
-          const key = findKeyCI(entry.f, titleField);
-          const title = (key && entry.f[key]) || id;
-          return { id, title };
-        }
-        return { id, title: id };
-      });
-      return { total, page: opts.page, limit: opts.limit, fields, records };
-    }
-
-    // No index — read titles per page (legacy) or stream-skip via NDJSON.
-    if (ndjson) {
-      const records = await readTitlesFromNDJson(dir, pageIds, titleField);
-      return { total, page: opts.page, limit: opts.limit, fields, records };
-    }
-    const records = await Promise.all(pageIds.map((id) => {
-      return readTitleFromFile(dir, `${id}.json`, id, titleField);
-    }));
-    return { total, page: opts.page, limit: opts.limit, fields, records };
-  }
-
-  // Search path.
-  if (index) {
-    const matchingEntries: IndexEntry[] = [];
-    for (const entry of index) {
-      for (const v of Object.values(entry.f)) {
-        if (v.toLowerCase().includes(q)) {
-          matchingEntries.push(entry);
-          break;
-        }
-      }
-    }
-    const total = matchingEntries.length;
-    const pageEntries = matchingEntries.slice(start, start + opts.limit);
-    const records = pageEntries.map((entry) => {
-      const key = findKeyCI(entry.f, titleField);
-      const title = (key && entry.f[key]) || entry.id;
-      return { id: entry.id, title };
+    const total = (db.prepare("SELECT COUNT(*) AS c FROM records").get() as { c: number }).c;
+    const rows = db.prepare(
+      "SELECT id, fields_json FROM records ORDER BY ord LIMIT ? OFFSET ?",
+    ).all(opts.limit, start) as { id: string; fields_json: string }[];
+    const records = rows.map((r) => {
+      const f = JSON.parse(r.fields_json) as Record<string, string>;
+      const key = findKeyCI(f, titleField);
+      const title = (key && f[key]) || r.id;
+      return { id: r.id, title };
     });
     return { total, page: opts.page, limit: opts.limit, fields, records };
   }
 
-  // No index — stream-search NDJSON or scan per-record files.
-  if (ndjson) {
-    const matching: { id: string; title: string }[] = [];
-    const stream = fs.createReadStream(path.join(dir, NDJSON_FILE), { encoding: "utf-8" });
-    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-    for await (const line of rl) {
-      if (!line) continue;
-      if (!line.toLowerCase().includes(q)) continue;
-      try {
-        const r = JSON.parse(line) as Record<string, unknown>;
-        const id = typeof r._id === "string" ? r._id : "";
-        if (!id) continue;
-        const key = findKeyCI(r, titleField);
-        const title = key ? stringOrEmpty(r[key]) || id : id;
-        matching.push({ id, title });
-      } catch { /* skip */ }
-    }
-    rl.close();
-    stream.destroy();
-    const total = matching.length;
-    const records = matching.slice(start, start + opts.limit);
-    return { total, page: opts.page, limit: opts.limit, fields, records };
-  }
-
-  // Legacy per-record fallback.
-  const matchingIds: string[] = [];
-  for (const id of ids) {
-    try {
-      const raw = await fsp.readFile(path.join(dir, `${id}.json`), "utf-8");
-      if (raw.toLowerCase().includes(q)) {
-        matchingIds.push(id);
-      }
-    } catch { /* skip */ }
-  }
-  const total = matchingIds.length;
-  const pageIds = matchingIds.slice(start, start + opts.limit);
-  const records = await Promise.all(pageIds.map((id) =>
-    readTitleFromFile(dir, `${id}.json`, id, titleField),
-  ));
+  // Search path — substring LIKE on the precomputed lowercased `searchable`
+  // column. Same semantics as the legacy String.includes() comparison.
+  const like = `%${q.replace(/[\\_%]/g, (c) => `\\${c}`)}%`;
+  const total = (db.prepare(
+    "SELECT COUNT(*) AS c FROM records WHERE searchable LIKE ? ESCAPE '\\'",
+  ).get(like) as { c: number }).c;
+  const rows = db.prepare(
+    "SELECT id, fields_json FROM records WHERE searchable LIKE ? ESCAPE '\\' ORDER BY ord LIMIT ? OFFSET ?",
+  ).all(like, opts.limit, start) as { id: string; fields_json: string }[];
+  const records = rows.map((r) => {
+    const f = JSON.parse(r.fields_json) as Record<string, string>;
+    const key = findKeyCI(f, titleField);
+    const title = (key && f[key]) || r.id;
+    return { id: r.id, title };
+  });
   return { total, page: opts.page, limit: opts.limit, fields, records };
 }
 
-async function readTitlesFromNDJson(
-  dir: string,
-  wantedIds: string[],
-  titleField: string,
-): Promise<{ id: string; title: string }[]> {
-  const wanted = new Set(wantedIds);
-  const found = new Map<string, string>();
-  const stream = fs.createReadStream(path.join(dir, NDJSON_FILE), { encoding: "utf-8" });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-  for await (const line of rl) {
-    if (!line) continue;
-    try {
-      const r = JSON.parse(line) as Record<string, unknown>;
-      const id = typeof r._id === "string" ? r._id : "";
-      if (!id || !wanted.has(id)) continue;
-      const key = findKeyCI(r, titleField);
-      found.set(id, key ? stringOrEmpty(r[key]) || id : id);
-      if (found.size === wanted.size) break;
-    } catch { /* skip */ }
-  }
-  rl.close();
-  stream.destroy();
-  return wantedIds.map((id) => ({ id, title: found.get(id) ?? id }));
-}
-
-/** Read a single file to extract its title — fallback for legacy (pre-index) data. */
-async function readTitleFromFile(
-  dir: string, filename: string, id: string, titleField: string,
-): Promise<{ id: string; title: string }> {
-  try {
-    const record = JSON.parse(await fsp.readFile(path.join(dir, filename), "utf-8")) as Record<string, unknown>;
-    const key = findKeyCI(record, titleField);
-    const title = (key && stringOrEmpty(record[key])) || id;
-    return { id, title };
-  } catch {
-    return { id, title: id };
-  }
-}
 
 /** Evict the cache for a specific type directory. Exposed for testing. */
 export function evictCache(dir: string): void {
-  cache.delete(dir);
+  const entry = cache.get(dir);
+  if (entry) {
+    try { entry.db.close(); } catch { /* ignore */ }
+    cache.delete(dir);
+  }
 }

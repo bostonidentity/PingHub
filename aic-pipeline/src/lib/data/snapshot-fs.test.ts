@@ -3,6 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { listSnapshotTypes, readRecord, listRecords, evictCache } from "./snapshot-fs";
+import { buildIndexFromNDJson } from "./index-builder";
 
 let tmpDir: string;
 const ENV = "test-env";
@@ -75,11 +76,31 @@ describe("readRecord", () => {
 });
 
 describe("listRecords", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     writeManifest("alpha_user", 3);
     writeRecord("alpha_user", "u1", { _id: "u1", name: "alice", mail: "alice@x.co" });
     writeRecord("alpha_user", "u2", { _id: "u2", name: "bob", mail: "bob@x.co" });
     writeRecord("alpha_user", "u3", { _id: "u3", name: "charlie", mail: "alice@y.co" });
+    const typeDir = path.join(tmpDir, ENV, "managed-data", "alpha_user");
+    // Write data.ndjson so the SQLite backfill path can build the index.
+    const records = [
+      { _id: "u1", name: "alice", mail: "alice@x.co" },
+      { _id: "u2", name: "bob", mail: "bob@x.co" },
+      { _id: "u3", name: "charlie", mail: "alice@y.co" },
+    ];
+    fs.writeFileSync(
+      path.join(typeDir, "data.ndjson"),
+      records.map((r) => JSON.stringify(r) + "\n").join(""),
+    );
+    await buildIndexFromNDJson(typeDir, (rec) => {
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rec)) {
+        if (k.startsWith("_") && k !== "_id") continue;
+        if (typeof v === "string") out[k] = v;
+        else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+      }
+      return out;
+    });
   });
 
   it("returns all records paginated by id order", async () => {
@@ -106,15 +127,15 @@ describe("listRecords", () => {
     expect(page.records.map((r) => r.id).sort()).toEqual(["u1", "u3"]);
   });
 
-  it("full-JSON search matches on keys too", async () => {
-    // "mail" is a key in every record.
+  it("full-JSON search matches on values across all records", async () => {
+    // "@x.co" appears in two records (alice and bob).
     const page = await listRecords(tmpDir, ENV, "alpha_user", {
-      q: "mail",
+      q: "@x.co",
       page: 1,
       limit: 10,
       display: { title: "name", searchFields: [] },
     });
-    expect(page.total).toBe(3);
+    expect(page.total).toBe(2);
   });
 
   it("paginates with limit and page", async () => {
@@ -132,6 +153,18 @@ describe("listRecords", () => {
 
   it("falls back to id when the title field is missing", async () => {
     writeRecord("alpha_user", "u4", { _id: "u4" });
+    const typeDir = path.join(tmpDir, ENV, "managed-data", "alpha_user");
+    fs.appendFileSync(path.join(typeDir, "data.ndjson"), JSON.stringify({ _id: "u4" }) + "\n");
+    evictCache(typeDir);
+    await buildIndexFromNDJson(typeDir, (rec) => {
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rec)) {
+        if (k.startsWith("_") && k !== "_id") continue;
+        if (typeof v === "string") out[k] = v;
+        else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+      }
+      return out;
+    });
     const page = await listRecords(tmpDir, ENV, "alpha_user", {
       q: "", page: 1, limit: 10,
       display: { title: "name", searchFields: [] },
@@ -142,6 +175,18 @@ describe("listRecords", () => {
   it("honors titleField override and matches case-insensitively", async () => {
     // Record uses capital-N Name; override asks for lower-case "name".
     writeRecord("alpha_user", "u5", { _id: "u5", Name: "Overridden" });
+    const typeDir = path.join(tmpDir, ENV, "managed-data", "alpha_user");
+    fs.appendFileSync(path.join(typeDir, "data.ndjson"), JSON.stringify({ _id: "u5", Name: "Overridden" }) + "\n");
+    evictCache(typeDir);
+    await buildIndexFromNDJson(typeDir, (rec) => {
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rec)) {
+        if (k.startsWith("_") && k !== "_id") continue;
+        if (typeof v === "string") out[k] = v;
+        else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+      }
+      return out;
+    });
     const page = await listRecords(tmpDir, ENV, "alpha_user", {
       q: "", page: 1, limit: 10,
       display: { title: "_id", searchFields: [] },
@@ -153,33 +198,32 @@ describe("listRecords", () => {
 
 // ── NDJSON-format reader tests ─────────────────────────────────────────────
 
-function writeNDJsonSnapshot(
+async function writeNDJsonSnapshot(
   type: string,
   records: Record<string, unknown>[],
 ) {
   const dir = path.join(tmpDir, ENV, "managed-data", type);
   fs.mkdirSync(dir, { recursive: true });
-  const offsets: Record<string, number> = {};
-  let bytes = 0;
-  const lines: string[] = [];
-  for (const r of records) {
-    const id = r._id as string;
-    offsets[id] = bytes;
-    const line = JSON.stringify(r) + "\n";
-    lines.push(line);
-    bytes += Buffer.byteLength(line, "utf-8");
-  }
+  const lines = records.map((r) => JSON.stringify(r) + "\n");
   fs.writeFileSync(path.join(dir, "data.ndjson"), lines.join(""));
-  fs.writeFileSync(path.join(dir, "_offsets.json"), JSON.stringify(offsets));
   fs.writeFileSync(
     path.join(dir, "_manifest.json"),
     JSON.stringify({ type, pulledAt: 1700000000000, count: records.length, jobId: "j1" }),
   );
+  await buildIndexFromNDJson(dir, (rec) => {
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(rec)) {
+      if (k.startsWith("_") && k !== "_id") continue;
+      if (typeof v === "string") out[k] = v;
+      else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+    }
+    return out;
+  });
 }
 
 describe("readRecord (NDJSON format)", () => {
   it("reads a record by id via byte-offset seek", async () => {
-    writeNDJsonSnapshot("alpha_user", [
+    await writeNDJsonSnapshot("alpha_user", [
       { _id: "u1", userName: "alice" },
       { _id: "u2", userName: "bob", longField: "x".repeat(500) },
       { _id: "u3", userName: "charlie" },
@@ -189,30 +233,38 @@ describe("readRecord (NDJSON format)", () => {
   });
 
   it("returns null for an unknown id in NDJSON format", async () => {
-    writeNDJsonSnapshot("alpha_user", [{ _id: "u1" }]);
+    await writeNDJsonSnapshot("alpha_user", [{ _id: "u1" }]);
     expect(await readRecord(tmpDir, ENV, "alpha_user", "missing")).toBeNull();
   });
 });
 
 // ── Index-accelerated path ─────────────────────────────────────────────────
 
-function writeIndex(type: string, entries: { id: string; f: Record<string, string> }[]) {
-  const dir = path.join(tmpDir, ENV, "managed-data", type);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "_index.json"), JSON.stringify(entries));
-}
-
-describe("listRecords with _index.json", () => {
-  beforeEach(() => {
+describe("listRecords with SQLite index", () => {
+  beforeEach(async () => {
     writeManifest("alpha_user", 3);
     writeRecord("alpha_user", "u1", { _id: "u1", name: "alice", mail: "alice@x.co" });
     writeRecord("alpha_user", "u2", { _id: "u2", name: "bob", mail: "bob@x.co" });
     writeRecord("alpha_user", "u3", { _id: "u3", name: "charlie", mail: "alice@y.co" });
-    writeIndex("alpha_user", [
-      { id: "u1", f: { _id: "u1", name: "alice", mail: "alice@x.co" } },
-      { id: "u2", f: { _id: "u2", name: "bob", mail: "bob@x.co" } },
-      { id: "u3", f: { _id: "u3", name: "charlie", mail: "alice@y.co" } },
-    ]);
+    const typeDir = path.join(tmpDir, ENV, "managed-data", "alpha_user");
+    const records = [
+      { _id: "u1", name: "alice", mail: "alice@x.co" },
+      { _id: "u2", name: "bob", mail: "bob@x.co" },
+      { _id: "u3", name: "charlie", mail: "alice@y.co" },
+    ];
+    fs.writeFileSync(
+      path.join(typeDir, "data.ndjson"),
+      records.map((r) => JSON.stringify(r) + "\n").join(""),
+    );
+    await buildIndexFromNDJson(typeDir, (rec) => {
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rec)) {
+        if (k.startsWith("_") && k !== "_id") continue;
+        if (typeof v === "string") out[k] = v;
+        else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+      }
+      return out;
+    });
   });
 
   it("uses the index for no-query browsing without reading individual files", async () => {
@@ -260,27 +312,15 @@ describe("listRecords with _index.json", () => {
   });
 });
 
-function writeNDJsonSnapshotWithIndex(
-  type: string,
-  records: Record<string, unknown>[],
-  indexFields: (r: Record<string, unknown>) => Record<string, string>,
-) {
-  writeNDJsonSnapshot(type, records);
-  const dir = path.join(tmpDir, ENV, "managed-data", type);
-  const indexEntries = records.map((r) => ({ id: r._id as string, f: indexFields(r) }));
-  fs.writeFileSync(path.join(dir, "_index.json"), JSON.stringify(indexEntries));
-}
-
 describe("listRecords (NDJSON format)", () => {
-  beforeEach(() => {
-    writeNDJsonSnapshotWithIndex(
+  beforeEach(async () => {
+    await writeNDJsonSnapshot(
       "alpha_user",
       [
         { _id: "u1", name: "alice", mail: "alice@x.co" },
         { _id: "u2", name: "bob", mail: "bob@x.co" },
         { _id: "u3", name: "charlie", mail: "alice@y.co" },
       ],
-      (r) => ({ _id: r._id as string, name: r.name as string, mail: r.mail as string }),
     );
   });
 
@@ -302,10 +342,7 @@ describe("listRecords (NDJSON format)", () => {
     expect(page.records.map((r) => r.id).sort()).toEqual(["u1", "u3"]);
   });
 
-  it("falls back to streaming data.ndjson when no index is present", async () => {
-    // Remove the index to force the fallback path.
-    fs.rmSync(path.join(tmpDir, ENV, "managed-data", "alpha_user", "_index.json"));
-
+  it("finds records via the SQLite index", async () => {
     const page = await listRecords(tmpDir, ENV, "alpha_user", {
       q: "charlie", page: 1, limit: 10,
       display: { title: "name", searchFields: [] },
