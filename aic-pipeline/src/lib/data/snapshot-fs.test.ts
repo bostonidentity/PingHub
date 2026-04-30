@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { listSnapshotTypes, readRecord, listRecords, evictCache } from "./snapshot-fs";
+import { listSnapshotTypes, readRecord, listRecords, evictCache, resolveTitles } from "./snapshot-fs";
 import { buildIndexFromNDJson } from "./index-builder";
 
 let tmpDir: string;
@@ -339,3 +339,92 @@ describe("listRecords (NDJSON format)", () => {
   });
 });
 
+async function buildType(type: string, records: Record<string, unknown>[]) {
+  const dir = path.join(tmpDir, ENV, "managed-data", type);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "_manifest.json"),
+    JSON.stringify({ type, pulledAt: 1700000000000, count: records.length, jobId: "j1" }),
+  );
+  fs.writeFileSync(
+    path.join(dir, "data.ndjson"),
+    records.map((r) => JSON.stringify(r) + "\n").join(""),
+  );
+  await buildIndexFromNDJson(dir, (rec) => {
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(rec)) {
+      if (k.startsWith("_") && k !== "_id") continue;
+      if (typeof v === "string") out[k] = v;
+      else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+    }
+    return out;
+  });
+}
+
+describe("resolveTitles", () => {
+  it("resolves titles using the chosen attribute per type", async () => {
+    await buildType("alpha_user", [
+      { _id: "u1", userName: "alice", mail: "alice@x.co" },
+      { _id: "u2", userName: "bob", mail: "bob@x.co" },
+    ]);
+    await buildType("alpha_role", [
+      { _id: "r1", name: "admin" },
+      { _id: "r2", name: "viewer" },
+    ]);
+    const out = await resolveTitles(tmpDir, ENV, [
+      { type: "alpha_user", id: "u1" },
+      { type: "alpha_user", id: "u2" },
+      { type: "alpha_role", id: "r1" },
+    ], { alpha_user: "userName", alpha_role: "name" });
+    expect(out.titles).toEqual({
+      "alpha_user/u1": "alice",
+      "alpha_user/u2": "bob",
+      "alpha_role/r1": "admin",
+    });
+    expect(out.fieldsByType.alpha_user).toContain("userName");
+    expect(out.fieldsByType.alpha_role).toContain("name");
+  });
+
+  it("falls back to id when attr is empty, missing, or absent on the record", async () => {
+    await buildType("alpha_user", [
+      { _id: "u1", userName: "alice" },
+      { _id: "u2" },
+    ]);
+    const out = await resolveTitles(tmpDir, ENV, [
+      { type: "alpha_user", id: "u1" },
+      { type: "alpha_user", id: "u2" },
+    ], { alpha_user: "missingField" });
+    expect(out.titles["alpha_user/u1"]).toBe("u1");
+    expect(out.titles["alpha_user/u2"]).toBe("u2");
+  });
+
+  it("matches attribute case-insensitively", async () => {
+    await buildType("alpha_user", [{ _id: "u1", UserName: "alice" }]);
+    const out = await resolveTitles(tmpDir, ENV, [
+      { type: "alpha_user", id: "u1" },
+    ], { alpha_user: "username" });
+    expect(out.titles["alpha_user/u1"]).toBe("alice");
+  });
+
+  it("returns null titles and empty fields for an unpulled type", async () => {
+    const out = await resolveTitles(tmpDir, ENV, [
+      { type: "alpha_user", id: "u1" },
+    ], {});
+    expect(out.titles["alpha_user/u1"]).toBeNull();
+    expect(out.fieldsByType.alpha_user).toEqual([]);
+  });
+
+  it("returns null title for an id missing from a pulled type", async () => {
+    await buildType("alpha_user", [{ _id: "u1", userName: "alice" }]);
+    const out = await resolveTitles(tmpDir, ENV, [
+      { type: "alpha_user", id: "ghost" },
+    ], { alpha_user: "userName" });
+    expect(out.titles["alpha_user/ghost"]).toBeNull();
+  });
+
+  it("handles empty refs without throwing", async () => {
+    const out = await resolveTitles(tmpDir, ENV, [], {});
+    expect(out.titles).toEqual({});
+    expect(out.fieldsByType).toEqual({});
+  });
+});

@@ -186,6 +186,68 @@ export async function listRecords(
 }
 
 
+export interface TitleRef { type: string; id: string }
+export interface ResolveTitlesResult {
+  /** key = `${type}/${id}`. null = type not pulled OR id not in that type's index. */
+  titles: Record<string, string | null>;
+  /** Sorted scalar fields per referenced type. [] when the type isn't pulled. */
+  fieldsByType: Record<string, string[]>;
+}
+
+/**
+ * Resolve a list of (type, id) refs to display titles using the chosen
+ * attribute per type. Looks up `fields_json` from each type's SQLite index
+ * (no NDJSON read), picks the attr case-insensitively, falls back to id.
+ *
+ * Used by the data tab's deps panel so users can label dependencies the
+ * same way as the left-panel record list.
+ */
+export async function resolveTitles(
+  envsRoot: string,
+  env: string,
+  refs: TitleRef[],
+  attrs: Record<string, string>,
+): Promise<ResolveTitlesResult> {
+  const titles: Record<string, string | null> = {};
+  const fieldsByType: Record<string, string[]> = {};
+  if (refs.length === 0) return { titles, fieldsByType };
+
+  // Group refs by type to issue one SQLite session per type.
+  const byType = new Map<string, string[]>();
+  for (const r of refs) {
+    if (!byType.has(r.type)) byType.set(r.type, []);
+    byType.get(r.type)!.push(r.id);
+  }
+
+  for (const [type, ids] of byType.entries()) {
+    const dir = path.join(managedDataDir(envsRoot, env), type);
+    if (!existsSync(dir)) {
+      fieldsByType[type] = [];
+      for (const id of ids) titles[`${type}/${id}`] = null;
+      continue;
+    }
+    const tc = await loadCache(dir);
+    fieldsByType[type] = tc.fields;
+    const attrWanted = attrs[type] ?? "";
+    const stmt = tc.db.prepare("SELECT fields_json FROM records WHERE id = ?");
+    for (const id of ids) {
+      const row = stmt.get(id) as { fields_json: string } | undefined;
+      if (!row) { titles[`${type}/${id}`] = null; continue; }
+      if (!attrWanted) { titles[`${type}/${id}`] = id; continue; }
+      try {
+        const f = JSON.parse(row.fields_json) as Record<string, string>;
+        const key = findKeyCI(f, attrWanted);
+        const val = key ? f[key] : "";
+        titles[`${type}/${id}`] = val || id;
+      } catch {
+        titles[`${type}/${id}`] = id;
+      }
+    }
+  }
+
+  return { titles, fieldsByType };
+}
+
 /** Evict the cache for a specific type directory. Exposed for testing. */
 export function evictCache(dir: string): void {
   const entry = cache.get(dir);
