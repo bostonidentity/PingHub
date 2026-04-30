@@ -4,9 +4,8 @@ import fsp from "fs/promises";
 import path from "path";
 import type Database from "better-sqlite3";
 import type { DisplayFields, SnapshotType, SnapshotRecordPage } from "./types";
-import { isNDJsonFormat, NDJSON_FILE } from "./ndjson-format";
+import { NDJSON_FILE } from "./ndjson-format";
 import { openIndexDb } from "./index-db";
-import { buildIndexFromNDJson, type PickIndexFields } from "./index-builder";
 
 function managedDataDir(envsRoot: string, env: string): string {
   return path.join(envsRoot, env, "managed-data");
@@ -28,23 +27,6 @@ interface TypeCache {
 const cache = new Map<string, TypeCache>();
 const pending = new Map<string, Promise<TypeCache>>();
 
-/**
- * Bridge function for the lazy-backfill path. The pull runner uses its own
- * picker; this duplicates the rule (short scalar fields only, skip underscore
- * keys except _id, length cap 200) so the read path can rebuild a missing
- * SQLite DB without importing pull-runner internals.
- */
-const INDEX_FIELD_MAX_LEN = 200;
-const pickIndexFieldsForBackfill: PickIndexFields = (record) => {
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(record)) {
-    if (k.startsWith("_") && k !== "_id") continue;
-    if (typeof v === "string" && v.length <= INDEX_FIELD_MAX_LEN) out[k] = v;
-    else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
-  }
-  return out;
-};
-
 async function getManifestPulledAt(dir: string): Promise<number> {
   try {
     const m = JSON.parse(await fsp.readFile(path.join(dir, "_manifest.json"), "utf-8"));
@@ -64,13 +46,6 @@ async function loadCache(dir: string): Promise<TypeCache> {
     if (existing) {
       try { existing.db.close(); } catch { /* ignore */ }
       cache.delete(dir);
-    }
-
-    const dbPath = path.join(dir, "index.sqlite");
-    // Lazy backfill: existing snapshots from before SQLite was introduced
-    // have data.ndjson but no index.sqlite. Build it once on first read.
-    if (!existsSync(dbPath) && existsSync(path.join(dir, NDJSON_FILE))) {
-      await buildIndexFromNDJson(dir, pickIndexFieldsForBackfill);
     }
 
     const db = openIndexDb(dir);
@@ -121,18 +96,7 @@ export async function readRecord(
   envsRoot: string, env: string, type: string, id: string,
 ): Promise<Record<string, unknown> | null> {
   const typeDir = path.join(managedDataDir(envsRoot, env), type);
-
-  if (isNDJsonFormat(typeDir)) {
-    return readRecordFromNDJson(typeDir, id);
-  }
-
-  // Legacy {id}.json path.
-  const filePath = path.join(typeDir, `${id}.json`);
-  try {
-    return JSON.parse(await fsp.readFile(filePath, "utf-8"));
-  } catch {
-    return null;
-  }
+  return readRecordFromNDJson(typeDir, id);
 }
 
 async function readRecordFromNDJson(
@@ -175,75 +139,12 @@ function findKeyCI(record: Record<string, unknown>, wanted: string): string | un
 
 const FIELD_SAMPLE_SIZE = 20;
 
-async function listRecordsLegacy(
-  dir: string,
-  opts: ListOpts,
-): Promise<SnapshotRecordPage> {
-  const q = opts.q.trim().toLowerCase();
-  const titleField = opts.titleField ?? opts.display.title;
-  const start = (opts.page - 1) * opts.limit;
-
-  const files = (await fsp.readdir(dir))
-    .filter((f) => f.endsWith(".json") && !f.startsWith("_"))
-    .sort();
-  const ids = files.map((f) => f.replace(/\.json$/, ""));
-
-  // Derive fields from a sample.
-  const fieldSet = new Set<string>();
-  for (const id of ids.slice(0, FIELD_SAMPLE_SIZE)) {
-    try {
-      const rec = JSON.parse(
-        await fsp.readFile(path.join(dir, `${id}.json`), "utf-8"),
-      ) as Record<string, unknown>;
-      for (const k of Object.keys(rec)) fieldSet.add(k);
-    } catch { /* skip */ }
-  }
-  const fields = [...fieldSet].sort();
-
-  let candidateIds: string[];
-  if (!q) {
-    candidateIds = ids;
-  } else {
-    candidateIds = [];
-    for (const id of ids) {
-      try {
-        const raw = await fsp.readFile(path.join(dir, `${id}.json`), "utf-8");
-        if (raw.toLowerCase().includes(q)) candidateIds.push(id);
-      } catch { /* skip */ }
-    }
-  }
-
-  const total = candidateIds.length;
-  const pageIds = candidateIds.slice(start, start + opts.limit);
-  const records = await Promise.all(pageIds.map(async (id) => {
-    try {
-      const rec = JSON.parse(
-        await fsp.readFile(path.join(dir, `${id}.json`), "utf-8"),
-      ) as Record<string, unknown>;
-      const key = findKeyCI(rec, titleField);
-      const v = key ? rec[key] : undefined;
-      const title = (typeof v === "string" && v) || id;
-      return { id, title };
-    } catch {
-      return { id, title: id };
-    }
-  }));
-  return { total, page: opts.page, limit: opts.limit, fields, records };
-}
-
 export async function listRecords(
   envsRoot: string, env: string, type: string, opts: ListOpts,
 ): Promise<SnapshotRecordPage> {
   const dir = path.join(managedDataDir(envsRoot, env), type);
   if (!existsSync(dir)) {
     return { total: 0, page: opts.page, limit: opts.limit, records: [], fields: [] };
-  }
-
-  // Legacy per-{id}.json snapshots — predate the NDJSON+SQLite migration.
-  // Some environments still hold this format; readRecord already supports it
-  // via the same isNDJsonFormat check, so listRecords must too.
-  if (!isNDJsonFormat(dir)) {
-    return listRecordsLegacy(dir, opts);
   }
 
   const q = opts.q.trim().toLowerCase();

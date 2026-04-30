@@ -32,7 +32,7 @@ export async function GET(
   if (!fs.existsSync(dir)) return new Response("snapshot not found", { status: 404 });
 
   const ndjsonPath = path.join(dir, "data.ndjson");
-  const isNDJson = fs.existsSync(ndjsonPath);
+  if (!fs.existsSync(ndjsonPath)) return new Response("snapshot not pulled", { status: 404 });
 
   const matching: Record<string, unknown>[] = [];
   const scalarKeys = new Set<string>();
@@ -49,30 +49,17 @@ export async function GET(
     }
   }
 
-  if (isNDJson) {
-    const stream = fs.createReadStream(ndjsonPath, { encoding: "utf-8" });
-    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-    for await (const line of rl) {
-      if (!line) continue;
-      try {
-        const record = JSON.parse(line) as Record<string, unknown>;
-        maybeAdd(record, line);
-      } catch { /* skip malformed */ }
-    }
-    rl.close();
-    stream.destroy();
-  } else {
-    const files = fs.readdirSync(dir)
-      .filter((f) => f.endsWith(".json") && f !== "_manifest.json")
-      .sort();
-    for (const f of files) {
-      try {
-        const raw = fs.readFileSync(path.join(dir, f), "utf-8");
-        const record = JSON.parse(raw) as Record<string, unknown>;
-        maybeAdd(record, raw);
-      } catch { /* skip */ }
-    }
+  const fileStream = fs.createReadStream(ndjsonPath, { encoding: "utf-8" });
+  const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+  for await (const line of rl) {
+    if (!line) continue;
+    try {
+      const record = JSON.parse(line) as Record<string, unknown>;
+      maybeAdd(record, line);
+    } catch { /* skip malformed */ }
   }
+  rl.close();
+  fileStream.destroy();
 
   const filename = `${env}-${type}-${tsStamp()}.${format}`;
   const headers = {
