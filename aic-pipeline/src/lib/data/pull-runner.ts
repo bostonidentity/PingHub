@@ -4,7 +4,7 @@ import readline from "readline";
 import v8 from "v8";
 import type { DataPullJob } from "./types";
 import type { Registry } from "./job-registry";
-import { NDJSON_FILE, type Offsets } from "./ndjson-format";
+import { NDJSON_FILE } from "./ndjson-format";
 import { openIndexDb } from "./index-db";
 import { buildIndexFromNDJson } from "./index-builder";
 import type Database from "better-sqlite3";
@@ -106,30 +106,40 @@ async function renameWithRetry(src: string, dst: string, maxAttempts = 5): Promi
 }
 
 /**
- * Stream-read an NDJSON file and rebuild in-memory state from records up to
- * `expectedBytes`. Returns the offsets/index/refs accumulators that match
- * the bytes already on disk. Caller has already truncated the file to
- * `expectedBytes` so any half-written tail is gone.
+ * Stream-read an NDJSON file and rebuild only the in-memory state the resume
+ * path actually needs:
+ *   - `seenIds`  — to dedupe records already on disk against records returned
+ *                 by the next page (cookie-based pagination should not repeat,
+ *                 but defensively we still skip duplicates).
+ *   - `refsIndex` — accumulated across pages, serialized to `_refs.json` when
+ *                   the type completes.
+ *   - `fetched` / `byteLength` — totals so the runner picks up the right
+ *                                ndjson byte offset and progress count.
+ *
+ * Earlier versions also built a full `offsets` map and a list of
+ * `indexEntries` for every record on disk. Both were either unused by the
+ * caller (indexEntries) or used only to seed `seenIds` (offsets), so on a
+ * resume of a 10M-record type they wasted ~1.5 GB of heap before the resume
+ * even fetched its first new page. Removed.
+ *
+ * Caller has already truncated the file to the bytes it intends to keep.
  */
 async function rebuildFromNDJson(
   ndjsonPath: string,
-  pickIndexFieldsFn: typeof pickIndexFields,
   extractRefsFn: typeof extractRefs,
 ): Promise<{
-  offsets: Offsets;
-  indexEntries: { id: string; f: Record<string, string> }[];
+  seenIds: Set<string>;
   refsIndex: Record<string, string[]>;
   fetched: number;
   byteLength: number;
 }> {
-  const offsets: Offsets = {};
-  const indexEntries: { id: string; f: Record<string, string> }[] = [];
+  const seenIds = new Set<string>();
   const refsIndex: Record<string, string[]> = {};
   let fetched = 0;
   let byteLength = 0;
 
   if (!fs.existsSync(ndjsonPath)) {
-    return { offsets, indexEntries, refsIndex, fetched, byteLength };
+    return { seenIds, refsIndex, fetched, byteLength };
   }
 
   const stream = fs.createReadStream(ndjsonPath, { encoding: "utf-8" });
@@ -143,14 +153,13 @@ async function rebuildFromNDJson(
       : typeof item.id === "string"
         ? item.id as string
         : String(fetched + 1);
-    offsets[id] = byteLength;
-    indexEntries.push({ id, f: pickIndexFieldsFn(item) });
+    seenIds.add(id);
     const r = extractRefsFn(item);
     if (r.length > 0) refsIndex[id] = r;
     fetched++;
     byteLength += Buffer.byteLength(line, "utf-8") + 1; // +1 for the newline
   }
-  return { offsets, indexEntries, refsIndex, fetched, byteLength };
+  return { seenIds, refsIndex, fetched, byteLength };
 }
 
 export interface RunPullOpts {
@@ -304,10 +313,9 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
 
     if (isResuming) {
       fs.truncateSync(ndjsonPath, persistedProgress!.byteLength!);
-      const rebuilt = await rebuildFromNDJson(ndjsonPath, pickIndexFields, extractRefs);
+      const rebuilt = await rebuildFromNDJson(ndjsonPath, extractRefs);
       refsIndex = rebuilt.refsIndex;
-      seenIds = new Set<string>();
-      for (const id of Object.keys(rebuilt.offsets)) seenIds.add(id);
+      seenIds = rebuilt.seenIds;
       bytesWritten = rebuilt.byteLength;
       fetched = rebuilt.fetched;
       cookie = persistedProgress!.cookie ?? null;
