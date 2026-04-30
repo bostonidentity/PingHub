@@ -106,23 +106,6 @@ export async function GET(
       rl.close();
       stream.destroy();
       if (hitCap) break outer;
-      continue;
-    }
-
-    // Legacy {id}.json format.
-    for (const f of fs.readdirSync(typeDir)) {
-      if (!f.endsWith(".json") || f === "_manifest.json") continue;
-      try {
-        const raw = fs.readFileSync(path.join(typeDir, f), "utf-8");
-        const idx = findIndex(raw);
-        if (idx < 0) continue;
-        hits.push({
-          type: typeEntry.name,
-          id: f.replace(/\.json$/, ""),
-          preview: previewFrom(raw, idx),
-        });
-        if (hits.length >= limit) { truncated = true; break outer; }
-      } catch { /* skip unreadable */ }
     }
   }
 

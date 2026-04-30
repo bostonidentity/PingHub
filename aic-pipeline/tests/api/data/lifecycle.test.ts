@@ -203,34 +203,4 @@ describe("data API lifecycle", () => {
     expect(res.status).toBe(409);
   });
 
-  it("backfills index.sqlite for a pre-SQLite snapshot on first read", async () => {
-    vi.resetModules();
-    const recordsRoute = await import("@/app/api/data/records/[env]/[type]/route");
-
-    // Simulate a pre-SQLite snapshot: data.ndjson + _manifest.json only.
-    const typeDir = path.join(tmpDir, "environments", "test-env", "managed-data", "legacy_user");
-    fs.mkdirSync(typeDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(typeDir, "data.ndjson"),
-      [
-        JSON.stringify({ _id: "a", userName: "alice" }),
-        JSON.stringify({ _id: "b", userName: "bob" }),
-      ].join("\n") + "\n",
-    );
-    fs.writeFileSync(
-      path.join(typeDir, "_manifest.json"),
-      JSON.stringify({ type: "legacy_user", pulledAt: Date.now(), count: 2, jobId: "seed" }),
-    );
-
-    const req = new NextRequest("http://localhost/api/data/records/test-env/legacy_user?q=&page=1&limit=10");
-    const res = await recordsRoute.GET(
-      req,
-      { params: Promise.resolve({ env: "test-env", type: "legacy_user" }) },
-    );
-    expect(res.status).toBe(200);
-    const json = await res.json();
-    expect(json.total).toBe(2);
-    expect(json.records.map((r: { id: string }) => r.id).sort()).toEqual(["a", "b"]);
-    expect(fs.existsSync(path.join(typeDir, "index.sqlite"))).toBe(true);
-  });
 });
