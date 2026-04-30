@@ -1,21 +1,24 @@
 // src/app/data/browse/RecordDetailPane.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { JsonFileViewer } from "@/components/JsonFileViewer";
 import { cn } from "@/lib/utils";
 import type { RefsResponse } from "@/app/api/data/refs/[env]/[type]/[id]/route";
 import type { GlobalSearchResponse } from "@/app/api/data/search/[env]/route";
+import type { TitlesResponse } from "@/app/api/data/titles/[env]/route";
 
 // ── Component ────────────────────────────────────────────────────────────────
 
 export function RecordDetailPane({
-  env, type, id, onNavigate,
+  env, type, id, onNavigate, titlePrefs, setTitleFieldFor,
 }: {
   env: string;
   type: string | null;
   id: string | null;
   onNavigate?: (type: string, id: string) => void;
+  titlePrefs: Record<string, string>;
+  setTitleFieldFor: (env: string, type: string, field: string) => void;
 }) {
   const [record, setRecord] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(false);
@@ -40,12 +43,17 @@ export function RecordDetailPane({
   const [incoming, setIncoming] = useState<{ type: string; id: string }[]>([]);
   const [depsLoading, setDepsLoading] = useState(false);
   const [depsRequested, setDepsRequested] = useState(false);
+  const [titlesByRef, setTitlesByRef] = useState<Record<string, string | null>>({});
+  const [fieldsByType, setFieldsByType] = useState<Record<string, string[]>>({});
+  const titleReqIdRef = useRef(0);
 
   // Reset deps when the selected record changes
   useEffect(() => {
     setOutgoing([]);
     setIncoming([]);
     setDepsRequested(false);
+    setTitlesByRef({});
+    setFieldsByType({});
   }, [env, type, id]);
 
   // Fetch deps only when explicitly requested
@@ -79,6 +87,44 @@ export function RecordDetailPane({
       .finally(() => { if (!cancelled) setDepsLoading(false); });
     return () => { cancelled = true; };
   }, [depsRequested, env, type, id]);
+
+  const allRefs = useMemo(
+    () => [...outgoing, ...incoming],
+    [outgoing, incoming],
+  );
+
+  const attrsByType = useMemo(() => {
+    const types = new Set(allRefs.map((r) => r.type));
+    const out: Record<string, string> = {};
+    for (const t of types) {
+      const v = titlePrefs[`${env}::${t}`];
+      if (v) out[t] = v;
+    }
+    return out;
+  }, [allRefs, titlePrefs, env]);
+
+  useEffect(() => {
+    if (allRefs.length === 0) {
+      setTitlesByRef({});
+      setFieldsByType({});
+      return;
+    }
+    const reqId = ++titleReqIdRef.current;
+    let cancelled = false;
+    fetch(`/api/data/titles/${env}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refs: allRefs, attrs: attrsByType }),
+    })
+      .then((r) => r.ok ? r.json() as Promise<TitlesResponse> : null)
+      .then((data) => {
+        if (cancelled || reqId !== titleReqIdRef.current || !data) return;
+        setTitlesByRef(data.titles);
+        setFieldsByType(data.fieldsByType);
+      })
+      .catch(() => { /* keep prior labels on transient failure */ });
+    return () => { cancelled = true; };
+  }, [env, allRefs, attrsByType]);
 
   // Group outgoing by type for display
   const outgoingByType = useMemo(() => {
@@ -149,24 +195,49 @@ export function RecordDetailPane({
                   <div className="text-slate-500 font-semibold mb-0.5">
                     References <span className="font-normal text-slate-400">({outgoing.length})</span>
                   </div>
-                  {[...outgoingByType.entries()].map(([refType, refs]) => (
-                    <div key={refType} className="ml-2 mb-1">
-                      <span className="text-slate-400">{refType}</span>
-                      <div className="ml-2 flex flex-wrap gap-x-2 gap-y-0.5">
-                        {refs.map((r) => (
-                          <button
-                            key={`${r.type}:${r.id}`}
-                            type="button"
-                            onClick={() => onNavigate?.(r.type, r.id)}
-                            title={`${r.type}/${r.id}`}
-                            className="font-mono text-sky-600 hover:underline hover:text-sky-800 truncate max-w-[240px]"
-                          >
-                            {r.id}
-                          </button>
-                        ))}
+                  {[...outgoingByType.entries()].map(([refType, refs]) => {
+                    const fields = fieldsByType[refType] ?? [];
+                    const chosen = titlePrefs[`${env}::${refType}`] ?? "";
+                    return (
+                      <div key={refType} className="ml-2 mb-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-400">{refType}</span>
+                          {fields.length > 0 && (
+                            <label className="flex items-center gap-1 text-[10px] text-slate-500">
+                              <span>Display:</span>
+                              <select
+                                value={chosen}
+                                onChange={(e) => setTitleFieldFor(env, refType, e.target.value)}
+                                className="text-[11px] rounded border border-slate-300 bg-white px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-sky-400"
+                                title="Attribute used as the dependency label"
+                              >
+                                <option value="">default</option>
+                                {fields.map((f) => (
+                                  <option key={f} value={f}>{f}</option>
+                                ))}
+                              </select>
+                            </label>
+                          )}
+                        </div>
+                        <div className="ml-2 flex flex-wrap gap-x-2 gap-y-0.5">
+                          {refs.map((r) => {
+                            const label = titlesByRef[`${r.type}/${r.id}`] ?? r.id;
+                            return (
+                              <button
+                                key={`${r.type}:${r.id}`}
+                                type="button"
+                                onClick={() => onNavigate?.(r.type, r.id)}
+                                title={`${r.type}/${r.id}`}
+                                className="font-mono text-sky-600 hover:underline hover:text-sky-800 truncate max-w-[240px]"
+                              >
+                                {label}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 
@@ -176,24 +247,49 @@ export function RecordDetailPane({
                   <div className="text-slate-500 font-semibold mb-0.5">
                     Referenced by <span className="font-normal text-slate-400">({incoming.length})</span>
                   </div>
-                  {[...incomingByType.entries()].map(([refType, refs]) => (
-                    <div key={refType} className="ml-2 mb-1">
-                      <span className="text-slate-400">{refType}</span>
-                      <div className="ml-2 flex flex-wrap gap-x-2 gap-y-0.5">
-                        {refs.map((r) => (
-                          <button
-                            key={`${r.type}:${r.id}`}
-                            type="button"
-                            onClick={() => onNavigate?.(r.type, r.id)}
-                            title={`${r.type}/${r.id} → this record`}
-                            className="font-mono text-sky-600 hover:underline hover:text-sky-800 truncate max-w-[240px]"
-                          >
-                            {r.id}
-                          </button>
-                        ))}
+                  {[...incomingByType.entries()].map(([refType, refs]) => {
+                    const fields = fieldsByType[refType] ?? [];
+                    const chosen = titlePrefs[`${env}::${refType}`] ?? "";
+                    return (
+                      <div key={refType} className="ml-2 mb-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-400">{refType}</span>
+                          {fields.length > 0 && (
+                            <label className="flex items-center gap-1 text-[10px] text-slate-500">
+                              <span>Display:</span>
+                              <select
+                                value={chosen}
+                                onChange={(e) => setTitleFieldFor(env, refType, e.target.value)}
+                                className="text-[11px] rounded border border-slate-300 bg-white px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-sky-400"
+                                title="Attribute used as the dependency label"
+                              >
+                                <option value="">default</option>
+                                {fields.map((f) => (
+                                  <option key={f} value={f}>{f}</option>
+                                ))}
+                              </select>
+                            </label>
+                          )}
+                        </div>
+                        <div className="ml-2 flex flex-wrap gap-x-2 gap-y-0.5">
+                          {refs.map((r) => {
+                            const label = titlesByRef[`${r.type}/${r.id}`] ?? r.id;
+                            return (
+                              <button
+                                key={`${r.type}:${r.id}`}
+                                type="button"
+                                onClick={() => onNavigate?.(r.type, r.id)}
+                                title={`${r.type}/${r.id} → this record`}
+                                className="font-mono text-sky-600 hover:underline hover:text-sky-800 truncate max-w-[240px]"
+                              >
+                                {label}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
