@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import Database from "better-sqlite3";
 import { runPull } from "./pull-runner";
 import { createRegistry } from "./job-registry";
 
@@ -65,9 +66,9 @@ describe("runPull: happy path", () => {
     });
 
     const typeDir = path.join(tmpDir, "uat", "managed-data", "alpha_user");
-    expect(fs.readdirSync(typeDir).sort()).toEqual([
-      "_index.json", "_manifest.json", "_offsets.json", "_refs.json", "data.ndjson",
-    ]);
+    expect(fs.existsSync(path.join(typeDir, "index.sqlite"))).toBe(true);
+    // _offsets.json is no longer written; offsets live in index.sqlite.
+    expect(fs.existsSync(path.join(typeDir, "_offsets.json"))).toBe(false);
 
     const ndjson = fs.readFileSync(path.join(typeDir, "data.ndjson"), "utf-8");
     const lines = ndjson.split("\n").filter((l) => l.length > 0);
@@ -77,12 +78,16 @@ describe("runPull: happy path", () => {
       { _id: "u3", userName: "c" },
     ]);
 
-    const offsets = JSON.parse(fs.readFileSync(path.join(typeDir, "_offsets.json"), "utf-8"));
-    expect(Object.keys(offsets).sort()).toEqual(["u1", "u2", "u3"]);
-    // Sanity-check one offset by seeking and reading the line.
+    // Verify SQLite index has the correct rows and offsets.
+    const db = new Database(path.join(typeDir, "index.sqlite"), { readonly: true });
+    const rows = db.prepare("SELECT id, offset, fields_json FROM records ORDER BY ord").all() as { id: string; offset: number; fields_json: string }[];
+    db.close();
+    expect(rows.map((r) => r.id)).toEqual(["u1", "u2", "u3"]);
+    // Sanity-check u2's offset by seeking and reading the line.
+    const u2Row = rows.find((r) => r.id === "u2")!;
     const fd = fs.openSync(path.join(typeDir, "data.ndjson"), "r");
     const buf = Buffer.alloc(64);
-    fs.readSync(fd, buf, 0, 64, offsets.u2);
+    fs.readSync(fd, buf, 0, 64, u2Row.offset);
     fs.closeSync(fd);
     const u2Line = buf.toString("utf-8").split("\n")[0];
     expect(JSON.parse(u2Line)).toEqual({ _id: "u2", userName: "b" });
@@ -396,8 +401,10 @@ describe("runPull: resume from cookie", () => {
       .split("\n").filter(Boolean).map((l) => JSON.parse(l));
     expect(lines.map((r) => r._id)).toEqual(["u1", "u2", "u3", "u4", "u5", "u6"]);
 
-    const offsets = JSON.parse(fs.readFileSync(path.join(typeDir, "_offsets.json"), "utf-8"));
-    expect(Object.keys(offsets).sort()).toEqual(["u1", "u2", "u3", "u4", "u5", "u6"]);
+    const db = new Database(path.join(typeDir, "index.sqlite"), { readonly: true });
+    const ids = (db.prepare("SELECT id FROM records ORDER BY id").all() as { id: string }[]).map((r) => r.id);
+    db.close();
+    expect(ids).toEqual(["u1", "u2", "u3", "u4", "u5", "u6"]);
 
     expect(registry.getJob(job.id)?.status).toBe("completed");
   });
