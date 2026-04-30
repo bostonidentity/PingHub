@@ -33,7 +33,7 @@ function DepGroup({
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
           title={expanded ? "Collapse" : "Expand"}
-          className="flex items-center gap-1 text-slate-400 hover:text-slate-600 transition-colors"
+          className="flex items-center gap-1 rounded text-slate-400 hover:text-slate-600 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-400"
         >
           <svg
             className={cn("w-3 h-3 transition-transform", expanded && "rotate-90")}
