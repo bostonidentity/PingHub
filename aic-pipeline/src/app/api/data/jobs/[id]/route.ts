@@ -25,6 +25,12 @@ export async function DELETE(
   if (job.status === "completed" || job.status === "failed" || job.status === "aborted") {
     return new NextResponse(null, { status: 204 });
   }
+  if (job.status === "interrupted") {
+    // Interrupted jobs have no live runner; transition directly to aborted
+    // so the env's "active job" slot is freed for a fresh Start.
+    registry.setJobStatus(id, "aborted");
+    return new NextResponse(null, { status: 204 });
+  }
   registry.setJobStatus(id, "aborting");
   getController(id)?.abort();
   return new NextResponse(null, { status: 204 });

@@ -8,15 +8,12 @@ import { parseEnvFile } from "@/lib/env-parser";
 import { getAccessToken } from "@/lib/iga-api";
 import { getRegistry, JobConflictError } from "@/lib/data/job-registry";
 import { runPull } from "@/lib/data/pull-runner";
+import { getEnvironments } from "@/lib/fr-config";
+
+import { getController, setController, deleteController } from "./route-controllers";
+export { getController };
 
 export const dynamic = "force-dynamic";
-
-// One AbortController per in-flight job, keyed by job id. Scoped to this
-// module so the DELETE route can look it up.
-const controllers = new Map<string, AbortController>();
-export function getController(id: string): AbortController | undefined {
-  return controllers.get(id);
-}
 
 function envVarsFor(env: string): Record<string, string> | null {
   const envFile = path.join(ENVIRONMENTS_DIR, env, ".env");
@@ -34,6 +31,15 @@ export async function POST(req: NextRequest) {
 
   const envVars = envVarsFor(env);
   if (!envVars) return NextResponse.json({ error: "env not found" }, { status: 404 });
+
+  const envMeta = getEnvironments().find((e) => e.name === env);
+  const envPageSize = typeof envMeta?.pageSize === "number" && envMeta.pageSize > 0
+    ? envMeta.pageSize
+    : undefined;
+  const globalPageSize = process.env.DATA_PULL_PAGE_SIZE
+    ? parseInt(process.env.DATA_PULL_PAGE_SIZE, 10) || undefined
+    : undefined;
+  const pageSize = envPageSize ?? globalPageSize;
 
   const registry = getRegistry();
   let job;
@@ -56,7 +62,7 @@ export async function POST(req: NextRequest) {
   }
 
   const ctl = new AbortController();
-  controllers.set(job.id, ctl);
+  setController(job.id, ctl);
 
   void runPull({
     job,
@@ -65,7 +71,8 @@ export async function POST(req: NextRequest) {
     envVars,
     mintToken: (vars) => getAccessToken(vars),
     signal: ctl.signal,
-  }).finally(() => controllers.delete(job.id));
+    pageSize,
+  }).finally(() => deleteController(job.id));
 
   return NextResponse.json({ jobId: job.id }, { status: 202 });
 }

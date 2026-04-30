@@ -831,6 +831,7 @@ export interface EnvSaveState {
 export interface EnvMeta {
   label: string;
   color: Environment["color"];
+  pageSize?: number;
 }
 
 export interface EnvEditorProps {
@@ -854,6 +855,7 @@ export const EnvEditor = forwardRef<EnvEditorHandle, EnvEditorProps>(function En
   const [color, setColor] = useState<Environment["color"]>(env.color);
   const [envType, setEnvType] = useState<EnvironmentType>(env.type ?? "sandbox");
   const [devEnvironment, setDevEnvironment] = useState(env.devEnvironment ?? false);
+  const [pageSize, setPageSize] = useState<number | "">(env.pageSize ?? "");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -874,6 +876,7 @@ export const EnvEditor = forwardRef<EnvEditorHandle, EnvEditorProps>(function En
     setColor(env.color);
     setEnvType(env.type ?? "sandbox");
     setDevEnvironment(env.devEnvironment ?? false);
+    setPageSize(env.pageSize ?? "");
     fetch(`/api/environments/${env.name}`)
       .then((r) => r.json())
       .then((data) => {
@@ -915,6 +918,7 @@ export const EnvEditor = forwardRef<EnvEditorHandle, EnvEditorProps>(function En
       type: envType,
       devEnvironment: envType === "controlled" ? devEnvironment : undefined,
       envContent: currentRaw,
+      pageSize: pageSize === "" ? null : pageSize,
     };
     if (logApiKey || logApiSecret) {
       body.logApi = { apiKey: logApiKey, apiSecret: logApiSecret };
@@ -933,7 +937,7 @@ export const EnvEditor = forwardRef<EnvEditorHandle, EnvEditorProps>(function En
       setError("Save failed.");
     }
     setSaving(false);
-  }, [label, color, envType, devEnvironment, currentRaw, logApiKey, logApiSecret, env.name, onUpdate]);
+  }, [label, color, envType, devEnvironment, currentRaw, logApiKey, logApiSecret, pageSize, env.name, onUpdate]);
 
   useImperativeHandle(ref, () => ({ save: handleSave }), [handleSave]);
 
@@ -943,8 +947,8 @@ export const EnvEditor = forwardRef<EnvEditorHandle, EnvEditorProps>(function En
   }, [saving, saved, loading, error, onSaveStateChange]);
 
   useEffect(() => {
-    onMetaChange?.({ label, color });
-  }, [label, color, onMetaChange]);
+    onMetaChange?.({ label, color, pageSize: pageSize === "" ? undefined : pageSize });
+  }, [label, color, pageSize, onMetaChange]);
 
   const missing = getMissingRequired(values);
 
@@ -982,6 +986,21 @@ export const EnvEditor = forwardRef<EnvEditorHandle, EnvEditorProps>(function En
                 <option value="red">Red (Production)</option>
                 <option value="gray">Gray</option>
               </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-slate-600">Pull page size</label>
+              <input
+                type="number"
+                min={1}
+                max={100000}
+                value={pageSize}
+                placeholder="50000"
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setPageSize(v === "" ? "" : parseInt(v, 10) || "");
+                }}
+                className="block rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 w-24"
+              />
             </div>
             <div className="space-y-1">
               <label className="text-xs font-medium text-slate-600">Type</label>

@@ -80,7 +80,7 @@ export function PullPanel({
   const [probeProgress, setProbeProgress] = useState<Record<string, { fetched: number; pages: number }>>({});
   const [prePullChecking, setPrePullChecking] = useState(false);
 
-  const { jobs, start, abort } = useDataPullJobs({ pollMs: 2000, includeFinished: true });
+  const { jobs, start, abort, resume } = useDataPullJobs({ pollMs: 2000, includeFinished: true });
   const types = useMemo(() => typesByEnv[env] ?? [], [typesByEnv, env]);
   const visibleTypes = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -356,12 +356,25 @@ export function PullPanel({
                       : "probing…"}
                   </span>
                 ) : has ? (
-                  <span
-                    className={c === null ? "text-[10px] text-slate-400 italic cursor-help" : "text-[10px] text-slate-500 font-mono tabular-nums"}
-                    title={c === null ? (countReasons[t] ?? "Tenant declined to report a count") : `${c} records`}
-                  >
-                    {c === null ? "unknown" : c.toLocaleString()}
-                  </span>
+                  (() => {
+                    const reason = countReasons[t];
+                    const isSnapshotSourced = c !== null && !!reason;
+                    const className = c === null
+                      ? "text-[10px] text-slate-400 italic cursor-help"
+                      : isSnapshotSourced
+                        ? "text-[10px] text-slate-500 italic font-mono tabular-nums cursor-help"
+                        : "text-[10px] text-slate-500 font-mono tabular-nums";
+                    const title = c === null
+                      ? (reason ?? "Tenant declined to report a count")
+                      : isSnapshotSourced
+                        ? `${c.toLocaleString()} records — ${reason}`
+                        : `${c.toLocaleString()} records`;
+                    return (
+                      <span className={className} title={title}>
+                        {c === null ? "unknown" : isSnapshotSourced ? `${c.toLocaleString()}*` : c.toLocaleString()}
+                      </span>
+                    );
+                  })()
                 ) : null}
               </label>
             );
@@ -400,6 +413,7 @@ export function PullPanel({
               job={j}
               probedCounts={probedForJob}
               onAbort={() => abort(j.id)}
+              onResume={() => resume(j.id)}
             />
           );
         })}

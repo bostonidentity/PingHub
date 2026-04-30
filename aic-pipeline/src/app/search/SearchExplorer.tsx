@@ -12,19 +12,19 @@ import { useWorkingEnv } from "@/hooks/useWorkingEnv";
 const DEFAULT_GLOB = "**/*.{js,groovy,json}";
 
 const GLOB_PRESETS: { label: string; value: string }[] = [
-  { label: "All",                 value: "" },
-  { label: "JS",                  value: "**/*.js" },
-  { label: "Groovy",              value: "**/*.groovy" },
-  { label: "JSON",                value: "**/*.json" },
+  { label: "All", value: "" },
+  { label: "JS", value: "**/*.js" },
+  { label: "Groovy", value: "**/*.groovy" },
+  { label: "JSON", value: "**/*.json" },
   { label: "Scripts (JS+Groovy)", value: "**/*.{js,groovy}" },
-  { label: "Endpoints",           value: "endpoints/**" },
-  { label: "Realm scripts",       value: "realms/**/scripts/**" },
-  { label: "Journeys",            value: "realms/**/journeys/**" },
-  { label: "Custom nodes",        value: "custom-nodes/**" },
-  { label: "Email templates",     value: "email-templates/**" },
-  { label: "IGA workflows",       value: "iga/workflows/**" },
+  { label: "Endpoints", value: "endpoints/**" },
+  { label: "Realm scripts", value: "realms/**/scripts/**" },
+  { label: "Journeys", value: "realms/**/journeys/**" },
+  { label: "Custom nodes", value: "custom-nodes/**" },
+  { label: "Email templates", value: "email-templates/**" },
+  { label: "IGA workflows", value: "iga/workflows/**" },
   { label: "IGA workflow scripts", value: "iga/workflows/**/*.js" },
-  { label: "IGA (all)",           value: "iga/**" },
+  { label: "IGA (all)", value: "iga/**" },
 ];
 
 interface Props {
@@ -151,7 +151,7 @@ export function SearchExplorer({ environments }: Props) {
   useEffect(() => {
     if (!hydrated) return;
     if (workingEnv && workingEnv !== env && !hadPersistedEnvRef.current) setEnv(workingEnv);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, workingEnv]);
 
   // Persist whenever any non-ephemeral state changes — but not until after
@@ -538,7 +538,7 @@ export function SearchExplorer({ environments }: Props) {
                   </span>
                   <span className="text-[10px] text-slate-400 shrink-0">line {selected.line}</span>
                   <a
-                    href={`/configs?env=${encodeURIComponent(env)}&file=${encodeURIComponent(selected.path)}&line=${selected.line}`}
+                    href={`/configs?env=${encodeURIComponent(env)}&file=${encodeURIComponent(selected.path)}&line=${selected.line}${query.trim() ? `&q=${encodeURIComponent(query.trim())}` : ""}`}
                     target="_blank"
                     rel="noopener"
                     className="text-[11px] text-sky-600 hover:text-sky-800 hover:underline shrink-0"

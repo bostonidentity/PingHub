@@ -100,11 +100,17 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
     [types],
   );
 
+  function setTitleFieldFor(envName: string, type: string, field: string) {
+    setTitlePrefs((prev) => {
+      const next = { ...prev, [prefKey(envName, type)]: field };
+      saveTitlePrefs(next);
+      return next;
+    });
+  }
+
   function setTitleFieldForCurrent(field: string) {
     if (!selectedType) return;
-    const next = { ...titlePrefs, [prefKey(env, selectedType)]: field };
-    setTitlePrefs(next);
-    saveTitlePrefs(next);
+    setTitleFieldFor(env, selectedType, field);
   }
 
   // ── Global search (across all types) ─────────────────────────────────────
@@ -419,7 +425,14 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
             </div>
 
             <div className="flex-1 min-w-0">
-              <RecordDetailPane env={env} type={selectedType} id={selectedId} onNavigate={jumpTo} />
+              <RecordDetailPane
+                env={env}
+                type={selectedType}
+                id={selectedId}
+                onNavigate={jumpTo}
+                titlePrefs={titlePrefs}
+                setTitleFieldFor={setTitleFieldFor}
+              />
             </div>
           </div>
         </>
