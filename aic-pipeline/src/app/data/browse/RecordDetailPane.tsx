@@ -8,6 +8,64 @@ import type { RefsResponse } from "@/app/api/data/refs/[env]/[type]/[id]/route";
 import type { GlobalSearchResponse } from "@/app/api/data/search/[env]/route";
 import type { TitlesResponse } from "@/app/api/data/titles/[env]/route";
 
+// ── DepGroup helper ──────────────────────────────────────────────────────────
+
+function DepGroup({
+  refType, refs, fields, chosen, env,
+  titlesByRef, onNavigate, onChooseField, titleSuffix = "",
+}: {
+  refType: string;
+  refs: { type: string; id: string }[];
+  fields: string[];
+  chosen: string;
+  env: string;
+  titlesByRef: Record<string, string | null>;
+  onNavigate?: (type: string, id: string) => void;
+  onChooseField: (env: string, type: string, field: string) => void;
+  titleSuffix?: string;
+}) {
+  return (
+    <div className="ml-2 mb-1">
+      <div className="flex items-center gap-2">
+        <span className="text-slate-400">{refType}</span>
+        {fields.length > 0 && (
+          <label className="flex items-center gap-1 text-[10px] text-slate-500">
+            <span>Display:</span>
+            <select
+              value={chosen}
+              onChange={(e) => onChooseField(env, refType, e.target.value)}
+              className="text-[11px] rounded border border-slate-300 bg-white px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-sky-400"
+              title="Attribute used as the dependency label"
+              aria-label={`Display attribute for ${refType}`}
+            >
+              <option value="">default</option>
+              {fields.map((f) => (
+                <option key={f} value={f}>{f}</option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
+      <div className="ml-2 flex flex-wrap gap-x-2 gap-y-0.5">
+        {refs.map((r) => {
+          const label = titlesByRef[`${r.type}/${r.id}`] ?? r.id;
+          return (
+            <button
+              key={`${r.type}:${r.id}`}
+              type="button"
+              onClick={() => onNavigate?.(r.type, r.id)}
+              title={`${r.type}/${r.id}${titleSuffix}`}
+              className="font-mono text-sky-600 hover:underline hover:text-sky-800 truncate max-w-[240px]"
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export function RecordDetailPane({
@@ -49,6 +107,7 @@ export function RecordDetailPane({
 
   // Reset deps when the selected record changes
   useEffect(() => {
+    titleReqIdRef.current++;
     setOutgoing([]);
     setIncoming([]);
     setDepsRequested(false);
@@ -103,8 +162,14 @@ export function RecordDetailPane({
     return out;
   }, [allRefs, titlePrefs, env]);
 
+  const attrsByTypeKey = useMemo(
+    () => Object.entries(attrsByType).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}=${v}`).join("|"),
+    [attrsByType],
+  );
+
   useEffect(() => {
     if (allRefs.length === 0) {
+      titleReqIdRef.current++;
       setTitlesByRef({});
       setFieldsByType({});
       return;
@@ -124,7 +189,7 @@ export function RecordDetailPane({
       })
       .catch(() => { /* keep prior labels on transient failure */ });
     return () => { cancelled = true; };
-  }, [env, allRefs, attrsByType]);
+  }, [env, allRefs, attrsByTypeKey]);
 
   // Group outgoing by type for display
   const outgoingByType = useMemo(() => {
@@ -195,49 +260,19 @@ export function RecordDetailPane({
                   <div className="text-slate-500 font-semibold mb-0.5">
                     References <span className="font-normal text-slate-400">({outgoing.length})</span>
                   </div>
-                  {[...outgoingByType.entries()].map(([refType, refs]) => {
-                    const fields = fieldsByType[refType] ?? [];
-                    const chosen = titlePrefs[`${env}::${refType}`] ?? "";
-                    return (
-                      <div key={refType} className="ml-2 mb-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-slate-400">{refType}</span>
-                          {fields.length > 0 && (
-                            <label className="flex items-center gap-1 text-[10px] text-slate-500">
-                              <span>Display:</span>
-                              <select
-                                value={chosen}
-                                onChange={(e) => setTitleFieldFor(env, refType, e.target.value)}
-                                className="text-[11px] rounded border border-slate-300 bg-white px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-sky-400"
-                                title="Attribute used as the dependency label"
-                              >
-                                <option value="">default</option>
-                                {fields.map((f) => (
-                                  <option key={f} value={f}>{f}</option>
-                                ))}
-                              </select>
-                            </label>
-                          )}
-                        </div>
-                        <div className="ml-2 flex flex-wrap gap-x-2 gap-y-0.5">
-                          {refs.map((r) => {
-                            const label = titlesByRef[`${r.type}/${r.id}`] ?? r.id;
-                            return (
-                              <button
-                                key={`${r.type}:${r.id}`}
-                                type="button"
-                                onClick={() => onNavigate?.(r.type, r.id)}
-                                title={`${r.type}/${r.id}`}
-                                className="font-mono text-sky-600 hover:underline hover:text-sky-800 truncate max-w-[240px]"
-                              >
-                                {label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })}
+                  {[...outgoingByType.entries()].map(([refType, refs]) => (
+                    <DepGroup
+                      key={refType}
+                      refType={refType}
+                      refs={refs}
+                      fields={fieldsByType[refType] ?? []}
+                      chosen={titlePrefs[`${env}::${refType}`] ?? ""}
+                      env={env}
+                      titlesByRef={titlesByRef}
+                      onNavigate={onNavigate}
+                      onChooseField={setTitleFieldFor}
+                    />
+                  ))}
                 </div>
               )}
 
@@ -247,49 +282,20 @@ export function RecordDetailPane({
                   <div className="text-slate-500 font-semibold mb-0.5">
                     Referenced by <span className="font-normal text-slate-400">({incoming.length})</span>
                   </div>
-                  {[...incomingByType.entries()].map(([refType, refs]) => {
-                    const fields = fieldsByType[refType] ?? [];
-                    const chosen = titlePrefs[`${env}::${refType}`] ?? "";
-                    return (
-                      <div key={refType} className="ml-2 mb-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-slate-400">{refType}</span>
-                          {fields.length > 0 && (
-                            <label className="flex items-center gap-1 text-[10px] text-slate-500">
-                              <span>Display:</span>
-                              <select
-                                value={chosen}
-                                onChange={(e) => setTitleFieldFor(env, refType, e.target.value)}
-                                className="text-[11px] rounded border border-slate-300 bg-white px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-sky-400"
-                                title="Attribute used as the dependency label"
-                              >
-                                <option value="">default</option>
-                                {fields.map((f) => (
-                                  <option key={f} value={f}>{f}</option>
-                                ))}
-                              </select>
-                            </label>
-                          )}
-                        </div>
-                        <div className="ml-2 flex flex-wrap gap-x-2 gap-y-0.5">
-                          {refs.map((r) => {
-                            const label = titlesByRef[`${r.type}/${r.id}`] ?? r.id;
-                            return (
-                              <button
-                                key={`${r.type}:${r.id}`}
-                                type="button"
-                                onClick={() => onNavigate?.(r.type, r.id)}
-                                title={`${r.type}/${r.id} → this record`}
-                                className="font-mono text-sky-600 hover:underline hover:text-sky-800 truncate max-w-[240px]"
-                              >
-                                {label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })}
+                  {[...incomingByType.entries()].map(([refType, refs]) => (
+                    <DepGroup
+                      key={refType}
+                      refType={refType}
+                      refs={refs}
+                      fields={fieldsByType[refType] ?? []}
+                      chosen={titlePrefs[`${env}::${refType}`] ?? ""}
+                      env={env}
+                      titlesByRef={titlesByRef}
+                      onNavigate={onNavigate}
+                      onChooseField={setTitleFieldFor}
+                      titleSuffix=" → this record"
+                    />
+                  ))}
                 </div>
               )}
             </div>
