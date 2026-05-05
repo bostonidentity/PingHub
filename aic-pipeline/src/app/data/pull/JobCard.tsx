@@ -5,13 +5,15 @@ import type { DataPullJob } from "@/lib/data/types";
 import { cn } from "@/lib/utils";
 
 const STATUS_STYLE: Record<DataPullJob["status"], string> = {
-  queued:      "bg-slate-100 text-slate-600",
-  running:     "bg-sky-100 text-sky-700",
-  aborting:    "bg-amber-100 text-amber-700",
-  completed:   "bg-emerald-100 text-emerald-700",
-  failed:      "bg-rose-100 text-rose-700",
-  aborted:     "bg-slate-100 text-slate-500",
+  queued: "bg-slate-100 text-slate-600",
+  running: "bg-sky-100 text-sky-700",
+  aborting: "bg-amber-100 text-amber-700",
+  completed: "bg-emerald-100 text-emerald-700",
+  failed: "bg-rose-100 text-rose-700",
+  aborted: "bg-slate-100 text-slate-500",
   interrupted: "bg-amber-100 text-amber-800",
+  suspending: "bg-indigo-100 text-indigo-700",
+  suspended: "bg-indigo-100 text-indigo-800",
 };
 
 const MIN_ELAPSED_FOR_ETA_MS = 10_000;
@@ -52,14 +54,18 @@ export function JobCard({
   probedCounts = {},
   onAbort,
   onResume,
+  onSuspend,
 }: {
   job: DataPullJob;
   probedCounts?: Record<string, number | null>;
   onAbort: () => void;
   onResume?: () => void;
+  onSuspend?: () => void;
 }) {
-  const canAbort = job.status === "running" || job.status === "queued";
-  const isRunning = job.status === "running" || job.status === "queued" || job.status === "aborting";
+  const canAbort = job.status === "running" || job.status === "queued" || job.status === "interrupted" || job.status === "suspended";
+  const canSuspend = job.status === "running" || job.status === "queued";
+  const canResume = job.status === "interrupted" || job.status === "suspended";
+  const isRunning = job.status === "running" || job.status === "queued" || job.status === "aborting" || job.status === "suspending";
   const elapsedMs = Date.now() - job.startedAt;
 
   // Aggregate progress across types for the header ETA. We only display an ETA
@@ -103,22 +109,42 @@ export function JobCard({
             · ~{formatDuration(etaMs)} remaining
           </span>
         )}
-        {canAbort && (
-          <button
-            type="button"
-            onClick={onAbort}
-            className="ml-auto px-2 py-0.5 text-xs border border-slate-300 rounded bg-white text-slate-700 hover:bg-slate-50"
-          >Abort</button>
-        )}
-        {job.status === "interrupted" && onResume && (
-          <button
-            type="button"
-            onClick={onResume}
-            className="ml-auto px-2 py-0.5 text-xs border border-amber-400 rounded bg-amber-50 text-amber-800 hover:bg-amber-100"
-          >Resume</button>
-        )}
-        {job.fatalError && <span className="ml-auto text-xs text-rose-600">{job.fatalError}</span>}
+        <div className="ml-auto flex items-center gap-2">
+          {canSuspend && onSuspend && (
+            <button
+              type="button"
+              onClick={onSuspend}
+              title="Pause this pull. You can resume it later (even after a server restart) and it will continue from where it left off."
+              className="px-2 py-0.5 text-xs border border-indigo-400 rounded bg-indigo-50 text-indigo-800 hover:bg-indigo-100"
+            >Suspend</button>
+          )}
+          {canResume && onResume && (
+            <button
+              type="button"
+              onClick={onResume}
+              className="px-2 py-0.5 text-xs border border-amber-400 rounded bg-amber-50 text-amber-800 hover:bg-amber-100"
+            >Resume</button>
+          )}
+          {canAbort && (
+            <button
+              type="button"
+              onClick={onAbort}
+              title={canResume ? "Discard this paused pull and free the env so a fresh pull can start." : undefined}
+              className="px-2 py-0.5 text-xs border border-slate-300 rounded bg-white text-slate-700 hover:bg-slate-50"
+            >Abort</button>
+          )}
+        </div>
       </div>
+      {job.fatalError && (
+        <div className={cn(
+          "px-2 py-1.5 border text-xs rounded font-mono break-all",
+          job.status === "suspended" || job.status === "suspending"
+            ? "bg-indigo-50 border-indigo-200 text-indigo-800"
+            : "bg-rose-50 border-rose-200 text-rose-700",
+        )}>
+          {job.fatalError}
+        </div>
+      )}
       <div className="space-y-1">
         {job.progress.map((p) => {
           const expected = expectedFor(p.total, probedCounts[p.type]);
@@ -127,23 +153,33 @@ export function JobCard({
             : null;
           const denomFromProbe = (p.total === null || p.total === undefined) && expected !== null;
           return (
-            <div key={p.type} className="flex items-center gap-2 text-xs">
-              <span className="font-mono text-slate-700 w-40 truncate">{p.type}</span>
-              <div className="flex-1 h-1.5 bg-slate-100 rounded overflow-hidden">
-                {pct !== null && (
-                  <div className="h-full bg-sky-500" style={{ width: `${pct}%` }} />
-                )}
+            <div key={p.type} className="space-y-0.5">
+              <div className="flex items-center gap-2 text-xs">
+                <span className="font-mono text-slate-700 w-40 truncate" title={p.type}>{p.type}</span>
+                <div className="flex-1 h-1.5 bg-slate-100 rounded overflow-hidden">
+                  {pct !== null && (
+                    <div
+                      className={cn("h-full", p.status === "failed" ? "bg-rose-400" : "bg-sky-500")}
+                      style={{ width: `${pct}%` }}
+                    />
+                  )}
+                </div>
+                <span
+                  className="text-slate-500 tabular-nums w-28 text-right"
+                  title={denomFromProbe ? "Denominator from the Probe counts value" : undefined}
+                >
+                  {p.fetched.toLocaleString()}
+                  {expected !== null ? ` / ${expected.toLocaleString()}${denomFromProbe ? "*" : ""}` : ""}
+                </span>
+                <span className={cn("text-[10px] w-16", p.status === "failed" ? "text-rose-600 font-semibold" : "text-slate-400")}>
+                  {p.status}
+                </span>
               </div>
-              <span
-                className="text-slate-500 tabular-nums w-28 text-right"
-                title={denomFromProbe ? "Denominator from the Probe counts value" : undefined}
-              >
-                {p.fetched.toLocaleString()}
-                {expected !== null ? ` / ${expected.toLocaleString()}${denomFromProbe ? "*" : ""}` : ""}
-              </span>
-              <span className={cn("text-[10px] w-16", p.status === "failed" ? "text-rose-600" : "text-slate-400")}>
-                {p.status}
-              </span>
+              {p.status === "failed" && p.error && (
+                <div className="ml-40 pl-2 text-[11px] text-rose-700 bg-rose-50 border-l-2 border-rose-300 px-2 py-1 rounded-r font-mono break-all">
+                  {p.error}
+                </div>
+              )}
             </div>
           );
         })}

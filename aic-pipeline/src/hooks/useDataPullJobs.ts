@@ -61,5 +61,12 @@ export function useDataPullJobs(opts: UseDataPullJobsOpts = {}) {
     return { ok: res.ok, status: res.status, body: data as { jobId?: string; error?: string } };
   }, [refresh]);
 
-  return { jobs, error, refresh, abort, start, resume };
+  const suspend = useCallback(async (id: string) => {
+    const res = await fetch(`/api/data/jobs/${id}/suspend`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    await refresh();
+    return { ok: res.ok, status: res.status, body: data as { jobId?: string; status?: string; error?: string } };
+  }, [refresh]);
+
+  return { jobs, error, refresh, abort, start, resume, suspend };
 }

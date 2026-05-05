@@ -53,7 +53,15 @@ export function createRegistry(envsRoot: string): Registry {
             // (Task 9) can pick up exactly where the dead process left off.
             // Old behavior marked these `failed` with fatalError="server restart";
             // we now mark them `interrupted` instead.
-            job.status = "interrupted";
+            //
+            // Exception: a job that was already `suspended` by the user stays
+            // suspended — it's the same persistent paused state, just labelled
+            // for clarity in the UI. A job in transient `suspending` state
+            // (server died mid-suspend before the runner finalized) is treated
+            // like any other interrupted job and can be resumed.
+            if (job.status !== "suspended") {
+              job.status = "interrupted";
+            }
             writeJobFile(envsRoot, job);
           }
           byId.set(job.id, job);
