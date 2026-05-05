@@ -26,7 +26,7 @@ export async function POST(
   const registry = getRegistry();
   const job = registry.getJob(jobId);
   if (!job) return NextResponse.json({ error: "not found" }, { status: 404 });
-  if (job.status !== "interrupted") {
+  if (job.status !== "interrupted" && job.status !== "suspended") {
     return NextResponse.json(
       { error: `cannot resume job in status '${job.status}'` },
       { status: 409 },
