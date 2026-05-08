@@ -14,6 +14,7 @@ import { EsvDisplayToggle } from "@/components/EsvDisplayToggle";
 import { useEsvDisplayMode, isEsvScope, applyEsvDecoding } from "@/lib/esv-decode";
 import { JourneyGraph } from "./JourneyGraph";
 import { WorkflowGraph } from "./WorkflowGraph";
+import { ManagedObjectUsagePanel } from "@/app/data/browse/ManagedObjectUsagePanel";
 
 function FullscreenButton({ fullscreen, onToggle, dark }: { fullscreen: boolean; onToggle: () => void; dark?: boolean }) {
   return (
@@ -964,6 +965,20 @@ function SectionsView({
                   Find Usage
                 </button>
               )}
+              {selectedScope === "managed-objects" && selectedItem && (
+                <button
+                  type="button"
+                  onClick={() => setUsageOpen((v) => !v)}
+                  className={cn(
+                    "shrink-0 px-2 py-0.5 text-[10px] font-medium rounded transition-colors",
+                    usageOpen
+                      ? "bg-violet-100 text-violet-700"
+                      : "text-slate-400 hover:text-violet-600 hover:bg-violet-50"
+                  )}
+                >
+                  Find Usage
+                </button>
+              )}
               {(selectedScope === "scripts" || selectedScope === "endpoints") && (
                 <WrapButton wrap={wrapScripts} onToggle={() => setWrapScripts((w) => !w)} />
               )}
@@ -1168,6 +1183,18 @@ function SectionsView({
                     })}
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Managed-object usage panel */}
+            {usageOpen && selectedScope === "managed-objects" && selectedItem && environment && (
+              <div className="px-4 py-2.5 border-b border-slate-700 bg-slate-800 shrink-0 max-h-96 overflow-y-auto">
+                <ManagedObjectUsagePanel
+                  key={selectedItem.id}
+                  env={environment}
+                  type={selectedItem.id.replace(/\.json$/, "")}
+                  onClose={() => setUsageOpen(false)}
+                />
               </div>
             )}
 
