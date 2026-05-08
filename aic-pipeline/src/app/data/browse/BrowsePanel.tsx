@@ -46,7 +46,6 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [titlePrefs, setTitlePrefs] = useState<Record<string, string>>({});
   const [typeFilter, setTypeFilter] = useState("");
-
   // Rehydrate display-attribute preferences after mount. Kept out of the
   // useState initializer so server and client renders agree before hydration.
   useEffect(() => { setTitlePrefs(loadTitlePrefs()); }, []);
@@ -435,6 +434,7 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
               />
             </div>
           </div>
+
         </>
       )}
     </div>
