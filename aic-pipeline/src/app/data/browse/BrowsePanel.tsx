@@ -384,6 +384,7 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
                   <button
                     type="button"
                     onClick={() => setUsageOpen((v) => !v)}
+                    aria-expanded={usageOpen}
                     className={cn(
                       "px-1.5 py-0.5 text-[10px] font-medium rounded border transition-colors",
                       usageOpen
@@ -454,6 +455,7 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
 
           {usageOpen && selectedType && (
             <ManagedObjectUsagePanel
+              key={selectedType}
               env={env}
               type={selectedType}
               onClose={() => setUsageOpen(false)}
