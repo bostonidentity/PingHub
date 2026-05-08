@@ -37,3 +37,16 @@ export function categorizeFilePath(relPath: string): Category {
   }
   return "other";
 }
+
+const FIELD_LOOKBACK_BYTES = 4096;
+
+export function findNearestJsonFieldName(src: string, offset: number): string | null {
+  const start = Math.max(0, offset - FIELD_LOOKBACK_BYTES);
+  const window = src.slice(start, offset);
+  const keyRe = /"([^"\\\n]{1,128})"\s*:/g;
+  let lastKey: string | null = null;
+  for (const m of window.matchAll(keyRe)) {
+    lastKey = m[1];
+  }
+  return lastKey;
+}
