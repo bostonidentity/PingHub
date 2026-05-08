@@ -1,0 +1,1 @@
+{ "name": "foo", "context": "AUTHENTICATION_TREE_DECISION_NODE", "default": "managed/alpha_user" }

@@ -14,6 +14,7 @@ import { EsvDisplayToggle } from "@/components/EsvDisplayToggle";
 import { useEsvDisplayMode, isEsvScope, applyEsvDecoding } from "@/lib/esv-decode";
 import { JourneyGraph } from "./JourneyGraph";
 import { WorkflowGraph } from "./WorkflowGraph";
+import { ManagedObjectUsagePanel, type Hit as ManagedObjectHit } from "@/app/data/browse/ManagedObjectUsagePanel";
 
 function FullscreenButton({ fullscreen, onToggle, dark }: { fullscreen: boolean; onToggle: () => void; dark?: boolean }) {
   return (
@@ -377,6 +378,29 @@ function TreeView({ environment }: { environment: string }) {
   );
 }
 
+// ── Managed-object hit navigation map ─────────────────────────────────────────
+
+type HitNavRule =
+  | { scope: string; matchBy: "id";    extract: (filePath: string) => string | null }
+  | { scope: string; matchBy: "label"; extract: (filePath: string) => string | null };
+
+const HIT_NAVIGATION: Record<string, HitNavRule> = {
+  "journey":               { scope: "journeys",            matchBy: "id",    extract: (fp) => fp.match(/journeys\/([^/]+)\//)?.[1] ?? null },
+  "custom-endpoint":       { scope: "endpoints",           matchBy: "id",    extract: (fp) => fp.match(/^endpoints\/([^/]+)\//)?.[1] ?? null },
+  "workflow":              { scope: "iga-workflows",       matchBy: "id",    extract: (fp) => fp.match(/^iga\/workflows\/([^/]+)\//)?.[1] ?? null },
+  "managed-object-config": { scope: "managed-objects",     matchBy: "id",    extract: (fp) => fp.match(/managed-objects\/([^/]+)\//)?.[1] ?? null },
+  "sync-mapping":          { scope: "connector-mappings",  matchBy: "id",    extract: (fp) => fp.match(/^sync\/mappings\/([^/]+)\//)?.[1] ?? null },
+  "scheduler":             { scope: "schedules",           matchBy: "id",    extract: (fp) => fp.match(/^schedules\/([^/]+)\//)?.[1] ?? null },
+  "internal-role":         { scope: "internal-roles",      matchBy: "id",    extract: (fp) => fp.match(/^internal-roles\/([^/.]+)/)?.[1] ?? null },
+  "iga-assignment":        { scope: "iga-assignments",     matchBy: "id",    extract: (fp) => fp.match(/^iga\/assignments\/([^/.]+)/)?.[1] ?? null },
+  "iga-form":              { scope: "iga-forms",           matchBy: "id",    extract: (fp) => fp.match(/^iga\/forms\/([^/.]+)/)?.[1] ?? null },
+
+  // Scripts: scripts-config files have id = "<uuid>.json", which IS the basename.
+  "script-library-config": { scope: "scripts", matchBy: "id",    extract: (fp) => fp.match(/scripts-config\/([^/]+)$/)?.[1] ?? null },
+  // Scripts: content files use the script's `name` field (the audit item's label) as the JS filename without extension.
+  "script-library":        { scope: "scripts", matchBy: "label", extract: (fp) => fp.match(/scripts-content\/[^/]+\/(.+)\.js$/)?.[1] ?? null },
+};
+
 // ── Sections view ─────────────────────────────────────────────────────────────
 
 interface AuditEntry {
@@ -571,6 +595,28 @@ function SectionsView({
       .catch(() => setEndpointUsageData([]))
       .finally(() => setUsageLoading(false));
   }, [environment, selectedScope, selectedItem]);
+
+  const onOpenHit = useCallback((hit: ManagedObjectHit) => {
+    const nav = HIT_NAVIGATION[hit.category];
+    if (!nav) return;
+    const key = nav.extract(hit.filePath);
+    if (!key) return;
+    const entry = auditData.find((e) => e.scope === nav.scope);
+    if (!entry) return;
+    const item = nav.matchBy === "id"
+      ? entry.items.find((it) => it.id === key)
+      : entry.items.find((it) => it.label === key);
+    if (!item) return;
+    setSelectedScope(nav.scope);
+    setSelectedItem(item);
+    setUsageOpen(false);
+  }, [auditData]);
+
+  const canOpenHit = useCallback((hit: ManagedObjectHit) => {
+    const nav = HIT_NAVIGATION[hit.category];
+    if (!nav) return false;
+    return nav.extract(hit.filePath) !== null;
+  }, []);
 
   // Fetch file content when item is selected
   useEffect(() => {
@@ -964,6 +1010,20 @@ function SectionsView({
                   Find Usage
                 </button>
               )}
+              {selectedScope === "managed-objects" && selectedItem && (
+                <button
+                  type="button"
+                  onClick={() => setUsageOpen((v) => !v)}
+                  className={cn(
+                    "shrink-0 px-2 py-0.5 text-[10px] font-medium rounded transition-colors",
+                    usageOpen
+                      ? "bg-violet-100 text-violet-700"
+                      : "text-slate-400 hover:text-violet-600 hover:bg-violet-50"
+                  )}
+                >
+                  Find Usage
+                </button>
+              )}
               {(selectedScope === "scripts" || selectedScope === "endpoints") && (
                 <WrapButton wrap={wrapScripts} onToggle={() => setWrapScripts((w) => !w)} />
               )}
@@ -1168,6 +1228,20 @@ function SectionsView({
                     })}
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Managed-object usage panel */}
+            {usageOpen && selectedScope === "managed-objects" && selectedItem && environment && (
+              <div className="px-4 py-2.5 border-b border-slate-700 bg-slate-800 shrink-0 max-h-72 overflow-y-auto">
+                <ManagedObjectUsagePanel
+                  key={selectedItem.id}
+                  env={environment}
+                  type={selectedItem.id.replace(/\.json$/, "")}
+                  onClose={() => setUsageOpen(false)}
+                  onOpenHit={onOpenHit}
+                  canOpenHit={canOpenHit}
+                />
               </div>
             )}
 

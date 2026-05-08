@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4.0] - 2026-05-08
+
+### Added
+
+- **Find Usage for Managed Object types**: in the top-level Browse tab, selecting a Managed Object now exposes a "Find Usage" button that scans the env's local config tree for every reference to `managed/<type>` across journeys, the script library, custom-endpoint scripts, IGA workflows, sync mappings, managed-object hooks, schedulers, internal roles, IGA assignments/forms, access-config, and connector agents. Results are grouped by category and rendered in a dark-slate panel matching the existing scripts find-usage; rows are clickable links that navigate to the matching item in the configs viewer (where a clean scope mapping exists).
+
 ### Changed
 
 - **Managed-data index moved to SQLite**: per-type browse and search now use a `index.sqlite` file alongside `data.ndjson` instead of an in-memory `_index.json` cache. Snapshots from before this release are auto-upgraded on first read; `_index.json` and `_offsets.json` are no longer written. Embedded (`better-sqlite3`) — no new services. Legacy per-`{id}.json` snapshots continue to work unchanged.
