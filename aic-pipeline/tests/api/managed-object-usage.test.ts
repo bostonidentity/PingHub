@@ -1,11 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import path from "path";
+import fs from "fs";
+import os from "os";
 import { GET } from "@/app/api/analyze/managed-object-usage/route";
 
 const FIXTURE_ROOT = path.resolve(__dirname, "../fixtures/managed-object-usage/env-root");
 
+// configDirOverride lets individual tests redirect the mock to a tmp directory
+// without needing vi.resetModules() / dynamic imports.
+let configDirOverride: string | null = null;
+
 vi.mock("@/lib/fr-config", () => ({
-  getConfigDir: (env: string) => (env === "test-env" ? FIXTURE_ROOT : null),
+  getConfigDir: (env: string) => {
+    if (env === "trunc-env" && configDirOverride !== null) return configDirOverride;
+    return env === "test-env" ? FIXTURE_ROOT : null;
+  },
 }));
 
 function makeReq(params: Record<string, string>): Request {
@@ -95,6 +104,40 @@ describe("GET /api/analyze/managed-object-usage", () => {
     expect(selfHits.length).toBe(2);
     for (const h of selfHits) {
       expect(h.filePath.includes("managed-objects/alpha_user/")).toBe(true);
+    }
+  });
+});
+
+describe("truncation", () => {
+  it("sets truncated=true and caps at MAX_HITS", async () => {
+    // Build a tmp tree with a single .js file containing 2500 matches.
+    // The route's MAX_HITS = 2000, so scanning this file must trigger the
+    // inner-loop guard and set truncated = true.
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mou-trunc-"));
+    try {
+      // Place file under alpha/scripts/scripts-content/AUTH so it is
+      // categorised as a known category and scanned normally.
+      const dir = path.join(tmpRoot, "alpha/scripts/scripts-content/AUTH");
+      fs.mkdirSync(dir, { recursive: true });
+
+      const lines: string[] = [];
+      for (let i = 0; i < 2500; i++) {
+        lines.push(`openidm.read("managed/alpha_user/${i}");`);
+      }
+      fs.writeFileSync(path.join(dir, "many.js"), lines.join("\n"));
+
+      // Point the mock at the tmp tree for "trunc-env".
+      configDirOverride = tmpRoot;
+
+      const res = await GET(makeReq({ env: "trunc-env", type: "alpha_user" }) as any);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+
+      expect(body.truncated).toBe(true);
+      expect(body.hits.length).toBeLessThanOrEqual(2000);
+    } finally {
+      configDirOverride = null;
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
 });
