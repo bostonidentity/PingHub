@@ -1,11 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-
-type Category =
-  | "journey" | "script-library" | "script-library-config"
-  | "custom-endpoint" | "workflow" | "iga-assignment" | "iga-form"
-  | "managed-object-config" | "sync-mapping" | "scheduler"
-  | "internal-role" | "access-config" | "connector-agent" | "other";
+import type { Category } from "@/lib/managed-object-usage";
 
 type Hit = {
   category: Category; filePath: string; line: number; column: number;
@@ -13,7 +8,7 @@ type Hit = {
   isSelfReference: boolean;
 };
 
-type Response = {
+type UsageResponse = {
   scanned: { files: number; bytes: number; ms: number; skipped: number; errors: number };
   truncated: boolean;
   hits: Hit[];
@@ -47,23 +42,25 @@ const CATEGORY_ORDER: Category[] = [
 export function ManagedObjectUsagePanel({
   env, type, onClose,
 }: { env: string; type: string; onClose: () => void }) {
-  const [data, setData] = useState<Response | null>(null);
+  const [data, setData] = useState<UsageResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<Set<Category>>(new Set(CATEGORY_ORDER.filter(c => c !== "other")));
 
   useEffect(() => {
-    let cancelled = false;
+    const ctl = new AbortController();
     setData(null);
     setError(null);
     const params = new URLSearchParams({ env, type });
-    fetch(`/api/analyze/managed-object-usage?${params}`)
+    fetch(`/api/analyze/managed-object-usage?${params}`, { signal: ctl.signal })
       .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json() as Promise<Response>;
+        return r.json() as Promise<UsageResponse>;
       })
-      .then((d) => { if (!cancelled) setData(d); })
-      .catch((e) => { if (!cancelled) setError(String(e?.message ?? e)); });
-    return () => { cancelled = true; };
+      .then((d) => setData(d))
+      .catch((e) => {
+        if ((e as Error).name !== "AbortError") setError(String(e?.message ?? e));
+      });
+    return () => ctl.abort();
   }, [env, type]);
 
   const toggle = (c: Category) => {
@@ -111,6 +108,7 @@ export function ManagedObjectUsagePanel({
                 <button
                   type="button"
                   onClick={() => toggle(cat)}
+                  aria-expanded={isOpen}
                   className="font-medium text-violet-800 hover:underline"
                 >
                   {isOpen ? "▾" : "▸"} {CATEGORY_LABEL[cat]} ({count})
