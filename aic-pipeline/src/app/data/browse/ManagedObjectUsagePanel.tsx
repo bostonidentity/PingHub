@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import type { Category } from "@/lib/managed-object-usage";
 
-type Hit = {
+export type Hit = {
   category: Category; filePath: string; line: number; column: number;
   snippet: string; fieldName: string | null; realmRoot: string | null;
   isSelfReference: boolean;
@@ -40,8 +40,8 @@ const CATEGORY_ORDER: Category[] = [
 ];
 
 export function ManagedObjectUsagePanel({
-  env, type, onClose,
-}: { env: string; type: string; onClose: () => void }) {
+  env, type, onClose, onOpenHit, canOpenHit,
+}: { env: string; type: string; onClose: () => void; onOpenHit?: (hit: Hit) => void; canOpenHit?: (hit: Hit) => boolean }) {
   const [data, setData] = useState<UsageResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<Set<Category>>(new Set(CATEGORY_ORDER.filter(c => c !== "other")));
@@ -117,7 +117,17 @@ export function ManagedObjectUsagePanel({
                   <ul className="mt-1 ml-4 space-y-1">
                     {data.hits.filter(h => h.category === cat).map((h, i) => (
                       <li key={i} className="text-xs">
-                        <div className="text-sky-400 font-mono">{h.filePath}</div>
+                        {onOpenHit && canOpenHit?.(h) !== false ? (
+                          <button
+                            type="button"
+                            onClick={() => onOpenHit(h)}
+                            className="text-sky-400 hover:text-sky-300 hover:underline font-mono text-left"
+                          >
+                            {h.filePath}
+                          </button>
+                        ) : (
+                          <div className="text-sky-400 font-mono">{h.filePath}</div>
+                        )}
                         <div className="text-slate-500">
                           line {h.line}
                           {h.fieldName && <> · field: {h.fieldName}</>}

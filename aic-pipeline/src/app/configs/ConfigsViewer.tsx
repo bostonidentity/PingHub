@@ -14,7 +14,7 @@ import { EsvDisplayToggle } from "@/components/EsvDisplayToggle";
 import { useEsvDisplayMode, isEsvScope, applyEsvDecoding } from "@/lib/esv-decode";
 import { JourneyGraph } from "./JourneyGraph";
 import { WorkflowGraph } from "./WorkflowGraph";
-import { ManagedObjectUsagePanel } from "@/app/data/browse/ManagedObjectUsagePanel";
+import { ManagedObjectUsagePanel, type Hit as ManagedObjectHit } from "@/app/data/browse/ManagedObjectUsagePanel";
 
 function FullscreenButton({ fullscreen, onToggle, dark }: { fullscreen: boolean; onToggle: () => void; dark?: boolean }) {
   return (
@@ -378,6 +378,21 @@ function TreeView({ environment }: { environment: string }) {
   );
 }
 
+// ── Managed-object hit navigation map ─────────────────────────────────────────
+
+const HIT_NAVIGATION: Record<string, { scope: string; extractId: (filePath: string) => string | null }> = {
+  "journey":               { scope: "journeys",            extractId: (fp) => fp.match(/journeys\/([^/]+)\//)?.[1] ?? null },
+  "custom-endpoint":       { scope: "endpoints",           extractId: (fp) => fp.match(/^endpoints\/([^/]+)\//)?.[1] ?? null },
+  "workflow":              { scope: "iga-workflows",       extractId: (fp) => fp.match(/^iga\/workflows\/([^/]+)\//)?.[1] ?? null },
+  "managed-object-config": { scope: "managed-objects",     extractId: (fp) => fp.match(/managed-objects\/([^/]+)\//)?.[1] ?? null },
+  "sync-mapping":          { scope: "connector-mappings",  extractId: (fp) => fp.match(/^sync\/mappings\/([^/]+)\//)?.[1] ?? null },
+  "scheduler":             { scope: "schedules",           extractId: (fp) => fp.match(/^schedules\/([^/]+)\//)?.[1] ?? null },
+  "internal-role":         { scope: "internal-roles",      extractId: (fp) => fp.match(/^internal-roles\/([^/.]+)/)?.[1] ?? null },
+  "iga-assignment":        { scope: "iga-assignments",     extractId: (fp) => fp.match(/^iga\/assignments\/([^/.]+)/)?.[1] ?? null },
+  "iga-form":              { scope: "iga-forms",           extractId: (fp) => fp.match(/^iga\/forms\/([^/.]+)/)?.[1] ?? null },
+  // script-library, script-library-config, access-config, connector-agent, other: not mapped (skip)
+};
+
 // ── Sections view ─────────────────────────────────────────────────────────────
 
 interface AuditEntry {
@@ -572,6 +587,25 @@ function SectionsView({
       .catch(() => setEndpointUsageData([]))
       .finally(() => setUsageLoading(false));
   }, [environment, selectedScope, selectedItem]);
+
+  const onOpenHit = useCallback((hit: ManagedObjectHit) => {
+    const nav = HIT_NAVIGATION[hit.category];
+    if (!nav) return;
+    const itemId = nav.extractId(hit.filePath);
+    if (!itemId) return;
+    const entry = auditData.find((e) => e.scope === nav.scope);
+    const item = entry?.items.find((it) => it.id === itemId);
+    if (!item) return;
+    setSelectedScope(nav.scope);
+    setSelectedItem(item);
+    setUsageOpen(false);
+  }, [auditData]);
+
+  const canOpenHit = useCallback((hit: ManagedObjectHit) => {
+    const nav = HIT_NAVIGATION[hit.category];
+    if (!nav) return false;
+    return nav.extractId(hit.filePath) !== null;
+  }, []);
 
   // Fetch file content when item is selected
   useEffect(() => {
@@ -1194,6 +1228,8 @@ function SectionsView({
                   env={environment}
                   type={selectedItem.id.replace(/\.json$/, "")}
                   onClose={() => setUsageOpen(false)}
+                  onOpenHit={onOpenHit}
+                  canOpenHit={canOpenHit}
                 />
               </div>
             )}
