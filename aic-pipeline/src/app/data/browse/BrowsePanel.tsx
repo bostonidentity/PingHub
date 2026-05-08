@@ -8,7 +8,6 @@ import type { GlobalSearchHit, GlobalSearchResponse } from "@/app/api/data/searc
 import { useSnapshotRecords } from "@/hooks/useSnapshotRecords";
 import { useDataEnv, timeAgoShort } from "@/hooks/useDataEnv";
 import { RecordDetailPane } from "./RecordDetailPane";
-import { ManagedObjectUsagePanel } from "./ManagedObjectUsagePanel";
 import { cn } from "@/lib/utils";
 
 // Per-(env,type) user preference for which record attribute drives the list
@@ -47,8 +46,6 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [titlePrefs, setTitlePrefs] = useState<Record<string, string>>({});
   const [typeFilter, setTypeFilter] = useState("");
-  const [usageOpen, setUsageOpen] = useState(false);
-
   // Rehydrate display-attribute preferences after mount. Kept out of the
   // useState initializer so server and client renders agree before hydration.
   useEffect(() => { setTitlePrefs(loadTitlePrefs()); }, []);
@@ -213,7 +210,7 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
           </label>
           <select
             value={env}
-            onChange={(e) => { setEnv(e.target.value); setSelectedId(null); setUsageOpen(false); }}
+            onChange={(e) => { setEnv(e.target.value); setSelectedId(null); }}
             className="px-3 py-1.5 text-sm border border-slate-300 rounded bg-white text-slate-800"
           >
             {environments.map((e) => (
@@ -380,21 +377,6 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
                     <a href={exportUrl("csv")} className="text-[11px] text-sky-600 hover:underline">CSV</a>
                   </>
                 )}
-                {selectedType && (
-                  <button
-                    type="button"
-                    onClick={() => setUsageOpen((v) => !v)}
-                    aria-expanded={usageOpen}
-                    className={cn(
-                      "px-1.5 py-0.5 text-[10px] font-medium rounded border transition-colors",
-                      usageOpen
-                        ? "bg-violet-100 text-violet-700 border-violet-200"
-                        : "text-slate-500 border-slate-300 hover:text-violet-600 hover:bg-violet-50 hover:border-violet-200"
-                    )}
-                  >
-                    Find Usage
-                  </button>
-                )}
               </div>
               <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
                 {loading && !data && <div className="p-4 text-xs text-slate-400">Loading…</div>}
@@ -453,14 +435,6 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
             </div>
           </div>
 
-          {usageOpen && selectedType && (
-            <ManagedObjectUsagePanel
-              key={selectedType}
-              env={env}
-              type={selectedType}
-              onClose={() => setUsageOpen(false)}
-            />
-          )}
         </>
       )}
     </div>
