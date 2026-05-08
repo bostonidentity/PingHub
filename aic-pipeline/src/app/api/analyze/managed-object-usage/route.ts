@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { getConfigDir } from "@/lib/fr-config";
@@ -7,6 +7,8 @@ import {
   findNearestJsonFieldName,
   type Category,
 } from "@/lib/managed-object-usage";
+
+export const dynamic = "force-dynamic";
 
 const TYPE_RE = /^[A-Za-z0-9_-]+$/;
 const MAX_FILES = 20_000;
@@ -69,7 +71,7 @@ function detectRealmRoot(rel: string): string | null {
   return m[1];
 }
 
-export async function GET(req: NextRequest) {
+export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const env = searchParams.get("env");
   const type = searchParams.get("type");

@@ -27,27 +27,27 @@ describe("GET /api/analyze/managed-object-usage", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("400 when env is missing", async () => {
-    const res = await GET(makeReq({ type: "alpha_user" }) as any);
+    const res = await GET(makeReq({ type: "alpha_user" }));
     expect(res.status).toBe(400);
   });
 
   it("400 when type is missing", async () => {
-    const res = await GET(makeReq({ env: "test-env" }) as any);
+    const res = await GET(makeReq({ env: "test-env" }));
     expect(res.status).toBe(400);
   });
 
   it("400 when type fails the validation regex", async () => {
-    const res = await GET(makeReq({ env: "test-env", type: "bad type!" }) as any);
+    const res = await GET(makeReq({ env: "test-env", type: "bad type!" }));
     expect(res.status).toBe(400);
   });
 
   it("404 when env config dir is missing", async () => {
-    const res = await GET(makeReq({ env: "no-such-env", type: "alpha_user" }) as any);
+    const res = await GET(makeReq({ env: "no-such-env", type: "alpha_user" }));
     expect(res.status).toBe(404);
   });
 
   it("returns hits across all expected categories", async () => {
-    const res = await GET(makeReq({ env: "test-env", type: "alpha_user" }) as any);
+    const res = await GET(makeReq({ env: "test-env", type: "alpha_user" }));
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.type).toBe("alpha_user");
@@ -71,7 +71,7 @@ describe("GET /api/analyze/managed-object-usage", () => {
   });
 
   it("does NOT match alpha_user_extra (word-boundary lookahead)", async () => {
-    const res = await GET(makeReq({ env: "test-env", type: "alpha_user" }) as any);
+    const res = await GET(makeReq({ env: "test-env", type: "alpha_user" }));
     const body = await res.json();
     const decoy = body.hits.find((h: any) =>
       h.filePath.includes("managed-objects/alpha_other/alpha_other.json")
@@ -80,7 +80,7 @@ describe("GET /api/analyze/managed-object-usage", () => {
   });
 
   it("captures fieldName for JSON hits", async () => {
-    const res = await GET(makeReq({ env: "test-env", type: "alpha_user" }) as any);
+    const res = await GET(makeReq({ env: "test-env", type: "alpha_user" }));
     const body = await res.json();
     const journeyHit = body.hits.find((h: any) => h.category === "journey");
     expect(journeyHit.fieldName).toBe("identityResource");
@@ -89,7 +89,7 @@ describe("GET /api/analyze/managed-object-usage", () => {
   });
 
   it("leaves fieldName null for .js hits", async () => {
-    const res = await GET(makeReq({ env: "test-env", type: "alpha_user" }) as any);
+    const res = await GET(makeReq({ env: "test-env", type: "alpha_user" }));
     const body = await res.json();
     const jsHit = body.hits.find(
       (h: any) => h.category === "script-library" && h.filePath.endsWith(".js")
@@ -98,7 +98,7 @@ describe("GET /api/analyze/managed-object-usage", () => {
   });
 
   it("marks self-references when file lives under managed-objects/<type>/", async () => {
-    const res = await GET(makeReq({ env: "test-env", type: "alpha_user" }) as any);
+    const res = await GET(makeReq({ env: "test-env", type: "alpha_user" }));
     const body = await res.json();
     const selfHits = body.hits.filter((h: any) => h.isSelfReference);
     expect(selfHits.length).toBe(2);
@@ -129,7 +129,7 @@ describe("truncation", () => {
       // Point the mock at the tmp tree for "trunc-env".
       configDirOverride = tmpRoot;
 
-      const res = await GET(makeReq({ env: "trunc-env", type: "alpha_user" }) as any);
+      const res = await GET(makeReq({ env: "trunc-env", type: "alpha_user" }));
       expect(res.status).toBe(200);
       const body = await res.json();
 

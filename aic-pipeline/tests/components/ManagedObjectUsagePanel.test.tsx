@@ -33,7 +33,7 @@ const mockResponse = {
 };
 
 beforeEach(() => {
-  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve(mockResponse) }) as any));
+  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve(mockResponse) })) as unknown as typeof fetch);
 });
 afterEach(() => {
   cleanup();
@@ -59,7 +59,7 @@ describe("ManagedObjectUsagePanel", () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({
       ok: true,
       json: () => Promise.resolve({ ...mockResponse, hits: [], counts: { byCategory: {} } }),
-    }) as any));
+    })) as unknown as typeof fetch);
     render(<ManagedObjectUsagePanel env="test-env" type="alpha_user" onClose={() => {}} />);
     expect(await screen.findByText(/No usages found/)).toBeInTheDocument();
   });
@@ -68,7 +68,7 @@ describe("ManagedObjectUsagePanel", () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({
       ok: true,
       json: () => Promise.resolve({ ...mockResponse, truncated: true }),
-    }) as any));
+    })) as unknown as typeof fetch);
     render(<ManagedObjectUsagePanel env="test-env" type="alpha_user" onClose={() => {}} />);
     expect(await screen.findByText(/Showing first 2,000 hits/)).toBeInTheDocument();
   });

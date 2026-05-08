@@ -213,7 +213,7 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
           </label>
           <select
             value={env}
-            onChange={(e) => { setEnv(e.target.value); setSelectedId(null); }}
+            onChange={(e) => { setEnv(e.target.value); setSelectedId(null); setUsageOpen(false); }}
             className="px-3 py-1.5 text-sm border border-slate-300 rounded bg-white text-slate-800"
           >
             {environments.map((e) => (
