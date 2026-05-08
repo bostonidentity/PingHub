@@ -1188,7 +1188,7 @@ function SectionsView({
 
             {/* Managed-object usage panel */}
             {usageOpen && selectedScope === "managed-objects" && selectedItem && environment && (
-              <div className="px-4 py-2.5 border-b border-slate-700 bg-slate-800 shrink-0 max-h-96 overflow-y-auto">
+              <div className="px-4 py-2.5 border-b border-slate-700 bg-slate-800 shrink-0 max-h-72 overflow-y-auto">
                 <ManagedObjectUsagePanel
                   key={selectedItem.id}
                   env={environment}

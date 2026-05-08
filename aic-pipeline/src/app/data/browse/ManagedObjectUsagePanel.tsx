@@ -72,32 +72,32 @@ export function ManagedObjectUsagePanel({
   };
 
   return (
-    <div className="border border-violet-200 rounded bg-violet-50 p-3 text-sm">
+    <div className="text-sm">
       <div className="flex items-center justify-between mb-2">
-        <div className="font-semibold text-violet-900">Find usage of &quot;{type}&quot;</div>
+        <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wide">Find usage of &quot;{type}&quot;</div>
         <button
           type="button"
           aria-label="close"
-          className="text-violet-700 hover:text-violet-900"
+          className="text-slate-400 hover:text-slate-200"
           onClick={onClose}
         >
           ✕
         </button>
       </div>
-      {!data && !error && <p className="text-slate-500 italic">Searching…</p>}
-      {error && <p className="text-red-600">Error: {error}</p>}
+      {!data && !error && <p className="text-xs text-slate-400">Searching…</p>}
+      {error && <p className="text-xs text-red-400">Error: {error}</p>}
       {data && (
         <>
-          <p className="text-xs text-slate-600 mb-2">
+          <p className="text-[10px] text-slate-500 mb-2">
             Scanned {data.scanned.files.toLocaleString()} files · {data.hits.length} hits
           </p>
           {data.truncated && (
-            <p className="text-xs text-amber-700 mb-2">
+            <p className="text-xs text-amber-400 mb-2">
               Showing first 2,000 hits — additional results were not loaded.
             </p>
           )}
           {data.hits.length === 0 && (
-            <p className="text-slate-500 italic">No usages found in this environment.</p>
+            <p className="text-xs text-slate-400 italic">No usages found in this environment.</p>
           )}
           {CATEGORY_ORDER.map((cat) => {
             const count = data.counts.byCategory[cat] ?? 0;
@@ -109,7 +109,7 @@ export function ManagedObjectUsagePanel({
                   type="button"
                   onClick={() => toggle(cat)}
                   aria-expanded={isOpen}
-                  className="font-medium text-violet-800 hover:underline"
+                  className="text-xs font-medium text-sky-400 hover:text-sky-300 hover:underline"
                 >
                   {isOpen ? "▾" : "▸"} {CATEGORY_LABEL[cat]} ({count})
                 </button>
@@ -117,13 +117,13 @@ export function ManagedObjectUsagePanel({
                   <ul className="mt-1 ml-4 space-y-1">
                     {data.hits.filter(h => h.category === cat).map((h, i) => (
                       <li key={i} className="text-xs">
-                        <div className="text-violet-700 font-mono">{h.filePath}</div>
+                        <div className="text-sky-400 font-mono">{h.filePath}</div>
                         <div className="text-slate-500">
                           line {h.line}
                           {h.fieldName && <> · field: {h.fieldName}</>}
-                          {h.isSelfReference && <span className="ml-1 px-1 bg-violet-200 rounded text-[10px]">self / hooks</span>}
+                          {h.isSelfReference && <span className="ml-1 px-1 bg-slate-700 text-slate-300 rounded text-[10px]">self / hooks</span>}
                         </div>
-                        <div className="font-mono text-slate-700 truncate">{h.snippet}</div>
+                        <div className="font-mono text-slate-400 truncate">{h.snippet}</div>
                       </li>
                     ))}
                   </ul>
