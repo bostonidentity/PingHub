@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { categorizeFilePath } from "./managed-object-usage";
+import { categorizeFilePath, findNearestJsonFieldName } from "./managed-object-usage";
 
 describe("categorizeFilePath", () => {
   it.each([
@@ -24,5 +24,38 @@ describe("categorizeFilePath", () => {
     ["alpha/managed-objects/alpha_user/scripts/foo.js", "managed-object-config"],
   ])("%s -> %s", (relPath, expected) => {
     expect(categorizeFilePath(relPath)).toBe(expected);
+  });
+});
+
+describe("findNearestJsonFieldName", () => {
+  it("finds a simple top-level field", () => {
+    const src = '{ "identityResource": "managed/alpha_user" }';
+    const offset = src.indexOf("managed/");
+    expect(findNearestJsonFieldName(src, offset)).toBe("identityResource");
+  });
+
+  it("returns null when no preceding key exists", () => {
+    const src = "managed/alpha_user appears as a bare token";
+    const offset = src.indexOf("managed/");
+    expect(findNearestJsonFieldName(src, offset)).toBeNull();
+  });
+
+  it("walks back through nested object structure", () => {
+    const src = '{"outer": {"target": "managed/alpha_user"}}';
+    const offset = src.indexOf("managed/");
+    expect(findNearestJsonFieldName(src, offset)).toBe("target");
+  });
+
+  it("respects the 4 KB lookback cap", () => {
+    const filler = " ".repeat(5000);
+    const src = `{ "identityResource":${filler}"managed/alpha_user" }`;
+    const offset = src.indexOf("managed/");
+    expect(findNearestJsonFieldName(src, offset)).toBeNull();
+  });
+
+  it("handles arrays without an immediate key", () => {
+    const src = '{ "items": [ "managed/alpha_user" ] }';
+    const offset = src.indexOf("managed/");
+    expect(findNearestJsonFieldName(src, offset)).toBe("items");
   });
 });
