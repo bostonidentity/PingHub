@@ -85,6 +85,7 @@ export async function GET(req: NextRequest) {
 
   const query = `managed/${type}`;
   const matchRe = new RegExp(`\\bmanaged/${escapeRegExp(type)}(?=[/"'\\s,)\\]}]|$)`, "g");
+  const selfRefRe = new RegExp(`(?:^|/)managed-objects/${escapeRegExp(type)}/`);
 
   const t0 = Date.now();
   const hits: Hit[] = [];
@@ -122,7 +123,6 @@ export async function GET(req: NextRequest) {
     const isJson = abs.endsWith(".json");
     const category = categorizeFilePath(rel);
     const realmRoot = detectRealmRoot(rel);
-    const selfRefRe = new RegExp(`(?:^|/)managed-objects/${escapeRegExp(type)}/`);
     const isSelfReference = category === "managed-object-config" && selfRefRe.test(rel);
 
     for (const m of src.matchAll(matchRe)) {
