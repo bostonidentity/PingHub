@@ -21,6 +21,20 @@ const TZ_OPTIONS: { value: TzMode; label: string }[] = [
 
 const TzContext = createContext<TzMode>("local");
 
+// ── Tail buffer size ─────────────────────────────────────────────────────────
+
+const TAIL_BUFFER_DEFAULT = 300_000;
+
+const TAIL_BUFFER_OPTIONS: { value: number; label: string }[] = [
+  { value: 50_000, label: "50K" },
+  { value: 100_000, label: "100K" },
+  { value: 300_000, label: "300K" },
+  { value: 500_000, label: "500K" },
+  { value: 1_000_000, label: "1M" },
+];
+
+const TailBufferContext = createContext<number>(TAIL_BUFFER_DEFAULT);
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface EnvWithLogApi extends Environment {
@@ -120,7 +134,6 @@ const PRESETS: { label: string; value: Preset; ms: number }[] = [
 
 const LOG_SOURCES = ["am-everything", "idm-everything"] as const;
 
-const TAIL_BUFFER_MAX = 500_000; // entries kept in memory; older ones are dropped
 const TERMINAL_ROW_H = 20;     // px — fixed height per row (nowrap lines)
 const TERMINAL_OVERSCAN = 15;    // extra rows rendered above/below viewport
 
@@ -1290,6 +1303,9 @@ export function LogsExplorer({
   const { env, selectedSources, sourcesError, levelFilter, mode, tailSecs, tailing, loading, preset, customBegin, customEnd, searchSeq, searching } = config;
   const { confirm } = useDialog();
   const tz = useContext(TzContext);
+  const tailBufferMax = useContext(TailBufferContext);
+  const tailBufferMaxRef = useRef(tailBufferMax);
+  useEffect(() => { tailBufferMaxRef.current = tailBufferMax; }, [tailBufferMax]);
   // Derived: sources used for tail mode — all selected sources are tailed concurrently.
   // `tailSource` (singular) is kept as the first for UI affordances that still expect one.
   const tailSources = selectedSources;
@@ -1489,8 +1505,9 @@ export function LogsExplorer({
           setEntries((prev) => {
             const combined = msg.append ? [...prev, ...msg.entries] : msg.entries;
             // Circular buffer: drop oldest when over cap (tail mode only)
-            if (msg.append && combined.length > TAIL_BUFFER_MAX) {
-              return combined.slice(-TAIL_BUFFER_MAX);
+            const cap = tailBufferMaxRef.current;
+            if (msg.append && combined.length > cap) {
+              return combined.slice(-cap);
             }
             return combined;
           });
@@ -2933,14 +2950,18 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
   const [activeId, setActiveId] = useState(1);
   const [fullscreen, setFullscreen] = useState(false);
   const [tzMode, setTzMode] = useState<TzMode>("local");
+  const [tailBufferMax, setTailBufferMax] = useState<number>(TAIL_BUFFER_DEFAULT);
 
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LOGS_STATE_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw) as { tabs?: TabDef[]; activeId?: number; tzMode?: TzMode };
+        const parsed = JSON.parse(raw) as { tabs?: TabDef[]; activeId?: number; tzMode?: TzMode; tailBufferMax?: number };
         if (parsed.tzMode && TZ_OPTIONS.some((o) => o.value === parsed.tzMode)) {
           setTzMode(parsed.tzMode);
+        }
+        if (typeof parsed.tailBufferMax === "number" && TAIL_BUFFER_OPTIONS.some((o) => o.value === parsed.tailBufferMax)) {
+          setTailBufferMax(parsed.tailBufferMax);
         }
         if (Array.isArray(parsed.tabs) && parsed.tabs.length > 0) {
           const validEnvNames = new Set(environments.map((e) => e.name));
@@ -2972,10 +2993,11 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
         tabs: tabs.map((t) => ({ id: t.id, label: t.label, config: sanitizeConfigForPersist(t.config) })),
         activeId,
         tzMode,
+        tailBufferMax,
       };
       localStorage.setItem(LOGS_STATE_KEY, JSON.stringify(payload));
     } catch { /* ignore */ }
-  }, [mounted, tabs, activeId, tzMode]);
+  }, [mounted, tabs, activeId, tzMode, tailBufferMax]);
 
   useEffect(() => {
     if (!fullscreen) return;
@@ -3104,183 +3126,198 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
 
   return (
     <TzContext.Provider value={tzMode}>
-      <div className="space-y-0">
-        {/* ── Controls (above tabs) ── */}
-        {cfg && (
-          <div className="card-padded space-y-4 rounded-b-none border-b-0">
-            {/* Row 1: env + source + level */}
-            <div className="flex flex-wrap items-end gap-4">
-              <div className="space-y-1">
-                <label className="label-xs">Environment</label>
-                <select
-                  value={cfg.env}
-                  onChange={(e) => updateActiveConfig({ env: e.target.value, tailing: false })}
-                  disabled={cfg.loading || cfg.tailing}
-                  className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-50 bg-white"
-                >
-                  {environments.map((e) => (
-                    <option key={e.name} value={e.name} disabled={!e.hasLogApi}>
-                      {e.label}{!e.hasLogApi ? " (no credentials)" : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-1">
-                <label className="label-xs">Log Source</label>
-                <div className="flex gap-3 py-1">
-                  {LOG_SOURCES.map((s) => (
-                    <label key={s} className={cn("flex items-center gap-1.5 text-sm cursor-pointer select-none", (cfg.loading || cfg.tailing) ? "opacity-50 cursor-not-allowed" : "")}>
-                      <input
-                        type="checkbox"
-                        checked={cfg.selectedSources.includes(s)}
-                        disabled={cfg.loading || cfg.tailing}
-                        onChange={(e) => {
-                          const next = e.target.checked
-                            ? [...cfg.selectedSources, s]
-                            : cfg.selectedSources.filter((x) => x !== s);
-                          updateActiveConfig({ selectedSources: next, tailing: false });
-                        }}
-                        className="rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-                      />
-                      <span className="font-mono text-xs">{s}</span>
-                    </label>
-                  ))}
+      <TailBufferContext.Provider value={tailBufferMax}>
+        <div className="space-y-0">
+          {/* ── Controls (above tabs) ── */}
+          {cfg && (
+            <div className="card-padded space-y-4 rounded-b-none border-b-0">
+              {/* Row 1: env + source + level */}
+              <div className="flex flex-wrap items-end gap-4">
+                <div className="space-y-1">
+                  <label className="label-xs">Environment</label>
+                  <select
+                    value={cfg.env}
+                    onChange={(e) => updateActiveConfig({ env: e.target.value, tailing: false })}
+                    disabled={cfg.loading || cfg.tailing}
+                    className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-50 bg-white"
+                  >
+                    {environments.map((e) => (
+                      <option key={e.name} value={e.name} disabled={!e.hasLogApi}>
+                        {e.label}{!e.hasLogApi ? " (no credentials)" : ""}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-              </div>
 
-              <div className="space-y-1">
-                <label className="label-xs">Min Level</label>
-                <select
-                  value={cfg.levelFilter}
-                  onChange={(e) => updateActiveConfig({ levelFilter: e.target.value })}
-                  className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 bg-white"
-                >
-                  {LEVEL_FILTERS.map((l) => (
-                    <option key={l.value} value={l.value}>{l.label}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-1">
-                <label className="label-xs">Timezone</label>
-                <select
-                  value={tzMode}
-                  onChange={(e) => setTzMode(e.target.value as TzMode)}
-                  className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 bg-white"
-                >
-                  {TZ_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
-              </div>
-
-              {selectedEnv && (
-                <div className="pb-0.5">
-                  <EnvironmentBadge env={selectedEnv} />
+                <div className="space-y-1">
+                  <label className="label-xs">Log Source</label>
+                  <div className="flex gap-3 py-1">
+                    {LOG_SOURCES.map((s) => (
+                      <label key={s} className={cn("flex items-center gap-1.5 text-sm cursor-pointer select-none", (cfg.loading || cfg.tailing) ? "opacity-50 cursor-not-allowed" : "")}>
+                        <input
+                          type="checkbox"
+                          checked={cfg.selectedSources.includes(s)}
+                          disabled={cfg.loading || cfg.tailing}
+                          onChange={(e) => {
+                            const next = e.target.checked
+                              ? [...cfg.selectedSources, s]
+                              : cfg.selectedSources.filter((x) => x !== s);
+                            updateActiveConfig({ selectedSources: next, tailing: false });
+                          }}
+                          className="rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                        />
+                        <span className="font-mono text-xs">{s}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
-              )}
-            </div>
 
-            {/* Row 2: transaction ID search */}
-            <div className="flex items-center gap-2">
-              <label className="label-xs shrink-0">Transaction ID</label>
-              <input
-                type="text"
-                value={txInput}
-                onChange={(e) => setTxInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") submitTxSearch(); }}
-                placeholder="Paste a transaction ID to trace…"
-                className="px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 font-mono w-96"
-              />
-              <button
-                type="button"
-                onClick={submitTxSearch}
-                disabled={!txInput.trim() || !cfg?.env || cfg?.loading}
-                className="btn-primary disabled:opacity-40 flex items-center gap-1.5"
-              >
-                {cfg?.loading && txSearch ? (
-                  <>
-                    <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
-                    Tracing…
-                  </>
-                ) : (
-                  "Trace"
+                <div className="space-y-1">
+                  <label className="label-xs">Min Level</label>
+                  <select
+                    value={cfg.levelFilter}
+                    onChange={(e) => updateActiveConfig({ levelFilter: e.target.value })}
+                    className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 bg-white"
+                  >
+                    {LEVEL_FILTERS.map((l) => (
+                      <option key={l.value} value={l.value}>{l.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="label-xs">Timezone</label>
+                  <select
+                    value={tzMode}
+                    onChange={(e) => setTzMode(e.target.value as TzMode)}
+                    className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 bg-white"
+                  >
+                    {TZ_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="label-xs" title="Maximum number of tail entries kept in memory; older entries are dropped">Tail buffer</label>
+                  <select
+                    value={tailBufferMax}
+                    onChange={(e) => setTailBufferMax(Number(e.target.value))}
+                    className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 bg-white"
+                  >
+                    {TAIL_BUFFER_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {selectedEnv && (
+                  <div className="pb-0.5">
+                    <EnvironmentBadge env={selectedEnv} />
+                  </div>
                 )}
-              </button>
-              {txInput && (
-                <button type="button" onClick={() => { setTxInput(""); setTxSearch(undefined); }} className="text-xs text-slate-400 hover:text-slate-600 transition-colors">
-                  Clear
-                </button>
-              )}
-            </div>
-          </div>
-        )}
+              </div>
 
-        {/* ── Tab bar ── */}
-        <div className="flex items-end gap-0 border-b border-slate-200 bg-white border-x border-slate-200">
-          {tabs.map((tab) => (
-            <div
-              key={tab.id}
-              className={cn(
-                "flex items-center gap-1.5 px-3 py-2 text-xs border-b-2 cursor-pointer select-none transition-colors",
-                tab.id === activeId
-                  ? "border-sky-600 text-slate-900 font-medium bg-white"
-                  : "border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50"
-              )}
-            >
-              <span onClick={() => setActiveId(tab.id)} className="max-w-[160px] truncate">
-                {tab.label}
-              </span>
-              {tabs.length > 1 && (
+              {/* Row 2: transaction ID search */}
+              <div className="flex items-center gap-2">
+                <label className="label-xs shrink-0">Transaction ID</label>
+                <input
+                  type="text"
+                  value={txInput}
+                  onChange={(e) => setTxInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") submitTxSearch(); }}
+                  placeholder="Paste a transaction ID to trace…"
+                  className="px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 font-mono w-96"
+                />
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
-                  className="text-slate-300 hover:text-slate-500 leading-none text-sm ml-0.5"
-                  title="Close tab"
+                  onClick={submitTxSearch}
+                  disabled={!txInput.trim() || !cfg?.env || cfg?.loading}
+                  className="btn-primary disabled:opacity-40 flex items-center gap-1.5"
                 >
-                  ×
+                  {cfg?.loading && txSearch ? (
+                    <>
+                      <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Tracing…
+                    </>
+                  ) : (
+                    "Trace"
+                  )}
                 </button>
-              )}
+                {txInput && (
+                  <button type="button" onClick={() => { setTxInput(""); setTxSearch(undefined); }} className="text-xs text-slate-400 hover:text-slate-600 transition-colors">
+                    Clear
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── Tab bar ── */}
+          <div className="flex items-end gap-0 border-b border-slate-200 bg-white border-x border-slate-200">
+            {tabs.map((tab) => (
+              <div
+                key={tab.id}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-2 text-xs border-b-2 cursor-pointer select-none transition-colors",
+                  tab.id === activeId
+                    ? "border-sky-600 text-slate-900 font-medium bg-white"
+                    : "border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50"
+                )}
+              >
+                <span onClick={() => setActiveId(tab.id)} className="max-w-[160px] truncate">
+                  {tab.label}
+                </span>
+                {tabs.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
+                    className="text-slate-300 hover:text-slate-500 leading-none text-sm ml-0.5"
+                    title="Close tab"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={addTab}
+              className="px-3 py-2 text-slate-400 hover:text-slate-700 hover:bg-slate-50 text-base leading-none transition-colors"
+              title="New tab"
+            >
+              +
+            </button>
+          </div>
+
+          {/* ── Tab panels ── */}
+          {tabs.map((tab) => (
+            <div key={tab.id} className={tab.id === activeId ? "" : "hidden"}>
+              <div className="pt-4">
+                <LogsExplorer
+                  environments={environments}
+                  config={tab.config}
+                  onConfigChange={getConfigUpdater(tab.id)}
+                  isActive={tab.id === activeId}
+                  onLabelChange={(label) => updateLabel(tab.id, label)}
+                  tabs={tabsSummary}
+                  activeTabId={activeId}
+                  onTabSwitch={setActiveId}
+                  fullscreen={fullscreen}
+                  onFullscreenChange={setFullscreen}
+                  txSearchId={tab.id === activeId ? txSearch : undefined}
+                  onOpenContextTab={openContextTab}
+                  onOpenEntryContextTab={openEntryContextTab}
+                  anchorTimestamp={tab.anchorTimestamp}
+                />
+              </div>
             </div>
           ))}
-          <button
-            type="button"
-            onClick={addTab}
-            className="px-3 py-2 text-slate-400 hover:text-slate-700 hover:bg-slate-50 text-base leading-none transition-colors"
-            title="New tab"
-          >
-            +
-          </button>
         </div>
-
-        {/* ── Tab panels ── */}
-        {tabs.map((tab) => (
-          <div key={tab.id} className={tab.id === activeId ? "" : "hidden"}>
-            <div className="pt-4">
-              <LogsExplorer
-                environments={environments}
-                config={tab.config}
-                onConfigChange={getConfigUpdater(tab.id)}
-                isActive={tab.id === activeId}
-                onLabelChange={(label) => updateLabel(tab.id, label)}
-                tabs={tabsSummary}
-                activeTabId={activeId}
-                onTabSwitch={setActiveId}
-                fullscreen={fullscreen}
-                onFullscreenChange={setFullscreen}
-                txSearchId={tab.id === activeId ? txSearch : undefined}
-                onOpenContextTab={openContextTab}
-                onOpenEntryContextTab={openEntryContextTab}
-                anchorTimestamp={tab.anchorTimestamp}
-              />
-            </div>
-          </div>
-        ))}
-      </div>
+      </TailBufferContext.Provider>
     </TzContext.Provider>
   );
 }
