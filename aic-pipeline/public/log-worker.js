@@ -2,13 +2,17 @@
  * Log fetch worker — runs entirely off the main thread.
  *
  * Inbound messages (from component):
- *   { type: "fetch",      env, sources, beginTime, endTime, queryFilter? }
+ *   { type: "fetch",      env, sources, beginTime, endTime, queryFilter?, levels? }
  *   { type: "fetch-pause" }
  *   { type: "fetch-resume" }
  *   { type: "fetch-stop" }
- *   { type: "tail-start", env, source, tailSecs }
+ *   { type: "tail-start", env, sources, tailSecs, levels? }
  *   { type: "tail-stop" }
  *   { type: "cancel" }
+ *
+ *   `levels` (when present) is an array of effective level strings
+ *   (e.g. ["SEVERE","ERROR","FATAL"]) that the API route translates into a
+ *   server-side `_queryFilter` so AIC never ships unwanted entries.
  *
  * Outbound messages (to component):
  *   { type: "entries",  entries: LogEntry[], append: boolean }
@@ -19,8 +23,23 @@
 
 // Tail state is keyed by source so we can tail multiple sources concurrently
 // (e.g. am-everything + idm-everything on the same screen).
-let tailIntervals = new Map(); // source -> intervalId
-let tailCookies = new Map();   // source -> pagedResultsCookie
+//
+// `tailTimers`  — pending setTimeout id for each source's NEXT tick. Cleared
+//                 on stop. We use setTimeout (not setInterval) so the next
+//                 tick is only scheduled AFTER the current drain finishes,
+//                 preventing overlap when a backlog takes longer than
+//                 `tailSecs` to drain.
+// `tailCookies` — last `pagedResultsCookie` per source (for resume across ticks).
+// `tailGen`     — monotonic generation per source. Bumped on stop/restart so a
+//                 mid-flight drain that wakes up later can detect it's stale
+//                 and abort cleanly.
+// `tailSleepRejects` — per-source reject fn for the inter-page sleep, so
+//                 stopTail() can interrupt a drain immediately instead of
+//                 waiting up to RATE_LIMIT_DELAY ms.
+let tailTimers = new Map();        // source -> timeoutId
+let tailCookies = new Map();       // source -> pagedResultsCookie
+let tailGen = new Map();           // source -> generation number
+let tailSleepRejects = new Map();  // source -> reject fn for in-flight sleep
 let currentFetchId = 0;
 
 // Search pagination state
@@ -33,6 +52,11 @@ let sleepReject = null; // reject function to interrupt sleep on stop
 const RATE_LIMIT_DELAY = 1100; // 1.1s between pages (60 req/min limit)
 const MAX_RETRIES = 5;
 const MAX_CHUNK_MS = 23 * 60 * 60 * 1000; // AIC limit: < 1 day per request
+// Per tick, drain at most this many pages before yielding to the next scheduled
+// tick. With RATE_LIMIT_DELAY = 1100 ms, 25 pages ≈ 27.5 s — enough to absorb
+// large bursts but bounded so a single source can't monopolise the rate-limit
+// budget when multiple sources are tailed concurrently.
+const MAX_TAIL_PAGES_PER_TICK = 25;
 
 /** Split a time range into sub-day chunks if it exceeds 23 hours. */
 function splitTimeRange(beginTime, endTime) {
@@ -77,7 +101,7 @@ function waitForResume() {
   return new Promise((resolve) => { searchResolveResume = resolve; });
 }
 
-async function doFetch(env, sources, beginTime, endTime, queryFilter, fetchId) {
+async function doFetch(env, sources, beginTime, endTime, queryFilter, levels, fetchId) {
   self.postMessage({ type: "status", loading: true });
 
   // Split into sub-day chunks when the range exceeds the AIC 1-day limit
@@ -128,6 +152,7 @@ async function doFetch(env, sources, beginTime, endTime, queryFilter, fetchId) {
             beginTime: chunk.beginTime,
             endTime: chunk.endTime,
             ...(queryFilter ? { queryFilter } : {}),
+            ...(levels && levels.length ? { levels } : {}),
             cookie: cookie ?? undefined,
           });
 
@@ -187,35 +212,93 @@ async function doFetch(env, sources, beginTime, endTime, queryFilter, fetchId) {
   }
 }
 
-async function doTailPoll(env, source) {
+/**
+ * Per-source tail sleep. Like the global `sleep()` but registers its reject
+ * fn in `tailSleepRejects` so `stopTail()` can cancel a drain immediately
+ * instead of waiting up to RATE_LIMIT_DELAY ms.
+ */
+function tailSleep(source, ms) {
+  return new Promise((resolve, reject) => {
+    const id = setTimeout(() => { tailSleepRejects.delete(source); resolve(); }, ms);
+    tailSleepRejects.set(source, () => {
+      clearTimeout(id);
+      tailSleepRejects.delete(source);
+      reject(new Error("cancelled"));
+    });
+  });
+}
+
+/**
+ * Run one tail tick for a source: drain as many pages as available (up to
+ * MAX_TAIL_PAGES_PER_TICK), batching entries into a single postMessage so the
+ * UI sees one append per tick rather than one per page. After the drain
+ * completes, schedule the next tick `tailSecs * 1000` ms later via setTimeout.
+ *
+ * Generation guard: each tail-start bumps `tailGen` for the source. If a stale
+ * tick wakes up after a stop/restart, it observes the mismatch and returns
+ * without firing more requests or scheduling another tick.
+ */
+async function doTailTick(env, source, levels, tailSecs, gen) {
+  if (tailGen.get(source) !== gen) return;
+  let pageCount = 0;
   try {
-    const cookie = tailCookies.get(source) ?? undefined;
-    const data = await apiPost({ env, source, tail: true, cookie }, MAX_RETRIES);
-
-    if (data.error) {
-      self.postMessage({ type: "error", message: data.error });
-      return;
-    }
-
-    const entries = Array.isArray(data.result) ? data.result : [];
-    tailCookies.set(source, data.pagedResultsCookie ?? null);
-
-    if (entries.length > 0) {
-      // Tag each entry with its source so the UI can distinguish when
-      // multiple sources are tailed on the same screen.
-      for (const entry of entries) {
-        if (entry && typeof entry === "object" && entry.source == null) entry.source = source;
+    let cookie = tailCookies.get(source) ?? undefined;
+    do {
+      if (tailGen.get(source) !== gen) return;
+      if (pageCount > 0) {
+        // Stay under AIC's 60 req/min cap when draining a backlog.
+        try { await tailSleep(source, RATE_LIMIT_DELAY); } catch { return; }
+        if (tailGen.get(source) !== gen) return;
       }
-      self.postMessage({ type: "entries", entries, append: true });
-    }
+      const data = await apiPost(
+        { env, source, tail: true, cookie, ...(levels && levels.length ? { levels } : {}) },
+        MAX_RETRIES,
+      );
+      if (tailGen.get(source) !== gen) return;
+      console.log("[log-worker] tail page", { source, pageCount: pageCount + 1, entries: Array.isArray(data?.result) ? data.result.length : 0, hasCookie: !!data?.pagedResultsCookie, error: data?.error });
+      if (data.error) {
+        self.postMessage({ type: "error", message: data.error });
+        break;
+      }
+      const entries = Array.isArray(data.result) ? data.result : [];
+      cookie = data.pagedResultsCookie ?? null;
+      tailCookies.set(source, cookie);
+      pageCount++;
+      if (entries.length > 0) {
+        // Tag each entry with its source so the UI can distinguish when
+        // multiple sources are tailed on the same screen.
+        for (const entry of entries) {
+          if (entry && typeof entry === "object" && entry.source == null) entry.source = source;
+        }
+        // Stream each page to the UI immediately so users see progress while
+        // a backlog drains, instead of waiting for the whole tick to finish.
+        self.postMessage({ type: "entries", entries, append: true });
+      }
+      if (pageCount >= MAX_TAIL_PAGES_PER_TICK) break;
+    } while (cookie);
   } catch (e) {
+    if (tailGen.get(source) !== gen) return;
     self.postMessage({ type: "error", message: String(e) });
   }
+
+  if (tailGen.get(source) !== gen) return;
+  // Schedule the next tick AFTER drain finishes — guarantees no overlap.
+  const id = setTimeout(() => doTailTick(env, source, levels, tailSecs, gen), tailSecs * 1000);
+  tailTimers.set(source, id);
 }
 
 function stopTail() {
-  for (const id of tailIntervals.values()) clearInterval(id);
-  tailIntervals.clear();
+  for (const id of tailTimers.values()) clearTimeout(id);
+  tailTimers.clear();
+  // Bump generation for every active source so any in-flight drain aborts.
+  for (const source of tailGen.keys()) {
+    tailGen.set(source, (tailGen.get(source) ?? 0) + 1);
+  }
+  // Interrupt any pending inter-page sleeps.
+  for (const reject of tailSleepRejects.values()) {
+    try { reject(); } catch { /* ignore */ }
+  }
+  tailSleepRejects.clear();
   tailCookies.clear();
 }
 
@@ -239,7 +322,7 @@ self.onmessage = async function (e) {
       // Support both new multi-source (msg.sources) and old single-source (msg.source) formats
       const fetchSources = msg.sources && msg.sources.length > 0 ? msg.sources
         : msg.source ? [msg.source] : [];
-      await doFetch(msg.env, fetchSources, msg.beginTime, msg.endTime, msg.queryFilter ?? null, currentFetchId);
+      await doFetch(msg.env, fetchSources, msg.beginTime, msg.endTime, msg.queryFilter ?? null, msg.levels ?? null, currentFetchId);
       break;
 
     case "fetch-pause":
@@ -270,11 +353,16 @@ self.onmessage = async function (e) {
         self.postMessage({ type: "error", message: "No log source selected for tailing." });
         break;
       }
-      // Kick off an initial poll for each source in parallel, then schedule intervals.
-      await Promise.all(tailSources.map((src) => doTailPoll(msg.env, src)));
+      const tailLevels = Array.isArray(msg.levels) && msg.levels.length > 0 ? msg.levels : null;
+      const tailSecs = Math.max(1, Number(msg.tailSecs) || 5);
+      console.log("[log-worker] tail-start", { env: msg.env, sources: tailSources, tailSecs, levels: tailLevels });
+      // Kick off the first tick for each source immediately. Each tick
+      // self-reschedules via setTimeout when its drain finishes.
       for (const src of tailSources) {
-        const id = setInterval(() => doTailPoll(msg.env, src), msg.tailSecs * 1000);
-        tailIntervals.set(src, id);
+        const gen = (tailGen.get(src) ?? 0) + 1;
+        tailGen.set(src, gen);
+        // Fire-and-forget; doTailTick handles its own errors and rescheduling.
+        doTailTick(msg.env, src, tailLevels, tailSecs, gen);
       }
       break;
     }

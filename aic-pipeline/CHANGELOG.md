@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.4.0] - 2026-05-08
+## [0.2.5.0] - 2026-05-10
+
+### Added
+
+- **Logs configurable poll interval**: new "Poll every" dropdown in the tail toolbar (2 / 3 / 5 / 10 / 30 / 60s). Live-adjustable while tailing; restart preserves position. Persisted across sessions.
+- **Logs Highlight Clear button**: mirror of the Filter Clear button. Clearing either now also collapses any auto-expanded rows in Table and Terminal-wrap views.
+
+### Changed
+
+- **Logs server-side level filter**: the UI level selection (ERROR / WARN / INFO / etc.) is now translated into an AIC `_queryFilter` on the tail and search requests, so DEBUG/FINE entries are dropped at the source. Reduces tail/search bandwidth ~10–100× on noisy environments and keeps the client from drowning in entries you've explicitly filtered out.
+- **Logs tail backlog draining**: the worker's tail loop replaces `setInterval` with a self-rescheduling `setTimeout` chain. Each tick drains up to 25 pages with 1.1 s spacing, streaming each page to the UI as it arrives. Per-source generation guard + interruptible inter-page sleep makes stop/restart immediate. Eliminates lag accumulation when a backlog exceeds one page.
+- **Logs JSON view virtualised**: switched to `@tanstack/react-virtual` with variable-height rows. Only entries in the viewport (+ overscan) are mounted, so cost is O(visible) regardless of total entry count. Per-entry stringified JSON is cached in a `WeakMap` keyed by entry reference, so `deepUnescapeJson` + `JSON.stringify` runs once per entry for the lifetime of the buffer. Switching to JSON view on a 50k-entry buffer is now instant.
+- **Logs Copy JSON**: builds the document in 500-entry chunks with `await` yields, showing a live progress label and keeping the UI responsive on huge buffers.
+- **Logs highlight searches full JSON**: Highlight match navigation now tests the entry's full JSON instead of only the formatted terminal line, so matches in payload fields hidden in Terminal view (visible in Table/JSON) are found and counted.
+- **Logs auto-expand matching rows**: when Filter is active, every visible row in Table view auto-expands; when Highlight is active, every matching row auto-expands. Same behaviour in Terminal wrap mode.
+- **Logs Export**: now always emits JSON regardless of the active view, expands nested stringified payloads via `deepUnescapeJson` so the file matches the JSON view's rendering, and adds a `-filtered` filename suffix when Filter or Level filter is active.
 
 ### Added
 
