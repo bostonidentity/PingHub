@@ -727,7 +727,7 @@ const TailTerminal = memo(function TailTerminal({
   entries, defaultSource, searchTerm, keywords, wrapLines = false,
   scrollRequest = null, activeMatchIndex = null, matchCase = false, wholeWord = false,
   dupeCounts, autoScroll = true, onEntryDoubleClick, contextAnchorIdx = null,
-  expandCommand = null,
+  expandCommand = null, matchIndices = null, filterActive = false,
 }: {
   entries: LogEntry[];
   defaultSource: string;
@@ -744,6 +744,10 @@ const TailTerminal = memo(function TailTerminal({
   contextAnchorIdx?: number | null;
   /** Bulk expand/collapse signal from parent. Bumped via nonce to retrigger. */
   expandCommand?: { kind: "all" | "none"; nonce: number } | null;
+  /** Highlight match indices into `entries`; when set, all match rows auto-expand. */
+  matchIndices?: number[] | null;
+  /** Whether the parent Filter is active. When true, every visible row matches → expand all. */
+  filterActive?: boolean;
 }) {
   const outerRef = useRef<HTMLDivElement>(null);
   const [viewH, setViewH] = useState(400);
@@ -769,16 +773,34 @@ const TailTerminal = memo(function TailTerminal({
     });
   }, []);
 
-  // Auto-expand active match row, auto-collapse previous
-  const prevActiveRef = useRef<number | null>(null);
+  // Auto-expand matching rows (wrap mode):
+  // - Filter active → every visible row matches, expand all.
+  // - Highlight active → expand each matching row.
+  // - Active match → also expanded (subset of the above when highlight is on,
+  //   handles the case where the user navigates with no highlight query).
+  const matchKey = matchIndices ? matchIndices.join(",") : "";
   useEffect(() => {
-    if (prevActiveRef.current != null && prevActiveRef.current !== activeMatchIndex) {
-      setExpandedRows((prev) => { const next = new Set(prev); next.delete(prevActiveRef.current!); return next; });
+    if (filterActive) {
+      const all = new Set<number>();
+      for (let i = 0; i < entries.length; i++) all.add(i);
+      setExpandedRows(all);
+    } else if (matchIndices && matchIndices.length > 0) {
+      setExpandedRows(new Set(matchIndices));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterActive, matchKey, entries.length]);
+
+  // Ensure the active match (when navigating between matches with no highlight
+  // query) is always expanded.
+  useEffect(() => {
     if (activeMatchIndex != null && activeMatchIndex >= 0) {
-      setExpandedRows((prev) => { const next = new Set(prev); next.add(activeMatchIndex); return next; });
+      setExpandedRows((prev) => {
+        if (prev.has(activeMatchIndex)) return prev;
+        const next = new Set(prev);
+        next.add(activeMatchIndex);
+        return next;
+      });
     }
-    prevActiveRef.current = activeMatchIndex ?? null;
   }, [activeMatchIndex]);
 
   // Bulk expand/collapse from parent toolbar buttons
@@ -1491,7 +1513,7 @@ export function LogsExplorer({
   function applySearch(val: string) {
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
     setSearch(val);
-    setExpandedIdx(null);
+    setExpandedTableRows(new Set());
   }
   function handleFilterChange(val: string) {
     setRawSearch(val);
@@ -1506,13 +1528,33 @@ export function LogsExplorer({
   function clearSearch() {
     setRawSearch("");
     applySearch("");
+    // Also collapse any auto-expanded rows in terminal wrap view.
+    setExpandCmd({ kind: "none", nonce: Date.now() });
+  }
+  function clearHighlight() {
+    if (keywordsDebounceRef.current) clearTimeout(keywordsDebounceRef.current);
+    setKeywordsRaw("");
+    keywordsRawRef.current = "";
+    setKeywordsActive("");
+    setExpandedTableRows(new Set());
+    setExpandCmd({ kind: "none", nonce: Date.now() });
   }
 
   const [colWidths, setColWidths] = useState<Record<string, number>>({ ...DEFAULT_COL_WIDTHS });
   const handleColResize = useCallback((key: string, width: number) => {
     setColWidths((prev) => ({ ...prev, [key]: width }));
   }, []);
-  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  // Set of currently-expanded row indices (table view). Replaces a single
+  // expandedIdx so we can auto-expand every matching row when Filter or
+  // Highlight is active.
+  const [expandedTableRows, setExpandedTableRows] = useState<Set<number>>(new Set());
+  const toggleTableRow = useCallback((idx: number) => {
+    setExpandedTableRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  }, []);
   // Bulk expand/collapse signal for terminal+wrap view (handled inside TailTerminal).
   const [expandCmd, setExpandCmd] = useState<{ kind: "all" | "none"; nonce: number } | null>(null);
 
@@ -1562,7 +1604,7 @@ export function LogsExplorer({
     onConfigChange({ loading: true });
     setEntries([]);
     setFetched(false);
-    setExpandedIdx(null);
+    setExpandedTableRows(new Set());
 
     // Query all selected sources (or both if none selected)
     const querySources = selectedSources.length > 0 ? selectedSources : [...LOG_SOURCES];
@@ -1629,7 +1671,7 @@ export function LogsExplorer({
           });
           setFetched(true);
           setLastUpdated(new Date());
-          if (!msg.append) { setExpandedIdx(null); }
+          if (!msg.append) { setExpandedTableRows(new Set()); }
           // Page changes are driven by the filtered.length useEffect below
         });
       } else if (msg.type === "status") {
@@ -1791,7 +1833,7 @@ export function LogsExplorer({
     setError("");
     setEntries([]);
     setFetched(false);
-    setExpandedIdx(null);
+    setExpandedTableRows(new Set());
     setFetchProgress(null);
     // Freeze the Search keywords + per-field options for this run so subsequent
     // edits to the input don't re-filter the loaded results.
@@ -1926,20 +1968,39 @@ export function LogsExplorer({
 
   const filtered = useMemo(() => filteredWithIdx.map(({ e }) => e), [filteredWithIdx]);
 
-  // ── Match navigation (terminal view, keyword highlighting) ──
-  // Compute indices into `filtered` where the highlight query matches the formatted line.
+  // Compute indices into `filtered` where the highlight query matches the
+  // entry's full JSON — so a match in a payload field that's not in the
+  // formatted terminal line still counts (visible in Table/JSON view).
   const matchRows = useMemo(() => {
     if (highlightQuery.empty || highlightQuery.error) return [];
     const out: { key: string; index: number }[] = [];
     for (let idx = 0; idx < filteredWithIdx.length; idx++) {
       const { e, i } = filteredWithIdx[idx];
-      if (highlightQuery.test(entryStrings[i].line)) {
+      if (highlightQuery.test(entryStrings[i].json)) {
         out.push({ key: logEntryMatchKey(e, i), index: idx });
       }
     }
     return out;
   }, [filteredWithIdx, entryStrings, highlightQuery]);
   const matchIndices = useMemo(() => matchRows.map((m) => m.index), [matchRows]);
+
+  // Auto-expand rows in table view when Filter or Highlight is active.
+  // - Filter active: every visible row matches by definition \u2192 expand them all.
+  // - Highlight active: expand each matching row.
+  // The user can still toggle individual rows after; clearing Filter/Highlight
+  // (via the Clear buttons) collapses everything back.
+  useEffect(() => {
+    const filterActive = !!search;
+    const highlightActive = !highlightQuery.empty && !highlightQuery.error;
+    if (filterActive) {
+      const all = new Set<number>();
+      for (let i = 0; i < filtered.length; i++) all.add(i);
+      setExpandedTableRows(all);
+    } else if (highlightActive) {
+      setExpandedTableRows(new Set(matchIndices));
+    }
+    // When neither is active, leave expansion alone (user-controlled).
+  }, [search, highlightQuery, matchIndices, filtered.length]);
 
   // Jump to first match when keywords/options change; reset when no matches
   useEffect(() => {
@@ -1989,7 +2050,7 @@ export function LogsExplorer({
       const targetPage = Math.floor(row.index / pageSize) + 1;
       setPage(targetPage);
       setHighlightedTableIdx(row.index);
-      setExpandedIdx(null);
+      setExpandedTableRows(new Set());
       // Scroll into view after React re-renders the page
       requestAnimationFrame(() => {
         const el = scrollContainerRef.current?.querySelector(`[data-row-idx="${row.index}"]`);
@@ -2045,7 +2106,7 @@ export function LogsExplorer({
   useEffect(() => { firstMatchJumpedRef.current = false; }, [search, levelFilter]);
 
   useEffect(() => {
-    setExpandedIdx(null);
+    setExpandedTableRows(new Set());
     if (search && filtered.length > 0 && !firstMatchJumpedRef.current) {
       // First matching entry found — jump to page 1 (oldest = first match) and stay there
       firstMatchJumpedRef.current = true;
@@ -2390,6 +2451,11 @@ export function LogsExplorer({
                 {keywords.length} keyword{keywords.length !== 1 ? "s" : ""}
               </span>
             )}
+            {keywordsRaw && (
+              <button type="button" onClick={clearHighlight} className="text-xs text-slate-400 hover:text-slate-600 shrink-0">
+                Clear
+              </button>
+            )}
             <div className="flex rounded border border-slate-300 overflow-hidden shrink-0" title="Highlight predicate; also drives auto-highlight rendering for Filter and Search terms">
               <button
                 type="button"
@@ -2466,7 +2532,7 @@ export function LogsExplorer({
                   if (activeMatchIndex !== null) {
                     setHighlightedTableIdx(activeMatchIndex);
                     setPage(Math.floor(activeMatchIndex / pageSize) + 1);
-                    setExpandedIdx(null);
+                    setExpandedTableRows(new Set());
                   }
                 }}
                 className={cn(
@@ -2610,16 +2676,25 @@ export function LogsExplorer({
                 <button
                   type="button"
                   onClick={() => {
-                    const data = JSON.stringify(filtered.map((e) => ({ timestamp: e.timestamp, source: e.source, type: e.type, payload: e.payload })), null, 2);
+                    // Export is ALWAYS JSON regardless of the active view (Terminal/Table/JSON).
+                    // We export the full filtered entry objects (what the user currently sees in
+                    // the buffer after Level/Filter/Search). `deepUnescapeJson` expands nested
+                    // stringified-JSON payloads so the file matches the JSON view's rendering
+                    // and is directly machine-parseable without a second JSON.parse pass.
+                    const filtersActive = !!search || levelFilter !== "ALL";
+                    const data = JSON.stringify(filtered.map((e) => deepUnescapeJson(e)), null, 2);
                     const blob = new Blob([data], { type: "application/json" });
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement("a");
                     a.href = url;
-                    a.download = `logs-${selectedSources.join("-")}-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.json`;
+                    const ts = new Date().toISOString().slice(0, 19).replace(/:/g, "");
+                    const suffix = filtersActive ? "-filtered" : "";
+                    a.download = `logs-${selectedSources.join("-")}-${ts}${suffix}.json`;
                     a.click();
                     URL.revokeObjectURL(url);
                   }}
                   className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
+                  title="Download visible entries as JSON (full payload, regardless of current view)"
                 >
                   Export
                 </button>
@@ -2658,7 +2733,7 @@ export function LogsExplorer({
                       variant: "warning",
                     });
                     if (ok) {
-                      setEntries([]); setFetched(false); setError(""); clearSearch(); setExpandedIdx(null); setFetchProgress(null); setTailTotalReceived(0);
+                      setEntries([]); setFetched(false); setError(""); clearSearch(); setExpandedTableRows(new Set()); setFetchProgress(null); setTailTotalReceived(0);
                     }
                   }}
                   className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
@@ -2739,6 +2814,8 @@ export function LogsExplorer({
                 onEntryDoubleClick={handleContextEntry}
                 contextAnchorIdx={contextAnchorDisplay}
                 expandCommand={expandCmd}
+                matchIndices={matchIndices}
+                filterActive={!!search}
               />
             )
           ) : viewMode === "json" ? (
@@ -2792,8 +2869,8 @@ export function LogsExplorer({
                       key={globalIdx}
                       entry={entry}
                       source={tailSource}
-                      expanded={expandedIdx === globalIdx}
-                      onToggle={() => setExpandedIdx(expandedIdx === globalIdx ? null : globalIdx)}
+                      expanded={expandedTableRows.has(globalIdx)}
+                      onToggle={() => toggleTableRow(globalIdx)}
                       searchTerm={search}
                       keywords={keywords}
                       onTransactionClick={(txId) => setDrilldown({ txId })}
@@ -2827,7 +2904,7 @@ export function LogsExplorer({
             <div className="flex items-center gap-2">
               <select
                 value={pageSize}
-                onChange={(e) => { setPageSize(Number(e.target.value)); setPage(Infinity); setExpandedIdx(null); }}
+                onChange={(e) => { setPageSize(Number(e.target.value)); setPage(Infinity); setExpandedTableRows(new Set()); }}
                 className="text-xs rounded border border-slate-300 px-2 py-1 focus:outline-none focus:ring-2 focus:ring-sky-500"
               >
                 {[50, 100, 200, 500].map((s) => (
@@ -2835,11 +2912,11 @@ export function LogsExplorer({
                 ))}
               </select>
               <div className="flex items-center gap-1">
-                <button type="button" onClick={() => { setPage(1); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Oldest (page 1)">Oldest</button>
-                <button type="button" onClick={() => { setPage((p) => Math.max(1, p - 1)); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Older entries">← Older</button>
+                <button type="button" onClick={() => { setPage(1); setExpandedTableRows(new Set()); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Oldest (page 1)">Oldest</button>
+                <button type="button" onClick={() => { setPage((p) => Math.max(1, p - 1)); setExpandedTableRows(new Set()); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Older entries">← Older</button>
                 <span className="text-xs text-slate-500 px-2 tabular-nums">{currentPage} / {totalPages}</span>
-                <button type="button" onClick={() => { setPage((p) => Math.min(totalPages, p + 1)); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Newer entries">Newer →</button>
-                <button type="button" onClick={() => { setPage(totalPages); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Latest (last page)">Latest</button>
+                <button type="button" onClick={() => { setPage((p) => Math.min(totalPages, p + 1)); setExpandedTableRows(new Set()); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Newer entries">Newer →</button>
+                <button type="button" onClick={() => { setPage(totalPages); setExpandedTableRows(new Set()); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Latest (last page)">Latest</button>
               </div>
             </div>
           </div>
