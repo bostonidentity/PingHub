@@ -444,16 +444,13 @@ function ResizableHeader({
 }
 
 // ── JSON view ─────────────────────────────────────────────────────────────────
-// Single pretty-printed JSON document over all filtered entries. Filters, level
-// filter, and dedupe are already applied by the caller; this just serializes.
-//
-// Performance: this view does NOT virtualise (each entry is multi-line, so
-// fixed-height virtualisation doesn't fit), and `deepUnescapeJson` +
-// `JSON.stringify` are O(N) over the entry payload. To keep switching to JSON
-// view responsive we cap the number of entries actually rendered. The cap is
-// adjustable inline so users can opt into more if needed.
-const JSON_VIEW_DEFAULT_CAP = 1000;
-const JSON_VIEW_CAP_OPTIONS = [500, 1000, 2500, 5000, 10000];
+// Pretty-printed JSON over all filtered entries, rendered with variable-height
+// virtualisation so only entries in (and just outside) the viewport pay the
+// `deepUnescapeJson` + `JSON.stringify` cost. Per-entry text is memoised by
+// entry reference so scrolling back doesn't re-stringify.
+const JSON_VIEW_OVERSCAN = 8;
+const JSON_VIEW_ROW_ESTIMATE = 240; // px; refined per-row by measureElement
+const JSON_COPY_CHUNK = 500;        // entries per yield when building Copy text
 /** Recursively unescape JSON-encoded string values within an object.
  *  Handles pure JSON strings and strings with a text prefix followed by
  *  embedded JSON (e.g. "SEVERE: [uuid] Content: {\"key\":\"val\"}").
@@ -521,31 +518,58 @@ function JsonLogView({
   onEntryDoubleClick?: (idx: number) => void;
   contextAnchorIdx?: number;
 }) {
-  // Cap rendered entries to keep view-switching responsive. Users can raise
-  // the cap inline. The total count is shown so they know what's hidden.
-  const [renderCap, setRenderCap] = useState<number>(JSON_VIEW_DEFAULT_CAP);
-  const truncated = entries.length > renderCap;
-  // Always show the MOST RECENT N entries — the bottom of the buffer is what
-  // matters for both tail and search-by-time.
-  const visibleEntries = useMemo(
-    () => (truncated ? entries.slice(entries.length - renderCap) : entries),
-    [entries, renderCap, truncated],
-  );
-  // Defer the heavy parse/stringify work so the React commit that switches
-  // to JSON view paints a placeholder first instead of blocking.
-  const deferredEntries = useDeferredValue(visibleEntries);
-  const isPending = deferredEntries !== visibleEntries;
-  const unescaped = useMemo(() => deferredEntries.map(deepUnescapeJson), [deferredEntries]);
-  const [copied, setCopied] = useState(false);
-  const onCopy = () => {
-    // Build the Copy text lazily on click — for large buffers this can take
-    // seconds and there's no point doing it eagerly on every render.
-    const text = JSON.stringify(unescaped, null, 2);
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    }).catch(() => { });
-  };
+  // Per-entry pretty-printed JSON, cached by entry reference so we never
+  // re-stringify the same entry twice (scrolling, re-renders, tail appends).
+  // WeakMap lets us forget entries that fall out of scope without bookkeeping.
+  const textCacheRef = useRef<WeakMap<object, string>>(new WeakMap());
+  const getEntryText = useCallback((entry: LogEntry): string => {
+    const cache = textCacheRef.current;
+    let t = cache.get(entry as unknown as object);
+    if (t === undefined) {
+      t = JSON.stringify(deepUnescapeJson(entry), null, 2);
+      cache.set(entry as unknown as object, t);
+    }
+    return t;
+  }, []);
+
+  // Copy is built incrementally on click so a 50k-entry buffer doesn't freeze
+  // the main thread for several seconds. Yields between chunks let the UI
+  // stay responsive and update the progress label.
+  const [copyState, setCopyState] = useState<{ phase: "idle" | "building" | "done"; pct: number }>({ phase: "idle", pct: 0 });
+  const copyAbortRef = useRef(false);
+  useEffect(() => () => { copyAbortRef.current = true; }, []);
+  const onCopy = useCallback(async () => {
+    if (copyState.phase === "building") return;
+    copyAbortRef.current = false;
+    const total = entries.length;
+    if (total === 0) {
+      try { await navigator.clipboard.writeText("[]"); } catch { /* ignore */ }
+      setCopyState({ phase: "done", pct: 100 });
+      setTimeout(() => setCopyState({ phase: "idle", pct: 0 }), 1500);
+      return;
+    }
+    setCopyState({ phase: "building", pct: 0 });
+    const parts: string[] = ["[\n"];
+    for (let i = 0; i < total; i += JSON_COPY_CHUNK) {
+      if (copyAbortRef.current) { setCopyState({ phase: "idle", pct: 0 }); return; }
+      const end = Math.min(i + JSON_COPY_CHUNK, total);
+      for (let j = i; j < end; j++) {
+        parts.push(getEntryText(entries[j]));
+        if (j < total - 1) parts.push(",\n"); else parts.push("\n");
+      }
+      setCopyState({ phase: "building", pct: Math.round((end / total) * 100) });
+      // Yield to the browser so the progress label updates and input stays live.
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    parts.push("]");
+    try {
+      await navigator.clipboard.writeText(parts.join(""));
+      setCopyState({ phase: "done", pct: 100 });
+      setTimeout(() => setCopyState({ phase: "idle", pct: 0 }), 1500);
+    } catch {
+      setCopyState({ phase: "idle", pct: 0 });
+    }
+  }, [entries, getEntryText, copyState.phase]);
 
   // Build highlight regex once
   const allTerms = [searchTerm, ...keywords].filter(Boolean);
@@ -561,19 +585,7 @@ function JsonLogView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchTerm, keywords, matchCase, wholeWord]);
 
-  // Translate caller-supplied indices (which reference the full `entries`
-  // array) into indices within the truncated `visibleEntries`.
-  const offset = entries.length - visibleEntries.length;
-  const matchSet = useMemo(() => {
-    const s = new Set<number>();
-    for (const idx of matchIndices) {
-      const local = idx - offset;
-      if (local >= 0 && local < visibleEntries.length) s.add(local);
-    }
-    return s;
-  }, [matchIndices, offset, visibleEntries.length]);
-  const activeLocalIdx = activeEntryIdx >= 0 ? activeEntryIdx - offset : -1;
-  const ctxLocalIdx = contextAnchorIdx >= 0 ? contextAnchorIdx - offset : -1;
+  const matchSet = useMemo(() => new Set(matchIndices), [matchIndices]);
 
   function highlightText(str: string, isActiveEntry: boolean) {
     if (!hlRegex || !hlTestRe) return <>{str}</>;
@@ -591,77 +603,87 @@ function JsonLogView({
     );
   }
 
-  // Render each entry as its own block so we can scroll to matched entries
-  const entryTexts = useMemo(() => unescaped.map((e) => JSON.stringify(e, null, 2)), [unescaped]);
+  // Variable-height virtualizer over the full entry list. Only rows in the
+  // viewport (+ overscan) are mounted, so cost is O(visible) regardless of
+  // total entry count.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const virtualizer = useVirtualizer({
+    count: entries.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => JSON_VIEW_ROW_ESTIMATE,
+    measureElement: (el) => el.getBoundingClientRect().height,
+    overscan: JSON_VIEW_OVERSCAN,
+  });
+
+  // Reset measured sizes when wrap mode changes (heights will differ).
+  useEffect(() => { virtualizer.measure(); }, [wrapLines, virtualizer]);
+
+  // Scroll to the active match when it changes.
+  useEffect(() => {
+    if (activeEntryIdx >= 0 && activeEntryIdx < entries.length) {
+      virtualizer.scrollToIndex(activeEntryIdx, { align: "center" });
+    }
+  }, [activeEntryIdx, entries.length, virtualizer]);
+
+  const items = virtualizer.getVirtualItems();
+  const totalSize = virtualizer.getTotalSize();
+  const copyLabel =
+    copyState.phase === "building" ? `Copying… ${copyState.pct}%` :
+      copyState.phase === "done" ? "Copied" : "Copy JSON";
 
   return (
-    <div className="relative">
+    <div className="relative h-full flex flex-col">
       <button
         type="button"
         onClick={onCopy}
-        className="sticky top-2 float-right mr-2 px-2 py-1 text-[11px] font-medium rounded border border-slate-300 bg-white/90 backdrop-blur text-slate-600 hover:bg-slate-50 z-10 shadow-sm"
-        title="Copy visible JSON to clipboard"
+        disabled={copyState.phase === "building"}
+        className="absolute top-2 right-3 px-2 py-1 text-[11px] font-medium rounded border border-slate-300 bg-white/90 backdrop-blur text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-progress z-10 shadow-sm"
+        title="Copy full JSON to clipboard"
       >
-        {copied ? "Copied" : "Copy JSON"}
+        {copyLabel}
       </button>
-      {(truncated || isPending) && (
-        <div className="sticky top-2 z-10 mx-2 mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 rounded-md border border-amber-300 bg-amber-50 text-[11px] text-amber-800 shadow-sm">
-          {isPending && <span className="font-medium">Rendering…</span>}
-          {truncated && (
-            <>
-              <span>
-                Showing last <span className="font-semibold">{visibleEntries.length.toLocaleString()}</span> of{" "}
-                <span className="font-semibold">{entries.length.toLocaleString()}</span> entries.
-              </span>
-              <label className="flex items-center gap-1.5">
-                Limit:
-                <select
-                  value={renderCap}
-                  onChange={(e) => setRenderCap(Number(e.target.value))}
-                  className="px-1.5 py-0.5 rounded border border-amber-300 bg-white text-[11px] outline-none focus:border-amber-500"
-                >
-                  {JSON_VIEW_CAP_OPTIONS.map((n) => (
-                    <option key={n} value={n}>{n.toLocaleString()}</option>
-                  ))}
-                </select>
-              </label>
-              <span className="text-amber-700/70">Use Terminal view or narrow filters for full data.</span>
-            </>
-          )}
-        </div>
-      )}
       <div
-        className={cn(
-          "p-4 pt-2 font-mono text-[12px] leading-5 text-slate-700",
-          wrapLines ? "whitespace-pre-wrap break-all" : "whitespace-pre",
-        )}
+        ref={scrollRef}
+        className="flex-1 overflow-y-auto overflow-x-auto"
       >
-        {"[\n"}
-        {entryTexts.map((etxt, i) => {
-          const isMatch = matchSet.has(i);
-          const isActive = i === activeLocalIdx;
-          const isCtxAnchor = i === ctxLocalIdx;
-          // data-entry-idx uses the GLOBAL index so scroll-to-match logic
-          // outside this component still works.
-          const globalIdx = i + offset;
-          return (
-            <div
-              key={i}
-              data-entry-idx={globalIdx}
-              onDoubleClick={() => onEntryDoubleClick?.(globalIdx)}
-              className={cn(
-                isActive && "bg-amber-50 ring-1 ring-inset ring-amber-300 rounded",
-                isMatch && !isActive && "bg-yellow-50/60",
-                isCtxAnchor && !isActive && "bg-violet-50 ring-1 ring-inset ring-violet-300 rounded",
-              )}
-            >
-              {isMatch ? highlightText(etxt, isActive) : etxt}
-              {i < entryTexts.length - 1 ? "," : ""}
-              {"\n"}
-            </div>
-          );
-        })}
-        {"]"}
+        <div
+          className={cn(
+            "p-4 pt-2 font-mono text-[12px] leading-5 text-slate-700 relative",
+            wrapLines ? "whitespace-pre-wrap break-all" : "whitespace-pre",
+          )}
+          style={{ height: totalSize, width: "100%" }}
+        >
+          {items.map((vi) => {
+            const i = vi.index;
+            const entry = entries[i];
+            if (!entry) return null;
+            const etxt = getEntryText(entry);
+            const isMatch = matchSet.has(i);
+            const isActive = i === activeEntryIdx;
+            const isCtxAnchor = i === contextAnchorIdx;
+            const isLast = i === entries.length - 1;
+            return (
+              <div
+                key={vi.key}
+                ref={virtualizer.measureElement}
+                data-index={i}
+                data-entry-idx={i}
+                onDoubleClick={() => onEntryDoubleClick?.(i)}
+                className={cn(
+                  "absolute left-0 right-0 px-4",
+                  isActive && "bg-amber-50 ring-1 ring-inset ring-amber-300 rounded",
+                  isMatch && !isActive && "bg-yellow-50/60",
+                  isCtxAnchor && !isActive && "bg-violet-50 ring-1 ring-inset ring-violet-300 rounded",
+                )}
+                style={{ transform: `translateY(${vi.start}px)` }}
+              >
+                {i === 0 ? "[\n" : null}
+                {isMatch ? highlightText(etxt, isActive) : etxt}
+                {isLast ? "\n]" : ","}
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -2683,7 +2705,7 @@ export function LogsExplorer({
             if (h >= 200) { setTableHeight(h); saveHeight(h); }
           }}
           className={cn(
-            terminalView ? "overflow-hidden" : "overflow-y-auto overflow-x-auto",
+            terminalView || viewMode === "json" ? "overflow-hidden" : "overflow-y-auto overflow-x-auto",
             fullscreen ? "flex-1" : "resize-y min-h-[200px]"
           )}
           style={fullscreen ? undefined : { height: tableHeight }}
