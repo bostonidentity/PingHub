@@ -63,10 +63,11 @@ function isIgnoredFileName(name: string): boolean {
 }
 
 /** Write `.gitignore` if absent. Never overwrites a user-managed one. */
-function ensureDefaultGitignore(cwd: string): void {
+function ensureDefaultGitignore(cwd: string): boolean {
   const target = path.join(cwd, ".gitignore");
-  if (fs.existsSync(target)) return;
+  if (fs.existsSync(target)) return false;
   fs.writeFileSync(target, DEFAULT_GITIGNORE, "utf8");
+  return true;
 }
 
 interface PreflightResult {
@@ -109,9 +110,28 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const pushRes = runGit(["push", "-u", "origin", settings.branch], cwd, 120_000);
+  const pushRes = runGit(["push", "-u", "origin", settings.branch], cwd, 180_000);
+  if (!pushRes.ok) {
+    const detail = (pushRes.stderr || pushRes.stdout || "").trim();
+    return NextResponse.json(
+      {
+        ok: false,
+        error: detail ? `git push failed: ${detail.split("\n")[0]}` : "git push failed",
+        stdout: pushRes.stdout,
+        stderr: pushRes.stderr,
+        steps: [
+          {
+            cmd: `git push -u origin ${settings.branch}`,
+            ok: false,
+            out: detail,
+          },
+        ],
+      },
+      { status: 500 },
+    );
+  }
   return NextResponse.json({
-    ok: pushRes.ok,
+    ok: true,
     stdout: pushRes.stdout,
     stderr: pushRes.stderr,
   });
@@ -163,39 +183,128 @@ function applySetup(cwd: string, settings: GitSettings, preflight: PreflightResu
     steps.push({ cmd: `git ${args.join(" ")}`, ok: res.ok, out: res.ok ? res.stdout : res.stderr });
     return res;
   };
+  const fail = (label: string) => {
+    const last = steps[steps.length - 1];
+    const detail = last?.out?.trim();
+    return {
+      ok: false,
+      error: detail ? `${label}: ${detail.split("\n")[0]}` : label,
+      steps,
+    } as ApplyResult;
+  };
 
   if (preflight.reason === "not-initialized") {
-    if (!run(["init", "-b", settings.branch]).ok) return { ok: false, error: "git init failed", steps };
-    // Drop in a sensible default .gitignore so the initial commit doesn't
-    // capture pulled managed-data, secrets, or the op-log. No-op if the user
-    // has already provided one.
+    if (!run(["init", "-b", settings.branch]).ok) return fail("git init failed");
     ensureDefaultGitignore(cwd);
     steps.push({ cmd: "write .gitignore (default)", ok: true, out: "" });
+    // Treat exported configs as binary-stable text: never rewrite line endings.
+    // Without this, Windows users with global core.autocrlf/safecrlf=true get
+    // "git add" exiting non-zero because every JSON pulled from ForgeRock is LF.
+    run(["config", "core.autocrlf", "false"]);
+    run(["config", "core.safecrlf", "false"]);
+    // Allow paths > 260 chars on Windows (long node UUID filenames blow past it).
+    run(["config", "core.longpaths", "true"]);
     if (settings.authorName) run(["config", "user.name", settings.authorName]);
     if (settings.authorEmail) run(["config", "user.email", settings.authorEmail]);
     if (!run(["remote", "add", "origin", settings.remoteUrl]).ok)
-      return { ok: false, error: "git remote add failed", steps };
+      return fail("git remote add failed");
+  } else {
+    // Repo already exists (e.g. "no-commits" path). Seed .gitignore if it is
+    // still missing so the initial commit doesn't capture managed-data/secrets.
+    if (ensureDefaultGitignore(cwd)) {
+      steps.push({ cmd: "write .gitignore (default)", ok: true, out: "" });
+    }
+    // Idempotent: also pin CRLF settings on existing repos so re-running Push
+    // after a manual `git init` still avoids the autocrlf failure.
+    run(["config", "core.autocrlf", "false"]);
+    run(["config", "core.safecrlf", "false"]);
+    run(["config", "core.longpaths", "true"]);
   }
 
   if (preflight.reason === "branch-mismatch") {
     const created = run(["checkout", "-b", settings.branch]);
     if (!created.ok) {
       const switched = run(["checkout", settings.branch]);
-      if (!switched.ok) return { ok: false, error: created.stderr || "checkout failed", steps };
+      if (!switched.ok) return fail("git checkout failed");
     }
   }
 
   const dirty = runGit(["status", "--porcelain"], cwd);
   if (dirty.ok && dirty.stdout.trim()) {
-    if (!run(["add", "-A"]).ok) return { ok: false, error: "git add failed", steps };
+    // Best-effort: if a previous run crashed/timed out, an index.lock may be
+    // sitting in .git/. Clean it up before staging so the user doesn't have to
+    // manually delete the file. Only safe because spawnSync now uses SIGKILL,
+    // so any prior runGit invocation will be reliably dead by the time we get
+    // here.
+    clearStaleIndexLock(cwd, steps);
+
+    // -c overrides ensure CRLF warnings can never escalate to a failed exit
+    // code on Windows, regardless of the user's global git config.
+    // 10-min timeout: indexing 10k+ JSON configs on Windows can take several
+    // minutes, and any timeout here leaves the process holding index.lock.
+    const addRes = runGit(
+      [
+        "-c",
+        "core.autocrlf=false",
+        "-c",
+        "core.safecrlf=false",
+        "-c",
+        "core.longpaths=true",
+        "add",
+        "-A",
+      ],
+      cwd,
+      10 * 60 * 1000,
+    );
+    steps.push({
+      cmd: "git -c core.autocrlf=false -c core.safecrlf=false -c core.longpaths=true add -A",
+      ok: addRes.ok,
+      out: addRes.ok ? addRes.stdout : addRes.stderr,
+    });
+    if (!addRes.ok) {
+      const stderr = addRes.stderr || "";
+      if (/index\.lock.*File exists/i.test(stderr)) {
+        return {
+          ok: false,
+          error:
+            "git add failed: another git process is holding .git/index.lock. " +
+            "Close any open git command (commit/rebase) on this folder, then retry. " +
+            "If nothing is running, delete environments/.git/index.lock manually.",
+          steps,
+        };
+      }
+      return fail("git add failed");
+    }
     const commitMsg =
       preflight.reason === "not-initialized"
         ? "Initial environments snapshot"
         : "Snapshot before push";
-    if (!run(["commit", "-m", commitMsg]).ok) return { ok: false, error: "git commit failed", steps };
+    if (!run(["commit", "-m", commitMsg]).ok) return fail("git commit failed");
   }
 
   return { ok: true, steps };
+}
+
+/**
+ * Remove a stale .git/index.lock left over from a crashed or killed git
+ * process. We touch the file lazily — only delete it if it's older than 5
+ * seconds, to avoid racing a legitimate concurrent git invocation.
+ */
+function clearStaleIndexLock(cwd: string, steps: ApplyResult["steps"]): void {
+  const lock = path.join(cwd, ".git", "index.lock");
+  try {
+    const stat = fs.statSync(lock);
+    const ageMs = Date.now() - stat.mtimeMs;
+    if (ageMs < 5_000) return; // probably a real concurrent git, leave it alone
+    fs.unlinkSync(lock);
+    steps.push({
+      cmd: "rm .git/index.lock (stale)",
+      ok: true,
+      out: `removed lock file (age ${Math.round(ageMs / 1000)}s)`,
+    });
+  } catch {
+    // No lock file, or couldn't stat/unlink — fall through, git will report.
+  }
 }
 
 function countDirty(cwd: string, requireGit: boolean): number {

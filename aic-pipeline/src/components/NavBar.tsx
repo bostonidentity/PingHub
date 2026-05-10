@@ -10,27 +10,27 @@ import { cn } from "@/lib/utils";
 import type { Environment } from "@/lib/fr-config";
 
 const NAV_ITEMS = [
-  { href: "/",             label: "Dashboard" },
-  { href: "/sync",         label: "Sync" },
-  { href: "/configs",      label: "Browse" },
-  { href: "/compare",      label: "Compare" },
-  { href: "/promote",      label: "Promote" },
-  { href: "/analyze",      label: "Analyze" },
-  { href: "/data",         label: "Data" },
-  { href: "/logs",         label: "Logs" },
-  { href: "/search",       label: "Search" },
-  { href: "/history",      label: "History" },
+  { href: "/", label: "Dashboard" },
+  { href: "/sync", label: "Sync" },
+  { href: "/configs", label: "Browse" },
+  { href: "/compare", label: "Compare" },
+  { href: "/promote", label: "Promote" },
+  { href: "/analyze", label: "Analyze" },
+  { href: "/data", label: "Data" },
+  { href: "/logs", label: "Logs" },
+  { href: "/search", label: "Search" },
+  { href: "/history", label: "History" },
   { href: "/environments", label: "Environments" },
-  { href: "/rcs-status",   label: "RCS Status" },
-  { href: "/settings",     label: "Settings" },
+  { href: "/rcs-status", label: "RCS Status" },
+  { href: "/settings", label: "Repo" },
 ];
 
 const COLOR_RING: Record<string, string> = {
-  blue:   "bg-blue-400",
-  green:  "bg-emerald-400",
+  blue: "bg-blue-400",
+  green: "bg-emerald-400",
   yellow: "bg-amber-400",
-  red:    "bg-rose-400",
-  slate:  "bg-slate-400",
+  red: "bg-rose-400",
+  slate: "bg-slate-400",
 };
 
 export function NavBar() {
@@ -43,7 +43,7 @@ export function NavBar() {
   const [envs, setEnvs] = useState<Environment[]>([]);
 
   useEffect(() => {
-    fetch("/api/environments").then((r) => r.ok ? r.json() : []).then(setEnvs).catch(() => {});
+    fetch("/api/environments").then((r) => r.ok ? r.json() : []).then(setEnvs).catch(() => { });
   }, []);
 
   const active = envs.find((e) => e.name === workingEnv);

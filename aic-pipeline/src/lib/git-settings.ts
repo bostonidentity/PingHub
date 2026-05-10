@@ -1,4 +1,4 @@
-import { execSync } from "child_process";
+import { spawnSync } from "child_process";
 import fs from "fs";
 import path from "path";
 
@@ -58,29 +58,37 @@ interface RunResult {
   code: number;
 }
 
-export function runGit(args: string[], cwd: string, timeoutMs = 30_000): RunResult {
-  try {
-    const stdout = execSync(`git ${args.map(shellQuote).join(" ")}`, {
-      cwd,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: timeoutMs,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    return { ok: true, stdout: stdout.trim(), stderr: "", code: 0 };
-  } catch (e) {
-    const err = e as { stdout?: Buffer; stderr?: Buffer; status?: number; message?: string };
+export function runGit(args: string[], cwd: string, timeoutMs = 120_000): RunResult {
+  const res = spawnSync("git", args, {
+    cwd,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: timeoutMs,
+    maxBuffer: 50 * 1024 * 1024,
+    shell: false,
+    windowsHide: true,
+    // SIGTERM is mapped to a polite shutdown on Windows that git often ignores,
+    // leaving an index.lock behind and blocking the next call. SIGKILL maps to
+    // TerminateProcess which actually kills it.
+    killSignal: "SIGKILL",
+  });
+  if (res.error) {
+    const anyErr = res.error as NodeJS.ErrnoException & { code?: string };
+    const isTimeout = anyErr.code === "ETIMEDOUT" || res.signal === "SIGKILL" || res.signal === "SIGTERM";
     return {
       ok: false,
-      stdout: err.stdout?.toString() ?? "",
-      stderr: err.stderr?.toString() ?? err.message ?? "",
-      code: err.status ?? 1,
+      stdout: (res.stdout ?? "").toString(),
+      stderr:
+        (res.stderr ?? "").toString() ||
+        (isTimeout ? `git ${args[0] ?? ""} timed out after ${timeoutMs}ms` : anyErr.message),
+      code: typeof res.status === "number" ? res.status : 1,
     };
   }
-}
-
-function shellQuote(s: string): string {
-  if (s === "") return '""';
-  if (/^[A-Za-z0-9_./:@=+-]+$/.test(s)) return s;
-  return `'${s.replace(/'/g, `'\\''`)}'`;
+  const stdout = (res.stdout ?? "").toString();
+  const stderr = (res.stderr ?? "").toString();
+  const code = typeof res.status === "number" ? res.status : 1;
+  if (code === 0) {
+    return { ok: true, stdout: stdout.trim(), stderr: stderr.trim(), code: 0 };
+  }
+  return { ok: false, stdout, stderr: stderr.trim() || stdout.trim(), code };
 }
