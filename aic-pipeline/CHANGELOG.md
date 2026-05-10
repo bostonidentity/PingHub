@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5.2] - 2026-05-10
+
+### Fixed
+
+- **Settings → Push reliability on Windows**: `runGit` now uses `spawnSync` with `shell: false` instead of joining argv into a single shell string, eliminating the broken single-quote escaping that caused both the spurious `fatal: invalid object name '--pretty=format'` in the commit-history panel and silent failures of any git command containing `:`, `%`, or spaces in its arguments.
+- **Settings → "git add failed" on first push**: `git init` and every subsequent Push attempt now pin `core.autocrlf=false`, `core.safecrlf=false`, and `core.longpaths=true` in the env repo's local config, with `-c` overrides on `git add -A` as a fallback. Previously, users with `safecrlf=true` in their global git config saw `git add` exit non-zero on the CRLF warnings emitted for LF-formatted JSON pulled from ForgeRock, and journey nodes with long UUID-suffixed filenames blew past the Windows 260-character path limit with `Filename too long`.
+- **Settings → stuck `index.lock` after a slow `git add`**: indexing 10k+ JSON configs on Windows can take several minutes; the previous 2-minute timeout left the spawned `git` process alive (Windows ignores `SIGTERM`), holding `.git/index.lock` and blocking every retry with `fatal: Unable to create '.git/index.lock': File exists.`. `runGit` now sends `SIGKILL` so timeouts actually terminate the child, the `git add -A` step gets a 10-minute budget, and Push proactively removes a `.git/index.lock` file older than 5 seconds before staging. A surviving lock now produces a plain-English error with manual-cleanup instructions instead of git's raw stderr.
+
+### Changed
+
+- **Repo page (formerly Settings)**: top nav tab renamed from "Settings" to "Repo". Page restructured into a sticky left rail (Connection settings) plus a right rail with three stacked cards: Repository (action bar + status badges + toast), Working tree changes (collapsible, auto-open when dirty), and Commit history (collapsed by default to cut visual noise).
+- **Repo page error visibility**: every git action now surfaces the underlying stderr in the failure message (e.g. `git add failed: <real reason>`) and the toast renders an expandable "Show details" panel listing every git command that ran with its full stdout/stderr. Error toasts persist with a Dismiss button instead of vanishing after 4s.
+- **Repo page action bar**: Pull / Commit all / Push moved to the top of the right rail beside compact branch / ahead / behind / dirty / clean status badges, so action results sit next to the buttons that triggered them.
+
 ## [0.2.5.1] - 2026-05-10
 
 ### Added
