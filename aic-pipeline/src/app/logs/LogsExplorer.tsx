@@ -87,7 +87,16 @@ function getTextPayload(entry: LogEntry): string {
   return typeof entry.payload === "string" ? entry.payload : "";
 }
 
-type TailSecs = 5 | 10 | 30;
+type TailSecs = 2 | 3 | 5 | 10 | 30 | 60;
+
+const TAIL_SECS_OPTIONS: { value: TailSecs; label: string }[] = [
+  { value: 2, label: "2s" },
+  { value: 3, label: "3s" },
+  { value: 5, label: "5s" },
+  { value: 10, label: "10s" },
+  { value: 30, label: "30s" },
+  { value: 60, label: "60s" },
+];
 
 // Client-side level filter
 const LEVEL_ORDER = ["FATAL", "SEVERE", "ERROR", "WARN", "WARNING", "INFO", "INFORMATION", "CONFIG", "DEBUG", "FINE", "FINER", "TRACE", "FINEST"];
@@ -107,6 +116,26 @@ function levelPassesFilter(level: string, minLevel: string): boolean {
   if (idx === -1) return true;
   if (minIdx === -1) return true;
   return idx <= minIdx;
+}
+
+/**
+ * Resolve a UI level selection to the set of effective payload-level strings
+ * that AIC should return server-side. Mirrors frodo's `numLogLevelMap`.
+ *
+ * Returning `undefined` means "no server-side level filter" (used for ALL).
+ * The client-side `levelPassesFilter` still runs as a safety net for entries
+ * whose level we can't parse.
+ */
+const LEVEL_RESOLUTION: Record<string, string[]> = {
+  ERROR: ["SEVERE", "ERROR", "FATAL"],
+  WARN: ["SEVERE", "ERROR", "FATAL", "WARNING", "WARN", "CONFIG"],
+  INFO: ["SEVERE", "ERROR", "FATAL", "WARNING", "WARN", "CONFIG", "INFO", "INFORMATION"],
+  DEBUG: ["SEVERE", "ERROR", "FATAL", "WARNING", "WARN", "CONFIG", "INFO", "INFORMATION", "DEBUG", "FINE", "FINER", "FINEST"],
+};
+
+function resolveLevels(minLevel: string): string[] | undefined {
+  if (!minLevel || minLevel === "ALL") return undefined;
+  return LEVEL_RESOLUTION[minLevel];
 }
 
 // Sources queried for transaction drill-down
@@ -1588,27 +1617,28 @@ export function LogsExplorer({
     }
   }, [entries, tailing, isActive, autoScroll]);
 
-  // ── React to tailing / tailSecs changes from parent config ──
+  // ── React to tailing / tailSecs / levelFilter changes from parent config ──
   const prevTailing = useRef(false);
 
   useEffect(() => {
+    const levels = resolveLevels(levelFilter);
     if (tailing && !prevTailing.current) {
       // Start tail
       setTailTotalReceived(0);
       setEntries([]);
       setFetched(false);
       setError("");
-      workerRef.current?.postMessage({ type: "tail-start", env, sources: tailSources, tailSecs });
+      workerRef.current?.postMessage({ type: "tail-start", env, sources: tailSources, tailSecs, levels });
     } else if (!tailing && prevTailing.current) {
       // Stop tail
       workerRef.current?.postMessage({ type: "tail-stop" });
     } else if (tailing && prevTailing.current) {
-      // Restart tail (tailSecs or selected sources changed)
-      workerRef.current?.postMessage({ type: "tail-start", env, sources: tailSources, tailSecs });
+      // Restart tail (tailSecs, selected sources, or levelFilter changed)
+      workerRef.current?.postMessage({ type: "tail-start", env, sources: tailSources, tailSecs, levels });
     }
     prevTailing.current = tailing;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tailing, tailSecs, tailSources.join(",")]);
+  }, [tailing, tailSecs, levelFilter, tailSources.join(",")]);
 
   // ── React to search mode fetch trigger ──
   const prevSearchSeq = useRef(0);
@@ -1684,7 +1714,7 @@ export function LogsExplorer({
       wholeWord: searchWholeWord,
     });
     onConfigChange({ searching: true });
-    workerRef.current?.postMessage({ type: "fetch", env, sources: selectedSources, beginTime, endTime, queryFilter });
+    workerRef.current?.postMessage({ type: "fetch", env, sources: selectedSources, beginTime, endTime, queryFilter, levels: resolveLevels(levelFilter) });
     return doCleanup;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchSeq]);
@@ -2970,6 +3000,10 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
             const merged = { ...defaultCfg, ...t.config };
             // Reset env if the stored value no longer exists
             if (!validEnvNames.has(merged.env)) merged.env = defaultCfg.env;
+            // Reset tailSecs if the stored value is no longer a valid option
+            if (!TAIL_SECS_OPTIONS.some((o) => o.value === merged.tailSecs)) {
+              merged.tailSecs = defaultCfg.tailSecs;
+            }
             return { ...t, config: sanitizeConfigForPersist(merged) };
           });
           setTabs(restored);
@@ -3206,6 +3240,19 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
                     className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 bg-white"
                   >
                     {TAIL_BUFFER_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="label-xs" title="How often to poll AIC for new tail entries. Backlogs are drained inside one tick before the next poll.">Poll every</label>
+                  <select
+                    value={cfg.tailSecs}
+                    onChange={(e) => updateActiveConfig({ tailSecs: Number(e.target.value) as TailSecs })}
+                    className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 bg-white"
+                  >
+                    {TAIL_SECS_OPTIONS.map((o) => (
                       <option key={o.value} value={o.value}>{o.label}</option>
                     ))}
                   </select>
