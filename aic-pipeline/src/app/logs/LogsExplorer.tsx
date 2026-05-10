@@ -87,7 +87,16 @@ function getTextPayload(entry: LogEntry): string {
   return typeof entry.payload === "string" ? entry.payload : "";
 }
 
-type TailSecs = 5 | 10 | 30;
+type TailSecs = 2 | 3 | 5 | 10 | 30 | 60;
+
+const TAIL_SECS_OPTIONS: { value: TailSecs; label: string }[] = [
+  { value: 2, label: "2s" },
+  { value: 3, label: "3s" },
+  { value: 5, label: "5s" },
+  { value: 10, label: "10s" },
+  { value: 30, label: "30s" },
+  { value: 60, label: "60s" },
+];
 
 // Client-side level filter
 const LEVEL_ORDER = ["FATAL", "SEVERE", "ERROR", "WARN", "WARNING", "INFO", "INFORMATION", "CONFIG", "DEBUG", "FINE", "FINER", "TRACE", "FINEST"];
@@ -107,6 +116,26 @@ function levelPassesFilter(level: string, minLevel: string): boolean {
   if (idx === -1) return true;
   if (minIdx === -1) return true;
   return idx <= minIdx;
+}
+
+/**
+ * Resolve a UI level selection to the set of effective payload-level strings
+ * that AIC should return server-side. Mirrors frodo's `numLogLevelMap`.
+ *
+ * Returning `undefined` means "no server-side level filter" (used for ALL).
+ * The client-side `levelPassesFilter` still runs as a safety net for entries
+ * whose level we can't parse.
+ */
+const LEVEL_RESOLUTION: Record<string, string[]> = {
+  ERROR: ["SEVERE", "ERROR", "FATAL"],
+  WARN: ["SEVERE", "ERROR", "FATAL", "WARNING", "WARN", "CONFIG"],
+  INFO: ["SEVERE", "ERROR", "FATAL", "WARNING", "WARN", "CONFIG", "INFO", "INFORMATION"],
+  DEBUG: ["SEVERE", "ERROR", "FATAL", "WARNING", "WARN", "CONFIG", "INFO", "INFORMATION", "DEBUG", "FINE", "FINER", "FINEST"],
+};
+
+function resolveLevels(minLevel: string): string[] | undefined {
+  if (!minLevel || minLevel === "ALL") return undefined;
+  return LEVEL_RESOLUTION[minLevel];
 }
 
 // Sources queried for transaction drill-down
@@ -415,8 +444,13 @@ function ResizableHeader({
 }
 
 // ── JSON view ─────────────────────────────────────────────────────────────────
-// Single pretty-printed JSON document over all filtered entries. Filters, level
-// filter, and dedupe are already applied by the caller; this just serializes.
+// Pretty-printed JSON over all filtered entries, rendered with variable-height
+// virtualisation so only entries in (and just outside) the viewport pay the
+// `deepUnescapeJson` + `JSON.stringify` cost. Per-entry text is memoised by
+// entry reference so scrolling back doesn't re-stringify.
+const JSON_VIEW_OVERSCAN = 8;
+const JSON_VIEW_ROW_ESTIMATE = 240; // px; refined per-row by measureElement
+const JSON_COPY_CHUNK = 500;        // entries per yield when building Copy text
 /** Recursively unescape JSON-encoded string values within an object.
  *  Handles pure JSON strings and strings with a text prefix followed by
  *  embedded JSON (e.g. "SEVERE: [uuid] Content: {\"key\":\"val\"}").
@@ -484,15 +518,58 @@ function JsonLogView({
   onEntryDoubleClick?: (idx: number) => void;
   contextAnchorIdx?: number;
 }) {
-  const unescaped = useMemo(() => entries.map(deepUnescapeJson), [entries]);
-  const text = useMemo(() => JSON.stringify(unescaped, null, 2), [unescaped]);
-  const [copied, setCopied] = useState(false);
-  const onCopy = () => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    }).catch(() => { });
-  };
+  // Per-entry pretty-printed JSON, cached by entry reference so we never
+  // re-stringify the same entry twice (scrolling, re-renders, tail appends).
+  // WeakMap lets us forget entries that fall out of scope without bookkeeping.
+  const textCacheRef = useRef<WeakMap<object, string>>(new WeakMap());
+  const getEntryText = useCallback((entry: LogEntry): string => {
+    const cache = textCacheRef.current;
+    let t = cache.get(entry as unknown as object);
+    if (t === undefined) {
+      t = JSON.stringify(deepUnescapeJson(entry), null, 2);
+      cache.set(entry as unknown as object, t);
+    }
+    return t;
+  }, []);
+
+  // Copy is built incrementally on click so a 50k-entry buffer doesn't freeze
+  // the main thread for several seconds. Yields between chunks let the UI
+  // stay responsive and update the progress label.
+  const [copyState, setCopyState] = useState<{ phase: "idle" | "building" | "done"; pct: number }>({ phase: "idle", pct: 0 });
+  const copyAbortRef = useRef(false);
+  useEffect(() => () => { copyAbortRef.current = true; }, []);
+  const onCopy = useCallback(async () => {
+    if (copyState.phase === "building") return;
+    copyAbortRef.current = false;
+    const total = entries.length;
+    if (total === 0) {
+      try { await navigator.clipboard.writeText("[]"); } catch { /* ignore */ }
+      setCopyState({ phase: "done", pct: 100 });
+      setTimeout(() => setCopyState({ phase: "idle", pct: 0 }), 1500);
+      return;
+    }
+    setCopyState({ phase: "building", pct: 0 });
+    const parts: string[] = ["[\n"];
+    for (let i = 0; i < total; i += JSON_COPY_CHUNK) {
+      if (copyAbortRef.current) { setCopyState({ phase: "idle", pct: 0 }); return; }
+      const end = Math.min(i + JSON_COPY_CHUNK, total);
+      for (let j = i; j < end; j++) {
+        parts.push(getEntryText(entries[j]));
+        if (j < total - 1) parts.push(",\n"); else parts.push("\n");
+      }
+      setCopyState({ phase: "building", pct: Math.round((end / total) * 100) });
+      // Yield to the browser so the progress label updates and input stays live.
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    parts.push("]");
+    try {
+      await navigator.clipboard.writeText(parts.join(""));
+      setCopyState({ phase: "done", pct: 100 });
+      setTimeout(() => setCopyState({ phase: "idle", pct: 0 }), 1500);
+    } catch {
+      setCopyState({ phase: "idle", pct: 0 });
+    }
+  }, [entries, getEntryText, copyState.phase]);
 
   // Build highlight regex once
   const allTerms = [searchTerm, ...keywords].filter(Boolean);
@@ -526,48 +603,87 @@ function JsonLogView({
     );
   }
 
-  // Render each entry as its own block so we can scroll to matched entries
-  const entryTexts = useMemo(() => unescaped.map((e) => JSON.stringify(e, null, 2)), [unescaped]);
+  // Variable-height virtualizer over the full entry list. Only rows in the
+  // viewport (+ overscan) are mounted, so cost is O(visible) regardless of
+  // total entry count.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const virtualizer = useVirtualizer({
+    count: entries.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => JSON_VIEW_ROW_ESTIMATE,
+    measureElement: (el) => el.getBoundingClientRect().height,
+    overscan: JSON_VIEW_OVERSCAN,
+  });
+
+  // Reset measured sizes when wrap mode changes (heights will differ).
+  useEffect(() => { virtualizer.measure(); }, [wrapLines, virtualizer]);
+
+  // Scroll to the active match when it changes.
+  useEffect(() => {
+    if (activeEntryIdx >= 0 && activeEntryIdx < entries.length) {
+      virtualizer.scrollToIndex(activeEntryIdx, { align: "center" });
+    }
+  }, [activeEntryIdx, entries.length, virtualizer]);
+
+  const items = virtualizer.getVirtualItems();
+  const totalSize = virtualizer.getTotalSize();
+  const copyLabel =
+    copyState.phase === "building" ? `Copying… ${copyState.pct}%` :
+      copyState.phase === "done" ? "Copied" : "Copy JSON";
 
   return (
-    <div className="relative">
+    <div className="relative h-full flex flex-col">
       <button
         type="button"
         onClick={onCopy}
-        className="sticky top-2 float-right mr-2 px-2 py-1 text-[11px] font-medium rounded border border-slate-300 bg-white/90 backdrop-blur text-slate-600 hover:bg-slate-50 z-10 shadow-sm"
-        title="Copy JSON to clipboard"
+        disabled={copyState.phase === "building"}
+        className="absolute top-2 right-3 px-2 py-1 text-[11px] font-medium rounded border border-slate-300 bg-white/90 backdrop-blur text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-progress z-10 shadow-sm"
+        title="Copy full JSON to clipboard"
       >
-        {copied ? "Copied" : "Copy JSON"}
+        {copyLabel}
       </button>
       <div
-        className={cn(
-          "p-4 pt-2 font-mono text-[12px] leading-5 text-slate-700",
-          wrapLines ? "whitespace-pre-wrap break-all" : "whitespace-pre",
-        )}
+        ref={scrollRef}
+        className="flex-1 overflow-y-auto overflow-x-auto"
       >
-        {"[\n"}
-        {entryTexts.map((etxt, i) => {
-          const isMatch = matchSet.has(i);
-          const isActive = i === activeEntryIdx;
-          const isCtxAnchor = i === contextAnchorIdx;
-          return (
-            <div
-              key={i}
-              data-entry-idx={i}
-              onDoubleClick={() => onEntryDoubleClick?.(i)}
-              className={cn(
-                isActive && "bg-amber-50 ring-1 ring-inset ring-amber-300 rounded",
-                isMatch && !isActive && "bg-yellow-50/60",
-                isCtxAnchor && !isActive && "bg-violet-50 ring-1 ring-inset ring-violet-300 rounded",
-              )}
-            >
-              {isMatch ? highlightText(etxt, isActive) : etxt}
-              {i < entryTexts.length - 1 ? "," : ""}
-              {"\n"}
-            </div>
-          );
-        })}
-        {"]"}
+        <div
+          className={cn(
+            "p-4 pt-2 font-mono text-[12px] leading-5 text-slate-700 relative",
+            wrapLines ? "whitespace-pre-wrap break-all" : "whitespace-pre",
+          )}
+          style={{ height: totalSize, width: "100%" }}
+        >
+          {items.map((vi) => {
+            const i = vi.index;
+            const entry = entries[i];
+            if (!entry) return null;
+            const etxt = getEntryText(entry);
+            const isMatch = matchSet.has(i);
+            const isActive = i === activeEntryIdx;
+            const isCtxAnchor = i === contextAnchorIdx;
+            const isLast = i === entries.length - 1;
+            return (
+              <div
+                key={vi.key}
+                ref={virtualizer.measureElement}
+                data-index={i}
+                data-entry-idx={i}
+                onDoubleClick={() => onEntryDoubleClick?.(i)}
+                className={cn(
+                  "absolute left-0 right-0 px-4",
+                  isActive && "bg-amber-50 ring-1 ring-inset ring-amber-300 rounded",
+                  isMatch && !isActive && "bg-yellow-50/60",
+                  isCtxAnchor && !isActive && "bg-violet-50 ring-1 ring-inset ring-violet-300 rounded",
+                )}
+                style={{ transform: `translateY(${vi.start}px)` }}
+              >
+                {i === 0 ? "[\n" : null}
+                {isMatch ? highlightText(etxt, isActive) : etxt}
+                {isLast ? "\n]" : ","}
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -611,7 +727,7 @@ const TailTerminal = memo(function TailTerminal({
   entries, defaultSource, searchTerm, keywords, wrapLines = false,
   scrollRequest = null, activeMatchIndex = null, matchCase = false, wholeWord = false,
   dupeCounts, autoScroll = true, onEntryDoubleClick, contextAnchorIdx = null,
-  expandCommand = null,
+  expandCommand = null, matchIndices = null, filterActive = false,
 }: {
   entries: LogEntry[];
   defaultSource: string;
@@ -628,6 +744,10 @@ const TailTerminal = memo(function TailTerminal({
   contextAnchorIdx?: number | null;
   /** Bulk expand/collapse signal from parent. Bumped via nonce to retrigger. */
   expandCommand?: { kind: "all" | "none"; nonce: number } | null;
+  /** Highlight match indices into `entries`; when set, all match rows auto-expand. */
+  matchIndices?: number[] | null;
+  /** Whether the parent Filter is active. When true, every visible row matches → expand all. */
+  filterActive?: boolean;
 }) {
   const outerRef = useRef<HTMLDivElement>(null);
   const [viewH, setViewH] = useState(400);
@@ -653,16 +773,34 @@ const TailTerminal = memo(function TailTerminal({
     });
   }, []);
 
-  // Auto-expand active match row, auto-collapse previous
-  const prevActiveRef = useRef<number | null>(null);
+  // Auto-expand matching rows (wrap mode):
+  // - Filter active → every visible row matches, expand all.
+  // - Highlight active → expand each matching row.
+  // - Active match → also expanded (subset of the above when highlight is on,
+  //   handles the case where the user navigates with no highlight query).
+  const matchKey = matchIndices ? matchIndices.join(",") : "";
   useEffect(() => {
-    if (prevActiveRef.current != null && prevActiveRef.current !== activeMatchIndex) {
-      setExpandedRows((prev) => { const next = new Set(prev); next.delete(prevActiveRef.current!); return next; });
+    if (filterActive) {
+      const all = new Set<number>();
+      for (let i = 0; i < entries.length; i++) all.add(i);
+      setExpandedRows(all);
+    } else if (matchIndices && matchIndices.length > 0) {
+      setExpandedRows(new Set(matchIndices));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterActive, matchKey, entries.length]);
+
+  // Ensure the active match (when navigating between matches with no highlight
+  // query) is always expanded.
+  useEffect(() => {
     if (activeMatchIndex != null && activeMatchIndex >= 0) {
-      setExpandedRows((prev) => { const next = new Set(prev); next.add(activeMatchIndex); return next; });
+      setExpandedRows((prev) => {
+        if (prev.has(activeMatchIndex)) return prev;
+        const next = new Set(prev);
+        next.add(activeMatchIndex);
+        return next;
+      });
     }
-    prevActiveRef.current = activeMatchIndex ?? null;
   }, [activeMatchIndex]);
 
   // Bulk expand/collapse from parent toolbar buttons
@@ -1375,7 +1513,7 @@ export function LogsExplorer({
   function applySearch(val: string) {
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
     setSearch(val);
-    setExpandedIdx(null);
+    setExpandedTableRows(new Set());
   }
   function handleFilterChange(val: string) {
     setRawSearch(val);
@@ -1390,13 +1528,33 @@ export function LogsExplorer({
   function clearSearch() {
     setRawSearch("");
     applySearch("");
+    // Also collapse any auto-expanded rows in terminal wrap view.
+    setExpandCmd({ kind: "none", nonce: Date.now() });
+  }
+  function clearHighlight() {
+    if (keywordsDebounceRef.current) clearTimeout(keywordsDebounceRef.current);
+    setKeywordsRaw("");
+    keywordsRawRef.current = "";
+    setKeywordsActive("");
+    setExpandedTableRows(new Set());
+    setExpandCmd({ kind: "none", nonce: Date.now() });
   }
 
   const [colWidths, setColWidths] = useState<Record<string, number>>({ ...DEFAULT_COL_WIDTHS });
   const handleColResize = useCallback((key: string, width: number) => {
     setColWidths((prev) => ({ ...prev, [key]: width }));
   }, []);
-  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  // Set of currently-expanded row indices (table view). Replaces a single
+  // expandedIdx so we can auto-expand every matching row when Filter or
+  // Highlight is active.
+  const [expandedTableRows, setExpandedTableRows] = useState<Set<number>>(new Set());
+  const toggleTableRow = useCallback((idx: number) => {
+    setExpandedTableRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  }, []);
   // Bulk expand/collapse signal for terminal+wrap view (handled inside TailTerminal).
   const [expandCmd, setExpandCmd] = useState<{ kind: "all" | "none"; nonce: number } | null>(null);
 
@@ -1446,7 +1604,7 @@ export function LogsExplorer({
     onConfigChange({ loading: true });
     setEntries([]);
     setFetched(false);
-    setExpandedIdx(null);
+    setExpandedTableRows(new Set());
 
     // Query all selected sources (or both if none selected)
     const querySources = selectedSources.length > 0 ? selectedSources : [...LOG_SOURCES];
@@ -1513,7 +1671,7 @@ export function LogsExplorer({
           });
           setFetched(true);
           setLastUpdated(new Date());
-          if (!msg.append) { setExpandedIdx(null); }
+          if (!msg.append) { setExpandedTableRows(new Set()); }
           // Page changes are driven by the filtered.length useEffect below
         });
       } else if (msg.type === "status") {
@@ -1588,27 +1746,28 @@ export function LogsExplorer({
     }
   }, [entries, tailing, isActive, autoScroll]);
 
-  // ── React to tailing / tailSecs changes from parent config ──
+  // ── React to tailing / tailSecs / levelFilter changes from parent config ──
   const prevTailing = useRef(false);
 
   useEffect(() => {
+    const levels = resolveLevels(levelFilter);
     if (tailing && !prevTailing.current) {
       // Start tail
       setTailTotalReceived(0);
       setEntries([]);
       setFetched(false);
       setError("");
-      workerRef.current?.postMessage({ type: "tail-start", env, sources: tailSources, tailSecs });
+      workerRef.current?.postMessage({ type: "tail-start", env, sources: tailSources, tailSecs, levels });
     } else if (!tailing && prevTailing.current) {
       // Stop tail
       workerRef.current?.postMessage({ type: "tail-stop" });
     } else if (tailing && prevTailing.current) {
-      // Restart tail (tailSecs or selected sources changed)
-      workerRef.current?.postMessage({ type: "tail-start", env, sources: tailSources, tailSecs });
+      // Restart tail (tailSecs, selected sources, or levelFilter changed)
+      workerRef.current?.postMessage({ type: "tail-start", env, sources: tailSources, tailSecs, levels });
     }
     prevTailing.current = tailing;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tailing, tailSecs, tailSources.join(",")]);
+  }, [tailing, tailSecs, levelFilter, tailSources.join(",")]);
 
   // ── React to search mode fetch trigger ──
   const prevSearchSeq = useRef(0);
@@ -1674,7 +1833,7 @@ export function LogsExplorer({
     setError("");
     setEntries([]);
     setFetched(false);
-    setExpandedIdx(null);
+    setExpandedTableRows(new Set());
     setFetchProgress(null);
     // Freeze the Search keywords + per-field options for this run so subsequent
     // edits to the input don't re-filter the loaded results.
@@ -1684,7 +1843,7 @@ export function LogsExplorer({
       wholeWord: searchWholeWord,
     });
     onConfigChange({ searching: true });
-    workerRef.current?.postMessage({ type: "fetch", env, sources: selectedSources, beginTime, endTime, queryFilter });
+    workerRef.current?.postMessage({ type: "fetch", env, sources: selectedSources, beginTime, endTime, queryFilter, levels: resolveLevels(levelFilter) });
     return doCleanup;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchSeq]);
@@ -1809,20 +1968,39 @@ export function LogsExplorer({
 
   const filtered = useMemo(() => filteredWithIdx.map(({ e }) => e), [filteredWithIdx]);
 
-  // ── Match navigation (terminal view, keyword highlighting) ──
-  // Compute indices into `filtered` where the highlight query matches the formatted line.
+  // Compute indices into `filtered` where the highlight query matches the
+  // entry's full JSON — so a match in a payload field that's not in the
+  // formatted terminal line still counts (visible in Table/JSON view).
   const matchRows = useMemo(() => {
     if (highlightQuery.empty || highlightQuery.error) return [];
     const out: { key: string; index: number }[] = [];
     for (let idx = 0; idx < filteredWithIdx.length; idx++) {
       const { e, i } = filteredWithIdx[idx];
-      if (highlightQuery.test(entryStrings[i].line)) {
+      if (highlightQuery.test(entryStrings[i].json)) {
         out.push({ key: logEntryMatchKey(e, i), index: idx });
       }
     }
     return out;
   }, [filteredWithIdx, entryStrings, highlightQuery]);
   const matchIndices = useMemo(() => matchRows.map((m) => m.index), [matchRows]);
+
+  // Auto-expand rows in table view when Filter or Highlight is active.
+  // - Filter active: every visible row matches by definition \u2192 expand them all.
+  // - Highlight active: expand each matching row.
+  // The user can still toggle individual rows after; clearing Filter/Highlight
+  // (via the Clear buttons) collapses everything back.
+  useEffect(() => {
+    const filterActive = !!search;
+    const highlightActive = !highlightQuery.empty && !highlightQuery.error;
+    if (filterActive) {
+      const all = new Set<number>();
+      for (let i = 0; i < filtered.length; i++) all.add(i);
+      setExpandedTableRows(all);
+    } else if (highlightActive) {
+      setExpandedTableRows(new Set(matchIndices));
+    }
+    // When neither is active, leave expansion alone (user-controlled).
+  }, [search, highlightQuery, matchIndices, filtered.length]);
 
   // Jump to first match when keywords/options change; reset when no matches
   useEffect(() => {
@@ -1872,7 +2050,7 @@ export function LogsExplorer({
       const targetPage = Math.floor(row.index / pageSize) + 1;
       setPage(targetPage);
       setHighlightedTableIdx(row.index);
-      setExpandedIdx(null);
+      setExpandedTableRows(new Set());
       // Scroll into view after React re-renders the page
       requestAnimationFrame(() => {
         const el = scrollContainerRef.current?.querySelector(`[data-row-idx="${row.index}"]`);
@@ -1928,7 +2106,7 @@ export function LogsExplorer({
   useEffect(() => { firstMatchJumpedRef.current = false; }, [search, levelFilter]);
 
   useEffect(() => {
-    setExpandedIdx(null);
+    setExpandedTableRows(new Set());
     if (search && filtered.length > 0 && !firstMatchJumpedRef.current) {
       // First matching entry found — jump to page 1 (oldest = first match) and stay there
       firstMatchJumpedRef.current = true;
@@ -2273,6 +2451,11 @@ export function LogsExplorer({
                 {keywords.length} keyword{keywords.length !== 1 ? "s" : ""}
               </span>
             )}
+            {keywordsRaw && (
+              <button type="button" onClick={clearHighlight} className="text-xs text-slate-400 hover:text-slate-600 shrink-0">
+                Clear
+              </button>
+            )}
             <div className="flex rounded border border-slate-300 overflow-hidden shrink-0" title="Highlight predicate; also drives auto-highlight rendering for Filter and Search terms">
               <button
                 type="button"
@@ -2349,7 +2532,7 @@ export function LogsExplorer({
                   if (activeMatchIndex !== null) {
                     setHighlightedTableIdx(activeMatchIndex);
                     setPage(Math.floor(activeMatchIndex / pageSize) + 1);
-                    setExpandedIdx(null);
+                    setExpandedTableRows(new Set());
                   }
                 }}
                 className={cn(
@@ -2493,16 +2676,25 @@ export function LogsExplorer({
                 <button
                   type="button"
                   onClick={() => {
-                    const data = JSON.stringify(filtered.map((e) => ({ timestamp: e.timestamp, source: e.source, type: e.type, payload: e.payload })), null, 2);
+                    // Export is ALWAYS JSON regardless of the active view (Terminal/Table/JSON).
+                    // We export the full filtered entry objects (what the user currently sees in
+                    // the buffer after Level/Filter/Search). `deepUnescapeJson` expands nested
+                    // stringified-JSON payloads so the file matches the JSON view's rendering
+                    // and is directly machine-parseable without a second JSON.parse pass.
+                    const filtersActive = !!search || levelFilter !== "ALL";
+                    const data = JSON.stringify(filtered.map((e) => deepUnescapeJson(e)), null, 2);
                     const blob = new Blob([data], { type: "application/json" });
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement("a");
                     a.href = url;
-                    a.download = `logs-${selectedSources.join("-")}-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.json`;
+                    const ts = new Date().toISOString().slice(0, 19).replace(/:/g, "");
+                    const suffix = filtersActive ? "-filtered" : "";
+                    a.download = `logs-${selectedSources.join("-")}-${ts}${suffix}.json`;
                     a.click();
                     URL.revokeObjectURL(url);
                   }}
                   className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
+                  title="Download visible entries as JSON (full payload, regardless of current view)"
                 >
                   Export
                 </button>
@@ -2541,7 +2733,7 @@ export function LogsExplorer({
                       variant: "warning",
                     });
                     if (ok) {
-                      setEntries([]); setFetched(false); setError(""); clearSearch(); setExpandedIdx(null); setFetchProgress(null); setTailTotalReceived(0);
+                      setEntries([]); setFetched(false); setError(""); clearSearch(); setExpandedTableRows(new Set()); setFetchProgress(null); setTailTotalReceived(0);
                     }
                   }}
                   className="text-xs text-slate-400 hover:text-slate-600 transition-colors shrink-0"
@@ -2588,7 +2780,7 @@ export function LogsExplorer({
             if (h >= 200) { setTableHeight(h); saveHeight(h); }
           }}
           className={cn(
-            terminalView ? "overflow-hidden" : "overflow-y-auto overflow-x-auto",
+            terminalView || viewMode === "json" ? "overflow-hidden" : "overflow-y-auto overflow-x-auto",
             fullscreen ? "flex-1" : "resize-y min-h-[200px]"
           )}
           style={fullscreen ? undefined : { height: tableHeight }}
@@ -2622,6 +2814,8 @@ export function LogsExplorer({
                 onEntryDoubleClick={handleContextEntry}
                 contextAnchorIdx={contextAnchorDisplay}
                 expandCommand={expandCmd}
+                matchIndices={matchIndices}
+                filterActive={!!search}
               />
             )
           ) : viewMode === "json" ? (
@@ -2675,8 +2869,8 @@ export function LogsExplorer({
                       key={globalIdx}
                       entry={entry}
                       source={tailSource}
-                      expanded={expandedIdx === globalIdx}
-                      onToggle={() => setExpandedIdx(expandedIdx === globalIdx ? null : globalIdx)}
+                      expanded={expandedTableRows.has(globalIdx)}
+                      onToggle={() => toggleTableRow(globalIdx)}
                       searchTerm={search}
                       keywords={keywords}
                       onTransactionClick={(txId) => setDrilldown({ txId })}
@@ -2710,7 +2904,7 @@ export function LogsExplorer({
             <div className="flex items-center gap-2">
               <select
                 value={pageSize}
-                onChange={(e) => { setPageSize(Number(e.target.value)); setPage(Infinity); setExpandedIdx(null); }}
+                onChange={(e) => { setPageSize(Number(e.target.value)); setPage(Infinity); setExpandedTableRows(new Set()); }}
                 className="text-xs rounded border border-slate-300 px-2 py-1 focus:outline-none focus:ring-2 focus:ring-sky-500"
               >
                 {[50, 100, 200, 500].map((s) => (
@@ -2718,11 +2912,11 @@ export function LogsExplorer({
                 ))}
               </select>
               <div className="flex items-center gap-1">
-                <button type="button" onClick={() => { setPage(1); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Oldest (page 1)">Oldest</button>
-                <button type="button" onClick={() => { setPage((p) => Math.max(1, p - 1)); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Older entries">← Older</button>
+                <button type="button" onClick={() => { setPage(1); setExpandedTableRows(new Set()); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Oldest (page 1)">Oldest</button>
+                <button type="button" onClick={() => { setPage((p) => Math.max(1, p - 1)); setExpandedTableRows(new Set()); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Older entries">← Older</button>
                 <span className="text-xs text-slate-500 px-2 tabular-nums">{currentPage} / {totalPages}</span>
-                <button type="button" onClick={() => { setPage((p) => Math.min(totalPages, p + 1)); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Newer entries">Newer →</button>
-                <button type="button" onClick={() => { setPage(totalPages); setExpandedIdx(null); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Latest (last page)">Latest</button>
+                <button type="button" onClick={() => { setPage((p) => Math.min(totalPages, p + 1)); setExpandedTableRows(new Set()); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Newer entries">Newer →</button>
+                <button type="button" onClick={() => { setPage(totalPages); setExpandedTableRows(new Set()); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Latest (last page)">Latest</button>
               </div>
             </div>
           </div>
@@ -2970,6 +3164,10 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
             const merged = { ...defaultCfg, ...t.config };
             // Reset env if the stored value no longer exists
             if (!validEnvNames.has(merged.env)) merged.env = defaultCfg.env;
+            // Reset tailSecs if the stored value is no longer a valid option
+            if (!TAIL_SECS_OPTIONS.some((o) => o.value === merged.tailSecs)) {
+              merged.tailSecs = defaultCfg.tailSecs;
+            }
             return { ...t, config: sanitizeConfigForPersist(merged) };
           });
           setTabs(restored);
@@ -3206,6 +3404,19 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
                     className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 bg-white"
                   >
                     {TAIL_BUFFER_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="label-xs" title="How often to poll AIC for new tail entries. Backlogs are drained inside one tick before the next poll.">Poll every</label>
+                  <select
+                    value={cfg.tailSecs}
+                    onChange={(e) => updateActiveConfig({ tailSecs: Number(e.target.value) as TailSecs })}
+                    className="block px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 bg-white"
+                  >
+                    {TAIL_SECS_OPTIONS.map((o) => (
                       <option key={o.value} value={o.value}>{o.label}</option>
                     ))}
                   </select>
