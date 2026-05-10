@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5.1] - 2026-05-10
+
+### Added
+
+- **Settings → environments repo**: when initialising the environments folder as a git repo for the first time, PingHub now writes a default `.gitignore` that excludes pulled `managed-data/` (data.ndjson, index.sqlite, _manifest.json, _refs.json, .jobs/), per-env `.env*` credentials, the local `.op-log.jsonl`, and common editor / merge-conflict noise. The AIC config tree, `log-api.json`, `release.json`, `rcs-status.json`, and `environments.json` remain tracked. An existing `.gitignore` is never overwritten. The dirty-file count shown in the init confirmation dialog now respects the same patterns so it matches what will actually be staged.
+
 ## [0.2.5.0] - 2026-05-10
 
 ### Added
