@@ -446,6 +446,14 @@ function ResizableHeader({
 // ── JSON view ─────────────────────────────────────────────────────────────────
 // Single pretty-printed JSON document over all filtered entries. Filters, level
 // filter, and dedupe are already applied by the caller; this just serializes.
+//
+// Performance: this view does NOT virtualise (each entry is multi-line, so
+// fixed-height virtualisation doesn't fit), and `deepUnescapeJson` +
+// `JSON.stringify` are O(N) over the entry payload. To keep switching to JSON
+// view responsive we cap the number of entries actually rendered. The cap is
+// adjustable inline so users can opt into more if needed.
+const JSON_VIEW_DEFAULT_CAP = 1000;
+const JSON_VIEW_CAP_OPTIONS = [500, 1000, 2500, 5000, 10000];
 /** Recursively unescape JSON-encoded string values within an object.
  *  Handles pure JSON strings and strings with a text prefix followed by
  *  embedded JSON (e.g. "SEVERE: [uuid] Content: {\"key\":\"val\"}").
@@ -513,10 +521,26 @@ function JsonLogView({
   onEntryDoubleClick?: (idx: number) => void;
   contextAnchorIdx?: number;
 }) {
-  const unescaped = useMemo(() => entries.map(deepUnescapeJson), [entries]);
-  const text = useMemo(() => JSON.stringify(unescaped, null, 2), [unescaped]);
+  // Cap rendered entries to keep view-switching responsive. Users can raise
+  // the cap inline. The total count is shown so they know what's hidden.
+  const [renderCap, setRenderCap] = useState<number>(JSON_VIEW_DEFAULT_CAP);
+  const truncated = entries.length > renderCap;
+  // Always show the MOST RECENT N entries — the bottom of the buffer is what
+  // matters for both tail and search-by-time.
+  const visibleEntries = useMemo(
+    () => (truncated ? entries.slice(entries.length - renderCap) : entries),
+    [entries, renderCap, truncated],
+  );
+  // Defer the heavy parse/stringify work so the React commit that switches
+  // to JSON view paints a placeholder first instead of blocking.
+  const deferredEntries = useDeferredValue(visibleEntries);
+  const isPending = deferredEntries !== visibleEntries;
+  const unescaped = useMemo(() => deferredEntries.map(deepUnescapeJson), [deferredEntries]);
   const [copied, setCopied] = useState(false);
   const onCopy = () => {
+    // Build the Copy text lazily on click — for large buffers this can take
+    // seconds and there's no point doing it eagerly on every render.
+    const text = JSON.stringify(unescaped, null, 2);
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
@@ -537,7 +561,19 @@ function JsonLogView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchTerm, keywords, matchCase, wholeWord]);
 
-  const matchSet = useMemo(() => new Set(matchIndices), [matchIndices]);
+  // Translate caller-supplied indices (which reference the full `entries`
+  // array) into indices within the truncated `visibleEntries`.
+  const offset = entries.length - visibleEntries.length;
+  const matchSet = useMemo(() => {
+    const s = new Set<number>();
+    for (const idx of matchIndices) {
+      const local = idx - offset;
+      if (local >= 0 && local < visibleEntries.length) s.add(local);
+    }
+    return s;
+  }, [matchIndices, offset, visibleEntries.length]);
+  const activeLocalIdx = activeEntryIdx >= 0 ? activeEntryIdx - offset : -1;
+  const ctxLocalIdx = contextAnchorIdx >= 0 ? contextAnchorIdx - offset : -1;
 
   function highlightText(str: string, isActiveEntry: boolean) {
     if (!hlRegex || !hlTestRe) return <>{str}</>;
@@ -564,10 +600,36 @@ function JsonLogView({
         type="button"
         onClick={onCopy}
         className="sticky top-2 float-right mr-2 px-2 py-1 text-[11px] font-medium rounded border border-slate-300 bg-white/90 backdrop-blur text-slate-600 hover:bg-slate-50 z-10 shadow-sm"
-        title="Copy JSON to clipboard"
+        title="Copy visible JSON to clipboard"
       >
         {copied ? "Copied" : "Copy JSON"}
       </button>
+      {(truncated || isPending) && (
+        <div className="sticky top-2 z-10 mx-2 mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 rounded-md border border-amber-300 bg-amber-50 text-[11px] text-amber-800 shadow-sm">
+          {isPending && <span className="font-medium">Rendering…</span>}
+          {truncated && (
+            <>
+              <span>
+                Showing last <span className="font-semibold">{visibleEntries.length.toLocaleString()}</span> of{" "}
+                <span className="font-semibold">{entries.length.toLocaleString()}</span> entries.
+              </span>
+              <label className="flex items-center gap-1.5">
+                Limit:
+                <select
+                  value={renderCap}
+                  onChange={(e) => setRenderCap(Number(e.target.value))}
+                  className="px-1.5 py-0.5 rounded border border-amber-300 bg-white text-[11px] outline-none focus:border-amber-500"
+                >
+                  {JSON_VIEW_CAP_OPTIONS.map((n) => (
+                    <option key={n} value={n}>{n.toLocaleString()}</option>
+                  ))}
+                </select>
+              </label>
+              <span className="text-amber-700/70">Use Terminal view or narrow filters for full data.</span>
+            </>
+          )}
+        </div>
+      )}
       <div
         className={cn(
           "p-4 pt-2 font-mono text-[12px] leading-5 text-slate-700",
@@ -577,13 +639,16 @@ function JsonLogView({
         {"[\n"}
         {entryTexts.map((etxt, i) => {
           const isMatch = matchSet.has(i);
-          const isActive = i === activeEntryIdx;
-          const isCtxAnchor = i === contextAnchorIdx;
+          const isActive = i === activeLocalIdx;
+          const isCtxAnchor = i === ctxLocalIdx;
+          // data-entry-idx uses the GLOBAL index so scroll-to-match logic
+          // outside this component still works.
+          const globalIdx = i + offset;
           return (
             <div
               key={i}
-              data-entry-idx={i}
-              onDoubleClick={() => onEntryDoubleClick?.(i)}
+              data-entry-idx={globalIdx}
+              onDoubleClick={() => onEntryDoubleClick?.(globalIdx)}
               className={cn(
                 isActive && "bg-amber-50 ring-1 ring-inset ring-amber-300 rounded",
                 isMatch && !isActive && "bg-yellow-50/60",
