@@ -169,41 +169,21 @@ const LOG_SOURCES = ["am-everything", "idm-everything"] as const;
 
 const TERMINAL_ROW_H = 20;     // px — fixed height per row (nowrap lines)
 const TERMINAL_OVERSCAN = 15;    // extra rows rendered above/below viewport
-// Browsers eventually become imprecise with extremely tall scroll surfaces.
-// Keep the DOM scrollHeight under a safe ceiling, but make that ceiling large
-// enough that dragging the scrollbar still has useful resolution for 100K+
-// log buffers. A tiny cap keeps the thumb visually large, but it maps one
-// scroll pixel to too much content and feels jumpy near the bottom.
-const LOG_SCROLL_MAX_H = 8_000_000;
-function computeLogScrollCap(clientH: number): number {
-  return Math.max(clientH + 1, LOG_SCROLL_MAX_H);
-}
-
-function intendedScrollHeight(el: HTMLElement, intrinsicH: number): number {
-  return Math.min(intrinsicH, computeLogScrollCap(el.clientHeight));
-}
-
-function actualScrollRange(el: HTMLElement, intrinsicH?: number): number {
-  const intended = intrinsicH === undefined ? 0 : intendedScrollHeight(el, intrinsicH);
-  return Math.max(1, Math.max(el.scrollHeight, intended) - el.clientHeight);
-}
-
-function intrinsicScrollRange(intrinsicH: number, el: HTMLElement): number {
-  return Math.max(1, intrinsicH - el.clientHeight);
-}
-
-function isScrollHeightCapped(intrinsicH: number, el: HTMLElement): boolean {
-  return intrinsicH > computeLogScrollCap(el.clientHeight);
-}
-
-function actualToVirtualScrollTop(el: HTMLElement, intrinsicH: number): number {
-  if (!isScrollHeightCapped(intrinsicH, el)) return el.scrollTop;
-  return (el.scrollTop / actualScrollRange(el, intrinsicH)) * intrinsicScrollRange(intrinsicH, el);
-}
-
-function virtualToActualScrollTopForElement(el: HTMLElement, intrinsicH: number, virtual: number): number {
-  if (!isScrollHeightCapped(intrinsicH, el)) return virtual;
-  return Math.max(0, (virtual / intrinsicScrollRange(intrinsicH, el)) * actualScrollRange(el, intrinsicH));
+// Browsers enforce a minimum scrollbar thumb size (~16-20px). When content is
+// so tall that the natural thumb size (clientHeight^2 / scrollHeight) falls
+// below this minimum, the cursor-to-thumb mapping becomes non-linear: the
+// browser shrinks the thumb to the minimum, so dragging the cursor through
+// the full track no longer corresponds to traversing the full scroll range
+// proportionally — the thumb visibly drifts away from the cursor.
+//
+// To keep the mapping LINEAR (so the thumb tracks the cursor pixel-perfect),
+// we cap nowrap scrollHeight so the natural thumb size never falls below
+// this minimum. Above the cap we scale-map scrollTop -> virtual row position
+// and translate the rendered row group manually.
+const NOWRAP_MIN_THUMB_H = 24; // safe margin above browser minimum
+function computeNowrapScrollCap(clientH: number): number {
+  // thumb_h = clientH^2 / scrollH; require thumb_h >= NOWRAP_MIN_THUMB_H
+  return Math.max(clientH + 1, Math.floor((clientH * clientH) / NOWRAP_MIN_THUMB_H));
 }
 
 
@@ -494,15 +474,18 @@ function ResizableHeader({
 // `deepUnescapeJson` + `JSON.stringify` cost. Per-entry text is memoised by
 // entry reference so scrolling back doesn't re-stringify.
 const JSON_VIEW_OVERSCAN = 8;
-const JSON_VIEW_ROW_H = 20;         // px; matches text-[12px] leading-5
+const JSON_VIEW_ROW_ESTIMATE = 240; // px; refined per-row by measureElement
 const JSON_COPY_CHUNK = 500;        // entries per yield when building Copy text
-const JSON_MONO_CHAR_W = 7.2;       // px; stable estimate for 12px monospace
 // Same pattern as terminal nowrap: cap the visible scrollHeight so the
 // browser's minimum-thumb-size kludge can't break cursor-to-thumb linearity.
 // Natural thumb height = clientH² / scrollH. We cap scrollH so natural thumb
-// ≥ LOG_SCROLL_MIN_THUMB_H, keeping the thumb glued to the cursor during drag.
+// ≥ JSON_MIN_THUMB_H, keeping the thumb glued to the cursor during drag.
 // Side benefit: with scrollH = cap (constant), totalSize creep from row
 // measurement no longer shifts the scrollbar position at all.
+const JSON_MIN_THUMB_H = 24;
+function computeJsonScrollCap(clientH: number): number {
+  return Math.max(clientH + 1, Math.floor((clientH * clientH) / JSON_MIN_THUMB_H));
+}
 /** Recursively unescape JSON-encoded string values within an object.
  *  Handles pure JSON strings and strings with a text prefix followed by
  *  embedded JSON (e.g. "SEVERE: [uuid] Content: {\"key\":\"val\"}").
@@ -545,25 +528,6 @@ function findJsonStart(s: string): number {
   if (t.endsWith("}")) { const i = s.indexOf("{"); return i > 0 ? i : -1; }
   if (t.endsWith("]")) { const i = s.indexOf("["); return i > 0 ? i : -1; }
   return -1;
-}
-
-function estimateJsonVisualLines(
-  text: string,
-  opts: { index: number; isLast: boolean; wrapLines: boolean; width: number },
-): number {
-  const logicalLines = text.split("\n").length;
-  const extraLines = (opts.index === 0 ? 1 : 0) + (opts.isLast ? 1 : 0);
-  if (!opts.wrapLines) return logicalLines + extraLines;
-
-  const contentWidth = Math.max(80, opts.width - 32);
-  const charsPerLine = Math.max(1, Math.floor(contentWidth / JSON_MONO_CHAR_W));
-  let visualLines = 0;
-  if (opts.index === 0) visualLines += 1;
-  for (const line of text.split("\n")) {
-    visualLines += Math.max(1, Math.ceil(line.length / charsPerLine));
-  }
-  if (opts.isLast) visualLines += 1;
-  return visualLines;
 }
 
 function JsonLogView({
@@ -689,152 +653,137 @@ function JsonLogView({
     );
   }
 
-  // JSON view uses a fixed prefix-sum scroll model instead of react-virtual's
-  // lazy measurement. That keeps the scrollbar stable during a drag: no row
-  // sizes are discovered or revised while the user scrolls a stopped log set.
+  // Variable-height virtualizer over the full entry list. Only rows in the
+  // viewport (+ overscan) are mounted, so cost is O(visible) regardless of
+  // total entry count.
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Per-index height cache + running average estimate. We sample each row's
+  // height the first time it mounts, then lock both the per-row cache and
+  // the estimate so subsequent renders cannot shift totalSize. This keeps
+  // the scrollbar thumb glued to the cursor through long drags.
+  //
+  // Without this, react-virtual will:
+  //   1. estimate every unmeasured row at a guess (e.g. 240px),
+  //   2. update size as each row mounts (delta = real - estimate),
+  //   3. update size *again* when row content changes (highlight rings
+  //      add 1-2px to height), which keeps shifting totalSize even when
+  //      the user has stopped tailing.
+  // The combined drift makes the scrollbar lag behind the cursor.
+  const ESTIMATE_LOCK_AFTER = 40;
+  const avgRowHeightRef = useRef(JSON_VIEW_ROW_ESTIMATE);
+  const measuredSumRef = useRef(0);
+  const estimateLockedRef = useRef(false);
+  // Per-index cached height; once an entry is measured once we keep that
+  // height forever (until wrap mode flips), even if the rendered row's
+  // actual height jitters by a few pixels due to highlight rings.
+  const heightCacheRef = useRef<Map<number, number>>(new Map());
+  // Wrapper that holds the rendered rows. When intrinsicH > cap, we translate
+  // this wrapper by (actualScrollTop - virtualScrollTop) so rows positioned at
+  // virtual offsets still land at the correct screen position.
   const offsetWrapperRef = useRef<HTMLDivElement | null>(null);
-  const scrollRafRef = useRef<number | null>(null);
-  const [viewClientH, setViewClientH] = useState(600);
-  const [viewWidth, setViewWidth] = useState(800);
-  const [virtualScrollTop, setVirtualScrollTop] = useState(0);
-  const rowHeightCacheRef = useRef<WeakMap<LogEntry, Map<string, number>>>(new WeakMap());
-  const getEstimatedRowHeight = useCallback((index: number): number => {
-    const entry = entries[index];
-    if (!entry) return JSON_VIEW_ROW_H;
-    const widthBucket = wrapLines ? Math.max(1, Math.floor(viewWidth / 40)) : 0;
-    const cacheKey = [
-      wrapLines ? `wrap:${widthBucket}` : "nowrap",
-      index === 0 ? "first" : "",
-      index === entries.length - 1 ? "last" : "",
-    ].join(":");
-    let entryCache = rowHeightCacheRef.current.get(entry);
-    if (!entryCache) {
-      entryCache = new Map();
-      rowHeightCacheRef.current.set(entry, entryCache);
-    }
-    const cached = entryCache.get(cacheKey);
-    if (cached !== undefined) return cached;
-
-    const text = getEntryText(entry);
-    const visualLines = estimateJsonVisualLines(text, {
-      index,
-      isLast: index === entries.length - 1,
-      wrapLines,
-      width: viewWidth,
-    });
-    const height = Math.max(JSON_VIEW_ROW_H, visualLines * JSON_VIEW_ROW_H);
-    entryCache.set(cacheKey, height);
-    return height;
-  }, [entries, getEntryText, viewWidth, wrapLines]);
-
-  const rowMetrics = useMemo(() => {
-    const offsets = new Array<number>(entries.length);
-    const heights = new Array<number>(entries.length);
-    let totalSize = 0;
-    for (let i = 0; i < entries.length; i++) {
-      offsets[i] = totalSize;
-      const h = getEstimatedRowHeight(i);
-      heights[i] = h;
-      totalSize += h;
-    }
-    return { offsets, heights, totalSize };
-  }, [entries.length, getEstimatedRowHeight]);
-
-  const totalSize = rowMetrics.totalSize;
-  const cappedHeight = Math.min(totalSize, computeLogScrollCap(viewClientH));
-
-  const syncJsonScroll = useCallback((defer = false) => {
-    const run = () => {
-      scrollRafRef.current = null;
-      const el = scrollRef.current;
+  const virtualizer = useVirtualizer({
+    count: entries.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => avgRowHeightRef.current,
+    measureElement: (el) => {
+      const idxAttr = el.getAttribute("data-index");
+      const idx = idxAttr != null ? Number(idxAttr) : NaN;
+      const cache = heightCacheRef.current;
+      if (Number.isFinite(idx) && cache.has(idx)) {
+        // Stable: never let row content changes (rings, highlights) re-measure.
+        return cache.get(idx)!;
+      }
+      const h = el.getBoundingClientRect().height;
+      if (Number.isFinite(idx)) cache.set(idx, h);
+      if (!estimateLockedRef.current) {
+        measuredSumRef.current += h;
+        const n = cache.size;
+        if (n >= 5) {
+          avgRowHeightRef.current = measuredSumRef.current / n;
+        }
+        if (n >= ESTIMATE_LOCK_AFTER) {
+          estimateLockedRef.current = true;
+        }
+      }
+      return h;
+    },
+    overscan: JSON_VIEW_OVERSCAN,
+    // Lie to react-virtual about scrollTop: when the intrinsic total size
+    // exceeds our cap, we report a *virtual* scroll position so it picks
+    // the correct visible window, while the actual scroll element reports
+    // a much smaller scrollHeight (= cap) that produces a sane thumb size.
+    observeElementOffset: (instance, cb) => {
+      const el = instance.scrollElement as HTMLElement | null;
       if (!el) return;
-      const virtual = actualToVirtualScrollTop(el, totalSize);
-      const wrapper = offsetWrapperRef.current;
-      if (wrapper) {
-        wrapper.style.transform = isScrollHeightCapped(totalSize, el)
-          ? `translateY(${el.scrollTop - virtual}px)`
-          : "translateY(0px)";
+      let scrollTimeout: number | null = null;
+      const onScroll = () => {
+        const intrinsicH = instance.getTotalSize();
+        const clientH = el.clientHeight;
+        const cap = computeJsonScrollCap(clientH);
+        let virtual = el.scrollTop;
+        let wrapperOffset = 0;
+        if (intrinsicH > cap) {
+          const intrinsicScroll = Math.max(1, intrinsicH - clientH);
+          const actualScroll = Math.max(1, cap - clientH);
+          virtual = (el.scrollTop / actualScroll) * intrinsicScroll;
+          wrapperOffset = el.scrollTop - virtual;
+        }
+        const wrapper = offsetWrapperRef.current;
+        if (wrapper) wrapper.style.transform = `translateY(${wrapperOffset}px)`;
+        if (scrollTimeout) window.clearTimeout(scrollTimeout);
+        scrollTimeout = window.setTimeout(() => { cb(virtual, false); }, 150);
+        cb(virtual, true);
+      };
+      el.addEventListener("scroll", onScroll, { passive: true });
+      onScroll();
+      return () => {
+        el.removeEventListener("scroll", onScroll);
+        if (scrollTimeout) window.clearTimeout(scrollTimeout);
+      };
+    },
+    // Programmatic scrolls (scrollToIndex) deliver a *virtual* offset; map it
+    // back to the capped scroll-element coordinate space before applying.
+    scrollToFn: (offset, options, instance) => {
+      const el = instance.scrollElement as HTMLElement | null;
+      if (!el) return;
+      const intrinsicH = instance.getTotalSize();
+      const clientH = el.clientHeight;
+      const cap = computeJsonScrollCap(clientH);
+      let actual = offset;
+      if (intrinsicH > cap) {
+        const intrinsicScroll = Math.max(1, intrinsicH - clientH);
+        const actualScroll = Math.max(1, cap - clientH);
+        actual = (offset / intrinsicScroll) * actualScroll;
       }
-      setVirtualScrollTop((prev) => (Math.abs(prev - virtual) < 1 ? prev : virtual));
-      atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-    };
-    if (!defer) {
-      if (scrollRafRef.current !== null) {
-        cancelAnimationFrame(scrollRafRef.current);
-        scrollRafRef.current = null;
-      }
-      run();
-      return;
-    }
-    if (scrollRafRef.current !== null) return;
-    scrollRafRef.current = requestAnimationFrame(run);
-  }, [totalSize]);
+      el.scrollTo({ top: actual, behavior: options.behavior });
+    },
+  });
 
-  const findStartIndex = useCallback((target: number): number => {
-    const offsets = rowMetrics.offsets;
-    if (offsets.length === 0) return 0;
-    let lo = 0;
-    let hi = offsets.length - 1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (offsets[mid] <= target) lo = mid + 1;
-      else hi = mid - 1;
-    }
-    return Math.max(0, Math.min(offsets.length - 1, hi));
-  }, [rowMetrics.offsets]);
-
-  const visibleItems = useMemo(() => {
-    if (entries.length === 0) return [] as { index: number; start: number; height: number; key: number }[];
-    const overscanPx = Math.max(viewClientH, JSON_VIEW_OVERSCAN * JSON_VIEW_ROW_H);
-    const startY = Math.max(0, virtualScrollTop - overscanPx);
-    const endY = virtualScrollTop + viewClientH + overscanPx;
-    const start = findStartIndex(startY);
-    const out: { index: number; start: number; height: number; key: number }[] = [];
-    for (let i = start; i < entries.length; i++) {
-      const rowStart = rowMetrics.offsets[i];
-      if (rowStart > endY) break;
-      out.push({ index: i, start: rowStart, height: rowMetrics.heights[i], key: i });
-    }
-    return out;
-  }, [entries.length, findStartIndex, rowMetrics, viewClientH, virtualScrollTop]);
-
-  const scrollToVirtual = useCallback((virtualTop: number, behavior: ScrollBehavior = "auto") => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const maxVirtual = Math.max(0, totalSize - el.clientHeight);
-    const virtual = Math.max(0, Math.min(maxVirtual, virtualTop));
-    el.scrollTo({
-      top: virtualToActualScrollTopForElement(el, totalSize, virtual),
-      behavior,
-    });
-    requestAnimationFrame(() => syncJsonScroll(false));
-  }, [syncJsonScroll, totalSize]);
-
-  const scrollToEntry = useCallback((index: number, align: "center" | "end" = "center") => {
-    const el = scrollRef.current;
-    if (!el || index < 0 || index >= entries.length) return;
-    const rowStart = rowMetrics.offsets[index] ?? 0;
-    const rowHeight = rowMetrics.heights[index] ?? JSON_VIEW_ROW_H;
-    const target = align === "end"
-      ? rowStart + rowHeight - el.clientHeight
-      : rowStart - Math.max(0, (el.clientHeight - rowHeight) / 2);
-    scrollToVirtual(target);
-  }, [entries.length, rowMetrics, scrollToVirtual]);
+  // Reset measurement samples + average when wrap mode changes (heights differ).
+  useEffect(() => {
+    heightCacheRef.current = new Map();
+    measuredSumRef.current = 0;
+    estimateLockedRef.current = false;
+    avgRowHeightRef.current = JSON_VIEW_ROW_ESTIMATE;
+    virtualizer.measure();
+  }, [wrapLines, virtualizer]);
 
   // Track whether the user is pinned to the bottom of the JSON view. Auto-tail
   // and eviction compensation behave differently depending on this.
   const atBottomRef = useRef(true);
   const handleViewScroll = useCallback(() => {
-    syncJsonScroll(true);
-  }, [syncJsonScroll]);
+    const el = scrollRef.current;
+    if (!el) return;
+    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  }, []);
 
   // Auto-tail: when pinned to bottom and autoScroll is on, follow new entries.
   useEffect(() => {
     if (!autoScroll || !atBottomRef.current) return;
     if (entries.length === 0) return;
-    scrollToEntry(entries.length - 1, "end");
-  }, [entries.length, autoScroll, scrollToEntry]);
+    virtualizer.scrollToIndex(entries.length - 1, { align: "end" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries.length, autoScroll]);
 
   // Stabilize viewport when buffer evicts from the front. Without this, every
   // eviction shifts every row's index, so the same scrollTop now reveals
@@ -845,61 +794,64 @@ function JsonLogView({
     const delta = evictedCount - prevEvictedRef.current;
     prevEvictedRef.current = evictedCount;
     if (delta <= 0) return;
+    // Re-key the per-index height cache: row N is now at N-delta. Drop any
+    // entries that fell off the front.
+    const cache = heightCacheRef.current;
+    if (cache.size > 0) {
+      const next = new Map<number, number>();
+      for (const [k, v] of cache) {
+        const shifted = k - delta;
+        if (shifted >= 0) next.set(shifted, v);
+      }
+      heightCacheRef.current = next;
+    }
     if (autoScroll && atBottomRef.current) return; // following tail — separate effect handles scroll
     const el = scrollRef.current;
     if (!el) return;
     // delta * avgRow is in *virtual* px. Scale into actual-scroll px when the
     // scrollHeight is capped so the visual anchor stays put.
-    const intrinsicH = totalSize;
-    const avgRow = entries.length > 0 ? intrinsicH / entries.length : JSON_VIEW_ROW_H;
-    const virtualDelta = delta * avgRow;
-    const scale = isScrollHeightCapped(intrinsicH, el)
-      ? actualScrollRange(el, intrinsicH) / intrinsicScrollRange(intrinsicH, el)
+    const virtualDelta = delta * avgRowHeightRef.current;
+    const intrinsicH = virtualizer.getTotalSize();
+    const cap = computeJsonScrollCap(el.clientHeight);
+    const scale = intrinsicH > cap
+      ? Math.max(1, cap - el.clientHeight) / Math.max(1, intrinsicH - el.clientHeight)
       : 1;
     el.scrollTop = Math.max(0, el.scrollTop - virtualDelta * scale);
-    requestAnimationFrame(() => syncJsonScroll(false));
-  }, [evictedCount, autoScroll, entries.length, syncJsonScroll, totalSize]);
+  }, [evictedCount, autoScroll, entries.length, virtualizer]);
 
   // Scroll to the active match when it changes.
   useEffect(() => {
     if (activeEntryIdx >= 0 && activeEntryIdx < entries.length) {
-      scrollToEntry(activeEntryIdx, "center");
+      virtualizer.scrollToIndex(activeEntryIdx, { align: "center" });
     }
-  }, [activeEntryIdx, entries.length, scrollToEntry]);
+  }, [activeEntryIdx, entries.length, virtualizer]);
 
   // Scroll to the selected entry on demand (initial click + view-mode switch).
   const selectedNonce = selectedScrollRequest?.nonce;
   const selectedIdx = selectedScrollRequest?.index;
   useEffect(() => {
     if (selectedIdx == null || selectedIdx < 0 || selectedIdx >= entries.length) return;
-    scrollToEntry(selectedIdx, "center");
+    virtualizer.scrollToIndex(selectedIdx, { align: "center" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNonce]);
 
+  const items = virtualizer.getVirtualItems();
+  const totalSize = virtualizer.getTotalSize();
   // Track scroll element's clientHeight so we can compute the viewport-aware
   // scrollbar cap. ResizeObserver keeps this in sync with layout changes.
+  const [viewClientH, setViewClientH] = useState(600);
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     setViewClientH(el.clientHeight);
-    setViewWidth(el.clientWidth);
     const ro = new ResizeObserver(() => {
       const h = el.clientHeight;
-      const w = el.clientWidth;
       if (h > 0) setViewClientH(h);
-      if (w > 0) setViewWidth(w);
     });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-
-  useLayoutEffect(() => {
-    syncJsonScroll(false);
-  }, [syncJsonScroll, cappedHeight]);
-
-  useEffect(() => () => {
-    if (scrollRafRef.current !== null) cancelAnimationFrame(scrollRafRef.current);
-  }, []);
+  const cappedHeight = Math.min(totalSize, computeJsonScrollCap(viewClientH));
   const copyLabel =
     copyState.phase === "building" ? `Copying… ${copyState.pct}%` :
       copyState.phase === "done" ? "Copied" : "Copy JSON";
@@ -918,21 +870,20 @@ function JsonLogView({
       <div
         ref={scrollRef}
         onScroll={handleViewScroll}
-        className="flex-1 overflow-y-auto overflow-x-scroll"
-        style={{ overflowAnchor: "none", scrollbarGutter: "stable" }}
+        className="flex-1 overflow-y-auto overflow-x-auto"
       >
         <div
           className={cn(
-            "font-mono text-[12px] leading-5 text-slate-700 relative",
+            "p-4 pt-2 font-mono text-[12px] leading-5 text-slate-700 relative",
             wrapLines ? "whitespace-pre-wrap break-all" : "whitespace-pre",
           )}
-          style={{ height: cappedHeight, width: "100%", overflowAnchor: "none" }}
+          style={{ height: cappedHeight, width: "100%" }}
         >
           <div
             ref={offsetWrapperRef}
             style={{ position: "absolute", top: 0, left: 0, right: 0, willChange: "transform" }}
           >
-            {visibleItems.map((vi) => {
+            {items.map((vi) => {
               const i = vi.index;
               const entry = entries[i];
               if (!entry) return null;
@@ -945,6 +896,7 @@ function JsonLogView({
               return (
                 <div
                   key={vi.key}
+                  ref={virtualizer.measureElement}
                   data-index={i}
                   data-entry-idx={i}
                   onClick={() => onEntryClick?.(i)}
@@ -956,7 +908,7 @@ function JsonLogView({
                     isMatch && !isActive && !isSelected && "bg-yellow-50/60",
                     isCtxAnchor && !isActive && !isSelected && "bg-violet-50 ring-1 ring-inset ring-violet-300 rounded",
                   )}
-                  style={{ height: vi.height, transform: `translateY(${vi.start}px)`, overflowAnchor: "none" }}
+                  style={{ transform: `translateY(${vi.start}px)` }}
                 >
                   {i === 0 ? "[\n" : null}
                   {isMatch ? highlightText(etxt, isActive) : etxt}
@@ -1129,7 +1081,6 @@ const TailTerminal = memo(function TailTerminal({
   const wrapAvgRef = useRef(32);
   const wrapSumRef = useRef(0);
   const wrapHeightCacheRef = useRef<Map<number, number>>(new Map());
-  const wrapOffsetWrapperRef = useRef<HTMLDivElement>(null);
   const wrapVirtualizer = useVirtualizer({
     count: entries.length,
     getScrollElement: () => outerRef.current,
@@ -1153,42 +1104,6 @@ const TailTerminal = memo(function TailTerminal({
     },
     overscan: TERMINAL_OVERSCAN,
     enabled: wrapLines,
-    observeElementOffset: (instance, cb) => {
-      const el = instance.scrollElement as HTMLElement | null;
-      if (!el) return;
-      let scrollTimeout: number | null = null;
-      let disposed = false;
-      const onScroll = () => {
-        if (disposed) return;
-        const intrinsicH = instance.getTotalSize();
-        const virtual = actualToVirtualScrollTop(el, intrinsicH);
-        const wrapper = wrapOffsetWrapperRef.current;
-        if (wrapper) {
-          wrapper.style.transform = isScrollHeightCapped(intrinsicH, el)
-            ? `translateY(${el.scrollTop - virtual}px)`
-            : "";
-        }
-        if (scrollTimeout) window.clearTimeout(scrollTimeout);
-        scrollTimeout = window.setTimeout(() => { cb(virtual, false); }, 150);
-        cb(virtual, true);
-      };
-      el.addEventListener("scroll", onScroll, { passive: true });
-      queueMicrotask(onScroll);
-      return () => {
-        disposed = true;
-        el.removeEventListener("scroll", onScroll);
-        if (scrollTimeout) window.clearTimeout(scrollTimeout);
-      };
-    },
-    scrollToFn: (offset, options, instance) => {
-      const el = instance.scrollElement as HTMLElement | null;
-      if (!el) return;
-      const intrinsicH = instance.getTotalSize();
-      el.scrollTo({
-        top: virtualToActualScrollTopForElement(el, intrinsicH, offset),
-        behavior: options.behavior,
-      });
-    },
   });
 
   // Helper: convert virtual scroll position (in row-pixel space) to actual
@@ -1197,7 +1112,11 @@ const TailTerminal = memo(function TailTerminal({
     const el = outerRef.current;
     if (!el) return virtual;
     const intrinsicH = entries.length * TERMINAL_ROW_H;
-    return virtualToActualScrollTopForElement(el, intrinsicH, virtual);
+    const cap = computeNowrapScrollCap(el.clientHeight);
+    if (intrinsicH <= cap) return virtual;
+    const intrinsicScroll = Math.max(1, intrinsicH - el.clientHeight);
+    const actualScroll = Math.max(1, cap - el.clientHeight);
+    return Math.max(0, (virtual / intrinsicScroll) * actualScroll);
   }, [entries.length]);
 
   // Auto-scroll to bottom when new entries arrive
@@ -1243,9 +1162,8 @@ const TailTerminal = memo(function TailTerminal({
       // Translate the equivalent virtual delta (delta * ROW_H) into actual
       // scroll px, respecting the nowrap scrollHeight cap.
       const intrinsicH = entries.length * TERMINAL_ROW_H;
-      const scale = isScrollHeightCapped(intrinsicH, el)
-        ? actualScrollRange(el, intrinsicH) / intrinsicScrollRange(intrinsicH, el)
-        : 1;
+      const cap = computeNowrapScrollCap(el.clientHeight);
+      const scale = intrinsicH > cap ? cap / intrinsicH : 1;
       el.scrollTop = Math.max(0, el.scrollTop - delta * TERMINAL_ROW_H * scale);
     }
   }, [evictedCount, autoScroll, wrapLines, entries.length, wrapVirtualizer]);
@@ -1274,7 +1192,12 @@ const TailTerminal = memo(function TailTerminal({
     // Only re-render when the visible row window actually shifts
     if (!wrapLines) {
       const intrinsicH = entries.length * TERMINAL_ROW_H;
-      const virtualScrollTop = actualToVirtualScrollTop(el, intrinsicH);
+      const cap = computeNowrapScrollCap(el.clientHeight);
+      const denom = Math.max(1, Math.min(intrinsicH, cap) - el.clientHeight);
+      const intrinsicScroll = Math.max(1, intrinsicH - el.clientHeight);
+      const virtualScrollTop = intrinsicH > cap
+        ? (el.scrollTop / denom) * intrinsicScroll
+        : el.scrollTop;
       const newStart = Math.max(0, Math.floor(virtualScrollTop / TERMINAL_ROW_H) - TERMINAL_OVERSCAN);
       setStartIdx((prev) => (prev === newStart ? prev : newStart));
       // Update the imperative transform now so the rendered rows track the
@@ -1303,7 +1226,12 @@ const TailTerminal = memo(function TailTerminal({
     const el = outerRef.current;
     if (!group || !el) return;
     const intrinsicH = entries.length * TERMINAL_ROW_H;
-    const virtualScrollTop = actualToVirtualScrollTop(el, intrinsicH);
+    const cap = computeNowrapScrollCap(el.clientHeight);
+    const denom = Math.max(1, Math.min(intrinsicH, cap) - el.clientHeight);
+    const intrinsicScroll = Math.max(1, intrinsicH - el.clientHeight);
+    const virtualScrollTop = intrinsicH > cap
+      ? (el.scrollTop / denom) * intrinsicScroll
+      : el.scrollTop;
     const s = nextStart ?? startIdx;
     const groupTop = el.scrollTop + (s * TERMINAL_ROW_H - virtualScrollTop);
     group.style.transform = `translateY(${groupTop}px)`;
@@ -1318,23 +1246,10 @@ const TailTerminal = memo(function TailTerminal({
   // Virtual list window — startIdx is now state-driven (only updates when visible range shifts)
   // Cap nowrap scrollHeight so the scrollbar thumb stays at the browser's
   // minimum size and the cursor-to-thumb mapping stays linear during drag.
-  const intrinsicWrapH = wrapVirtualizer.getTotalSize();
-  const wrapTotalH = Math.min(intrinsicWrapH, computeLogScrollCap(viewH));
   const intrinsicNowrapH = entries.length * TERMINAL_ROW_H;
-  const nowrapCap = computeLogScrollCap(viewH);
+  const nowrapCap = computeNowrapScrollCap(viewH);
   const totalH = Math.min(intrinsicNowrapH, nowrapCap);
   const endIdx = Math.min(entries.length - 1, startIdx + Math.ceil(viewH / TERMINAL_ROW_H) + TERMINAL_OVERSCAN * 2);
-
-  useLayoutEffect(() => {
-    if (!wrapLines) return;
-    const wrapper = wrapOffsetWrapperRef.current;
-    const el = outerRef.current;
-    if (!wrapper || !el) return;
-    const virtual = actualToVirtualScrollTop(el, intrinsicWrapH);
-    wrapper.style.transform = isScrollHeightCapped(intrinsicWrapH, el)
-      ? `translateY(${el.scrollTop - virtual}px)`
-      : "translateY(0px)";
-  }, [wrapLines, intrinsicWrapH, wrapTotalH]);
 
   // Flash key: increments each time we navigate to a match, re-triggers the CSS animation
   const [flashKey, setFlashKey] = useState(0);
@@ -1415,54 +1330,49 @@ const TailTerminal = memo(function TailTerminal({
           </div>
         ) : wrapLines ? (
           /* Wrap mode: variable-height virtual list via @tanstack/react-virtual */
-          <div style={{ height: wrapTotalH, position: "relative" }}>
-            <div
-              ref={wrapOffsetWrapperRef}
-              style={{ position: "absolute", top: 0, left: 0, right: 0, willChange: "transform" }}
-            >
-              {wrapVirtualizer.getVirtualItems().map((vRow) => {
-                const entry = entries[vRow.index];
-                const count = dupeCounts?.get(vRow.index) ?? 1;
-                const isActive = activeMatchIndex === vRow.index;
-                const isCtxAnchor = contextAnchorIdx === vRow.index;
-                const isRowExpanded = expandedRows.has(vRow.index);
-                return (
-                  // Outer div: stable key + measureElement for virtualizer
+          <div style={{ height: wrapVirtualizer.getTotalSize(), position: "relative" }}>
+            {wrapVirtualizer.getVirtualItems().map((vRow) => {
+              const entry = entries[vRow.index];
+              const count = dupeCounts?.get(vRow.index) ?? 1;
+              const isActive = activeMatchIndex === vRow.index;
+              const isCtxAnchor = contextAnchorIdx === vRow.index;
+              const isRowExpanded = expandedRows.has(vRow.index);
+              return (
+                // Outer div: stable key + measureElement for virtualizer
+                <div
+                  key={vRow.index}
+                  data-index={vRow.index}
+                  ref={wrapVirtualizer.measureElement}
+                  style={{ position: "absolute", top: vRow.start, left: 0, right: 0 }}
+                >
+                  {/* Inner div: re-keyed on flashKey so CSS animation re-fires on each navigation */}
                   <div
-                    key={vRow.index}
-                    data-index={vRow.index}
-                    ref={wrapVirtualizer.measureElement}
-                    style={{ position: "absolute", top: vRow.start, left: 0, right: 0 }}
+                    key={isActive ? flashKey : undefined}
+                    onClick={() => { onEntryClick?.(vRow.index); toggleRow(vRow.index); }}
+                    onDoubleClick={() => onEntryDoubleClick?.(vRow.index)}
+                    className={cn(
+                      "px-3 py-px font-mono text-[11px] select-text leading-snug border-b border-slate-200 cursor-pointer",
+                      vRow.index % 2 === 0 && "bg-slate-100/60",
+                      isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
+                      !isActive && selectedEntryIdx === vRow.index && "border-l-[3px] border-sky-400 pl-2.5 bg-sky-50 ring-1 ring-inset ring-sky-400/40",
+                      isCtxAnchor && !isActive && selectedEntryIdx !== vRow.index && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
+                    )}
                   >
-                    {/* Inner div: re-keyed on flashKey so CSS animation re-fires on each navigation */}
-                    <div
-                      key={isActive ? flashKey : undefined}
-                      onClick={() => { onEntryClick?.(vRow.index); toggleRow(vRow.index); }}
-                      onDoubleClick={() => onEntryDoubleClick?.(vRow.index)}
-                      className={cn(
-                        "px-3 py-px font-mono text-[11px] select-text leading-snug border-b border-slate-200 cursor-pointer",
-                        vRow.index % 2 === 0 && "bg-slate-100/60",
-                        isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
-                        !isActive && selectedEntryIdx === vRow.index && "border-l-[3px] border-sky-400 pl-2.5 bg-sky-50 ring-1 ring-inset ring-sky-400/40",
-                        isCtxAnchor && !isActive && selectedEntryIdx !== vRow.index && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
-                      )}
-                    >
-                      <span className={cn(
-                        "whitespace-pre-wrap break-all",
-                        !isRowExpanded && "line-clamp-3",
-                      )}>
-                        {renderStructuredLine(entry, isActive)}
+                    <span className={cn(
+                      "whitespace-pre-wrap break-all",
+                      !isRowExpanded && "line-clamp-3",
+                    )}>
+                      {renderStructuredLine(entry, isActive)}
+                    </span>
+                    {count > 1 && (
+                      <span className="ml-2 inline-block px-1.5 py-0 rounded bg-amber-100 text-amber-700 text-[10px] font-semibold align-middle">
+                        ×{count}
                       </span>
-                      {count > 1 && (
-                        <span className="ml-2 inline-block px-1.5 py-0 rounded bg-amber-100 text-amber-700 text-[10px] font-semibold align-middle">
-                          ×{count}
-                        </span>
-                      )}
-                    </div>
+                    )}
                   </div>
-                );
-              })}
-            </div>
+                </div>
+              );
+            })}
           </div>
         ) : (
           /* Nowrap mode: fixed row height — virtual list for performance */
