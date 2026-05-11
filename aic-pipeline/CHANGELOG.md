@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6.4] - 2026-05-11
+
+### Added
+
+- **Browse → Compare for journeys and IGA workflows (Phase 3 of file-version history).** Multi-file items like journeys and IGA workflows can't use the per-file Compare dropdown introduced in 0.2.6.0–0.2.6.2, because a "journey" on disk is really a directory of node JSONs (plus referenced scripts and inner journeys) and a workflow is a folder of step files. The Sections-view header for these scopes now exposes a **Compare versions** button that:
+  1. Lists commits that touched **any** file under the item's directory via a new `GET /api/configs/[env]/item-history?scope=&item=` endpoint (uses `git log -- <path1> <path2>...` across all affected paths; no `--follow` since that's incompatible with multi-path log).
+  2. Lets the user pick **A** and **B** slots (working tree or any commit) with the same UX as the per-file picker.
+  3. On submit, calls a new `POST /api/configs/[env]/item-compare` which materialises each requested SHA into a temporary detached git worktree under the system temp dir (new helper `src/lib/git-worktree.ts`), runs the existing `buildReport` diff engine against the matching `<configDir>` inside each worktree (forcing the journey into the result via `forceIncludeJourneys` so unchanged journeys still produce a tree), then trims the report to files relevant to the chosen item (the journey itself, its sub-journeys, any scripts pulled in by dependency resolution; or `iga/workflows/<item>/` for workflows). Worktrees are cleaned up in `finally` (`git worktree remove --force` + `fs.rmSync` + `git worktree prune`).
+  4. Opens the existing `JourneyDiffGraphModal` (journeys) or `WorkflowDiffGraphModal` (workflows) — the same unified visual diff used on the Compare tab — so the user lands directly in the rich graph view they already know. If two semantically-equal versions are picked, a small "no changes detected" dialog appears instead of an empty graph.
+- New reusable component `src/components/ItemComparePanel.tsx` encapsulates the item-level history fetch, slot picker UI, compare invocation, and modal selection.
+
+### Changed
+
+- `src/lib/git-history.ts` gains `listMultiPathCommits(repoRelPaths, limit)` — used by the new item-history endpoint to gather commits that touched any path within the item directory in a single `git log` invocation.
+
+### Fixed
+
+- **Browse → Sections view: script files no longer collapse to zero height (no scrolling).** The Content wrapper around the version-picker body was `flex-1 overflow-hidden min-h-0` but wasn't itself a flex container, so the inner `flex-1 min-h-0` wrapper around `versionUi.bodyNode` had no resolved height. `ScriptFileViewer` (and `JsonFileViewer`) use `h-full` internally, which resolved to 0 — the file rendered but had no scrollable viewport. Adding `flex flex-col` to the Content div restores the height chain.
+
 ## [0.2.6.3] - 2026-05-11
 
 ### Fixed

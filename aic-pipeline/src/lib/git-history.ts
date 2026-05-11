@@ -149,3 +149,48 @@ export function readFileAtSha(sha: string, repoRelPath: string): ReadAtSha {
     }
     return { ok: true, exists: true, content: res.stdout };
 }
+
+/**
+ * Like `listFileCommits`, but lists commits that touched ANY of the given
+ * repo-relative paths (files or directories). Used by the Browse Versions
+ * dropdown when the "file" is actually a multi-file item (journeys,
+ * IGA workflows) — we want commits that changed any file in the item's
+ * directory, deduped and newest first. `--follow` is NOT used here because
+ * git rejects it with multiple paths.
+ */
+export function listMultiPathCommits(
+    repoRelPaths: string[],
+    limit = 50,
+): { ok: boolean; entries: FileCommit[]; error?: string } {
+    if (!targetHasGit()) {
+        return { ok: false, entries: [], error: "Env repo is not a git repository." };
+    }
+    if (repoRelPaths.length === 0) return { ok: true, entries: [] };
+    const cwd = resolveTargetDir();
+    const SEP = "\x1f";
+    const FMT = ["%H", "%h", "%cI", "%an", "%s"].join(SEP);
+    const res = runGit(
+        ["log", `--max-count=${limit}`, `--pretty=format:${FMT}`, "--", ...repoRelPaths],
+        cwd,
+    );
+    if (!res.ok) {
+        return { ok: false, entries: [], error: res.stderr || "git log failed" };
+    }
+    const entries: FileCommit[] = [];
+    for (const line of res.stdout.split(/\r?\n/)) {
+        if (!line) continue;
+        const parts = line.split(SEP);
+        if (parts.length < 5) continue;
+        const [sha, shortSha, isoDate, author, ...rest] = parts;
+        const subject = rest.join(SEP);
+        entries.push({
+            sha,
+            shortSha,
+            isoDate,
+            author,
+            subject,
+            opKind: classifyCommitSubject(subject),
+        });
+    }
+    return { ok: true, entries };
+}
