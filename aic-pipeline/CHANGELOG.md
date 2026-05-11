@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6.1] - 2026-05-11
+
+### Added
+
+- **Browse → Compare mode** (Phase 2 of file version history): the file viewer header now has a **Compare** button next to Versions. Compare mode shows two slot pickers — **A** (rose) and **B** (emerald) — each independently choosable from the same history dropdown (Working tree + up to 50 prior commits). A **⇄** button swaps slots; **✕** exits compare. Default on entry: A = Working tree, B = newest prior commit. The viewer body switches to a compact unified line diff with per-side line numbers, +/- gutter, syntax-aware formatting (JSON pretty-printed, JS/Groovy beautified), and a summary header (`+N -M`). Files larger than 2000 lines fall back to a "too large" notice instead of locking the browser.
+- **`src/lib/client-diff.ts`** — shared client-side LCS line diff + content formatting, extracted from the Compare-page rendering pipeline.
+- **`src/components/FileDiffViewer.tsx`** — the new compact diff viewer used by Browse compare mode.
+
 ## [0.2.6.0] - 2026-05-11
 
 ### Added
