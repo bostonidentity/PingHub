@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, Fragment, startTransition, useDeferredValue, useCallback, useMemo, memo, createContext, useContext } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, Fragment, startTransition, useDeferredValue, useCallback, useMemo, memo, createContext, useContext } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Environment } from "@/lib/fr-config-types";
 import { EnvironmentBadge } from "@/components/EnvironmentBadge";
@@ -169,6 +169,22 @@ const LOG_SOURCES = ["am-everything", "idm-everything"] as const;
 
 const TERMINAL_ROW_H = 20;     // px — fixed height per row (nowrap lines)
 const TERMINAL_OVERSCAN = 15;    // extra rows rendered above/below viewport
+// Browsers enforce a minimum scrollbar thumb size (~16-20px). When content is
+// so tall that the natural thumb size (clientHeight^2 / scrollHeight) falls
+// below this minimum, the cursor-to-thumb mapping becomes non-linear: the
+// browser shrinks the thumb to the minimum, so dragging the cursor through
+// the full track no longer corresponds to traversing the full scroll range
+// proportionally — the thumb visibly drifts away from the cursor.
+//
+// To keep the mapping LINEAR (so the thumb tracks the cursor pixel-perfect),
+// we cap nowrap scrollHeight so the natural thumb size never falls below
+// this minimum. Above the cap we scale-map scrollTop -> virtual row position
+// and translate the rendered row group manually.
+const NOWRAP_MIN_THUMB_H = 24; // safe margin above browser minimum
+function computeNowrapScrollCap(clientH: number): number {
+  // thumb_h = clientH^2 / scrollH; require thumb_h >= NOWRAP_MIN_THUMB_H
+  return Math.max(clientH + 1, Math.floor((clientH * clientH) / NOWRAP_MIN_THUMB_H));
+}
 
 
 
@@ -460,6 +476,16 @@ function ResizableHeader({
 const JSON_VIEW_OVERSCAN = 8;
 const JSON_VIEW_ROW_ESTIMATE = 240; // px; refined per-row by measureElement
 const JSON_COPY_CHUNK = 500;        // entries per yield when building Copy text
+// Same pattern as terminal nowrap: cap the visible scrollHeight so the
+// browser's minimum-thumb-size kludge can't break cursor-to-thumb linearity.
+// Natural thumb height = clientH² / scrollH. We cap scrollH so natural thumb
+// ≥ JSON_MIN_THUMB_H, keeping the thumb glued to the cursor during drag.
+// Side benefit: with scrollH = cap (constant), totalSize creep from row
+// measurement no longer shifts the scrollbar position at all.
+const JSON_MIN_THUMB_H = 24;
+function computeJsonScrollCap(clientH: number): number {
+  return Math.max(clientH + 1, Math.floor((clientH * clientH) / JSON_MIN_THUMB_H));
+}
 /** Recursively unescape JSON-encoded string values within an object.
  *  Handles pure JSON strings and strings with a text prefix followed by
  *  embedded JSON (e.g. "SEVERE: [uuid] Content: {\"key\":\"val\"}").
@@ -518,6 +544,8 @@ function JsonLogView({
   contextAnchorIdx = -1,
   selectedEntryIdx = null,
   selectedScrollRequest = null,
+  autoScroll = true,
+  evictedCount = 0,
 }: {
   entries: LogEntry[];
   wrapLines?: boolean;
@@ -534,6 +562,11 @@ function JsonLogView({
   selectedEntryIdx?: number | null;
   /** Bumped to (re)scroll to selectedEntryIdx — e.g. on view-mode switch. */
   selectedScrollRequest?: { index: number; nonce: number } | null;
+  /** When true and the user is pinned to the bottom, follow new entries on tail. */
+  autoScroll?: boolean;
+  /** Cumulative count of entries evicted from the front of the parent buffer. Used
+   *  to keep the viewport visually stable when autoScroll is off. */
+  evictedCount?: number;
 }) {
   // Per-entry pretty-printed JSON, cached by entry reference so we never
   // re-stringify the same entry twice (scrolling, re-renders, tail appends).
@@ -624,16 +657,167 @@ function JsonLogView({
   // viewport (+ overscan) are mounted, so cost is O(visible) regardless of
   // total entry count.
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Per-index height cache + running average estimate. We sample each row's
+  // height the first time it mounts, then lock both the per-row cache and
+  // the estimate so subsequent renders cannot shift totalSize. This keeps
+  // the scrollbar thumb glued to the cursor through long drags.
+  //
+  // Without this, react-virtual will:
+  //   1. estimate every unmeasured row at a guess (e.g. 240px),
+  //   2. update size as each row mounts (delta = real - estimate),
+  //   3. update size *again* when row content changes (highlight rings
+  //      add 1-2px to height), which keeps shifting totalSize even when
+  //      the user has stopped tailing.
+  // The combined drift makes the scrollbar lag behind the cursor.
+  const ESTIMATE_LOCK_AFTER = 40;
+  const avgRowHeightRef = useRef(JSON_VIEW_ROW_ESTIMATE);
+  const measuredSumRef = useRef(0);
+  const estimateLockedRef = useRef(false);
+  // Per-index cached height; once an entry is measured once we keep that
+  // height forever (until wrap mode flips), even if the rendered row's
+  // actual height jitters by a few pixels due to highlight rings.
+  const heightCacheRef = useRef<Map<number, number>>(new Map());
+  // Wrapper that holds the rendered rows. When intrinsicH > cap, we translate
+  // this wrapper by (actualScrollTop - virtualScrollTop) so rows positioned at
+  // virtual offsets still land at the correct screen position.
+  const offsetWrapperRef = useRef<HTMLDivElement | null>(null);
   const virtualizer = useVirtualizer({
     count: entries.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => JSON_VIEW_ROW_ESTIMATE,
-    measureElement: (el) => el.getBoundingClientRect().height,
+    estimateSize: () => avgRowHeightRef.current,
+    measureElement: (el) => {
+      const idxAttr = el.getAttribute("data-index");
+      const idx = idxAttr != null ? Number(idxAttr) : NaN;
+      const cache = heightCacheRef.current;
+      if (Number.isFinite(idx) && cache.has(idx)) {
+        // Stable: never let row content changes (rings, highlights) re-measure.
+        return cache.get(idx)!;
+      }
+      const h = el.getBoundingClientRect().height;
+      if (Number.isFinite(idx)) cache.set(idx, h);
+      if (!estimateLockedRef.current) {
+        measuredSumRef.current += h;
+        const n = cache.size;
+        if (n >= 5) {
+          avgRowHeightRef.current = measuredSumRef.current / n;
+        }
+        if (n >= ESTIMATE_LOCK_AFTER) {
+          estimateLockedRef.current = true;
+        }
+      }
+      return h;
+    },
     overscan: JSON_VIEW_OVERSCAN,
+    // Lie to react-virtual about scrollTop: when the intrinsic total size
+    // exceeds our cap, we report a *virtual* scroll position so it picks
+    // the correct visible window, while the actual scroll element reports
+    // a much smaller scrollHeight (= cap) that produces a sane thumb size.
+    observeElementOffset: (instance, cb) => {
+      const el = instance.scrollElement as HTMLElement | null;
+      if (!el) return;
+      let scrollTimeout: number | null = null;
+      const onScroll = () => {
+        const intrinsicH = instance.getTotalSize();
+        const clientH = el.clientHeight;
+        const cap = computeJsonScrollCap(clientH);
+        let virtual = el.scrollTop;
+        let wrapperOffset = 0;
+        if (intrinsicH > cap) {
+          const intrinsicScroll = Math.max(1, intrinsicH - clientH);
+          const actualScroll = Math.max(1, cap - clientH);
+          virtual = (el.scrollTop / actualScroll) * intrinsicScroll;
+          wrapperOffset = el.scrollTop - virtual;
+        }
+        const wrapper = offsetWrapperRef.current;
+        if (wrapper) wrapper.style.transform = `translateY(${wrapperOffset}px)`;
+        if (scrollTimeout) window.clearTimeout(scrollTimeout);
+        scrollTimeout = window.setTimeout(() => { cb(virtual, false); }, 150);
+        cb(virtual, true);
+      };
+      el.addEventListener("scroll", onScroll, { passive: true });
+      onScroll();
+      return () => {
+        el.removeEventListener("scroll", onScroll);
+        if (scrollTimeout) window.clearTimeout(scrollTimeout);
+      };
+    },
+    // Programmatic scrolls (scrollToIndex) deliver a *virtual* offset; map it
+    // back to the capped scroll-element coordinate space before applying.
+    scrollToFn: (offset, options, instance) => {
+      const el = instance.scrollElement as HTMLElement | null;
+      if (!el) return;
+      const intrinsicH = instance.getTotalSize();
+      const clientH = el.clientHeight;
+      const cap = computeJsonScrollCap(clientH);
+      let actual = offset;
+      if (intrinsicH > cap) {
+        const intrinsicScroll = Math.max(1, intrinsicH - clientH);
+        const actualScroll = Math.max(1, cap - clientH);
+        actual = (offset / intrinsicScroll) * actualScroll;
+      }
+      el.scrollTo({ top: actual, behavior: options.behavior });
+    },
   });
 
-  // Reset measured sizes when wrap mode changes (heights will differ).
-  useEffect(() => { virtualizer.measure(); }, [wrapLines, virtualizer]);
+  // Reset measurement samples + average when wrap mode changes (heights differ).
+  useEffect(() => {
+    heightCacheRef.current = new Map();
+    measuredSumRef.current = 0;
+    estimateLockedRef.current = false;
+    avgRowHeightRef.current = JSON_VIEW_ROW_ESTIMATE;
+    virtualizer.measure();
+  }, [wrapLines, virtualizer]);
+
+  // Track whether the user is pinned to the bottom of the JSON view. Auto-tail
+  // and eviction compensation behave differently depending on this.
+  const atBottomRef = useRef(true);
+  const handleViewScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  }, []);
+
+  // Auto-tail: when pinned to bottom and autoScroll is on, follow new entries.
+  useEffect(() => {
+    if (!autoScroll || !atBottomRef.current) return;
+    if (entries.length === 0) return;
+    virtualizer.scrollToIndex(entries.length - 1, { align: "end" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries.length, autoScroll]);
+
+  // Stabilize viewport when buffer evicts from the front. Without this, every
+  // eviction shifts every row's index, so the same scrollTop now reveals
+  // different content ("jiggle"). Compensate by subtracting the approximate
+  // height of evicted rows from scrollTop so the user's anchor stays put.
+  const prevEvictedRef = useRef(evictedCount);
+  useEffect(() => {
+    const delta = evictedCount - prevEvictedRef.current;
+    prevEvictedRef.current = evictedCount;
+    if (delta <= 0) return;
+    // Re-key the per-index height cache: row N is now at N-delta. Drop any
+    // entries that fell off the front.
+    const cache = heightCacheRef.current;
+    if (cache.size > 0) {
+      const next = new Map<number, number>();
+      for (const [k, v] of cache) {
+        const shifted = k - delta;
+        if (shifted >= 0) next.set(shifted, v);
+      }
+      heightCacheRef.current = next;
+    }
+    if (autoScroll && atBottomRef.current) return; // following tail — separate effect handles scroll
+    const el = scrollRef.current;
+    if (!el) return;
+    // delta * avgRow is in *virtual* px. Scale into actual-scroll px when the
+    // scrollHeight is capped so the visual anchor stays put.
+    const virtualDelta = delta * avgRowHeightRef.current;
+    const intrinsicH = virtualizer.getTotalSize();
+    const cap = computeJsonScrollCap(el.clientHeight);
+    const scale = intrinsicH > cap
+      ? Math.max(1, cap - el.clientHeight) / Math.max(1, intrinsicH - el.clientHeight)
+      : 1;
+    el.scrollTop = Math.max(0, el.scrollTop - virtualDelta * scale);
+  }, [evictedCount, autoScroll, entries.length, virtualizer]);
 
   // Scroll to the active match when it changes.
   useEffect(() => {
@@ -653,6 +837,21 @@ function JsonLogView({
 
   const items = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
+  // Track scroll element's clientHeight so we can compute the viewport-aware
+  // scrollbar cap. ResizeObserver keeps this in sync with layout changes.
+  const [viewClientH, setViewClientH] = useState(600);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setViewClientH(el.clientHeight);
+    const ro = new ResizeObserver(() => {
+      const h = el.clientHeight;
+      if (h > 0) setViewClientH(h);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const cappedHeight = Math.min(totalSize, computeJsonScrollCap(viewClientH));
   const copyLabel =
     copyState.phase === "building" ? `Copying… ${copyState.pct}%` :
       copyState.phase === "done" ? "Copied" : "Copy JSON";
@@ -670,6 +869,7 @@ function JsonLogView({
       </button>
       <div
         ref={scrollRef}
+        onScroll={handleViewScroll}
         className="flex-1 overflow-y-auto overflow-x-auto"
       >
         <div
@@ -677,41 +877,46 @@ function JsonLogView({
             "p-4 pt-2 font-mono text-[12px] leading-5 text-slate-700 relative",
             wrapLines ? "whitespace-pre-wrap break-all" : "whitespace-pre",
           )}
-          style={{ height: totalSize, width: "100%" }}
+          style={{ height: cappedHeight, width: "100%" }}
         >
-          {items.map((vi) => {
-            const i = vi.index;
-            const entry = entries[i];
-            if (!entry) return null;
-            const etxt = getEntryText(entry);
-            const isMatch = matchSet.has(i);
-            const isActive = i === activeEntryIdx;
-            const isSelected = i === selectedEntryIdx;
-            const isCtxAnchor = i === contextAnchorIdx;
-            const isLast = i === entries.length - 1;
-            return (
-              <div
-                key={vi.key}
-                ref={virtualizer.measureElement}
-                data-index={i}
-                data-entry-idx={i}
-                onClick={() => onEntryClick?.(i)}
-                onDoubleClick={() => onEntryDoubleClick?.(i)}
-                className={cn(
-                  "absolute left-0 right-0 px-4 cursor-pointer",
-                  isActive && "bg-amber-50 ring-1 ring-inset ring-amber-300 rounded",
-                  !isActive && isSelected && "bg-sky-50 ring-1 ring-inset ring-sky-400 rounded",
-                  isMatch && !isActive && !isSelected && "bg-yellow-50/60",
-                  isCtxAnchor && !isActive && !isSelected && "bg-violet-50 ring-1 ring-inset ring-violet-300 rounded",
-                )}
-                style={{ transform: `translateY(${vi.start}px)` }}
-              >
-                {i === 0 ? "[\n" : null}
-                {isMatch ? highlightText(etxt, isActive) : etxt}
-                {isLast ? "\n]" : ","}
-              </div>
-            );
-          })}
+          <div
+            ref={offsetWrapperRef}
+            style={{ position: "absolute", top: 0, left: 0, right: 0, willChange: "transform" }}
+          >
+            {items.map((vi) => {
+              const i = vi.index;
+              const entry = entries[i];
+              if (!entry) return null;
+              const etxt = getEntryText(entry);
+              const isMatch = matchSet.has(i);
+              const isActive = i === activeEntryIdx;
+              const isSelected = i === selectedEntryIdx;
+              const isCtxAnchor = i === contextAnchorIdx;
+              const isLast = i === entries.length - 1;
+              return (
+                <div
+                  key={vi.key}
+                  ref={virtualizer.measureElement}
+                  data-index={i}
+                  data-entry-idx={i}
+                  onClick={() => onEntryClick?.(i)}
+                  onDoubleClick={() => onEntryDoubleClick?.(i)}
+                  className={cn(
+                    "absolute left-0 right-0 px-4 cursor-pointer",
+                    isActive && "bg-amber-50 ring-1 ring-inset ring-amber-300 rounded",
+                    !isActive && isSelected && "bg-sky-50 ring-1 ring-inset ring-sky-400 rounded",
+                    isMatch && !isActive && !isSelected && "bg-yellow-50/60",
+                    isCtxAnchor && !isActive && !isSelected && "bg-violet-50 ring-1 ring-inset ring-violet-300 rounded",
+                  )}
+                  style={{ transform: `translateY(${vi.start}px)` }}
+                >
+                  {i === 0 ? "[\n" : null}
+                  {isMatch ? highlightText(etxt, isActive) : etxt}
+                  {isLast ? "\n]" : ","}
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
     </div>
@@ -757,6 +962,7 @@ const TailTerminal = memo(function TailTerminal({
   scrollRequest = null, activeMatchIndex = null, matchCase = false, wholeWord = false,
   dupeCounts, autoScroll = true, onEntryDoubleClick, onEntryClick, contextAnchorIdx = null,
   expandCommand = null, matchIndices = null, filterActive = false, selectedEntryIdx = null,
+  evictedCount = 0,
 }: {
   entries: LogEntry[];
   defaultSource: string;
@@ -780,6 +986,10 @@ const TailTerminal = memo(function TailTerminal({
   filterActive?: boolean;
   /** Entry index currently selected by user click (sky highlight, distinct from match-amber). */
   selectedEntryIdx?: number | null;
+  /** Cumulative count of entries evicted from the front of the parent buffer. Used
+   *  to keep the viewport visually stable when autoScroll is off and the circular
+   *  buffer trims the oldest entries during tailing. */
+  evictedCount?: number;
 }) {
   const outerRef = useRef<HTMLDivElement>(null);
   const [viewH, setViewH] = useState(400);
@@ -789,6 +999,10 @@ const TailTerminal = memo(function TailTerminal({
   // on every scroll pixel.  Raw scrollTop is kept in a ref.
   const scrollTopRef = useRef(0);
   const [startIdx, setStartIdx] = useState(0);
+  // Ref to the absolutely-positioned row group inside the nowrap container.
+  // We translate it via DOM (no re-render) so the rendered rows stay glued to
+  // the viewport even when the scroll surface is scaled to cap scrollHeight.
+  const nowrapGroupRef = useRef<HTMLDivElement>(null);
   // Timestamp of the most recent programmatic scroll (auto-tail, match-nav).
   // handleScroll skips its at-bottom flip for ~400ms after that so the
   // programmatic scroll's cascade of scroll events doesn't flip auto-tail
@@ -860,15 +1074,50 @@ const TailTerminal = memo(function TailTerminal({
     return () => ro.disconnect();
   }, []);
 
-  // Variable-height virtualizer for wrap mode
+  // Variable-height virtualizer for wrap mode. Running-average estimateSize +
+  // per-index height freeze keeps scrollHeight stable so the scrollbar thumb
+  // tracks the cursor while dragging instead of falling behind as rows mount
+  // and re-measure.
+  const wrapAvgRef = useRef(32);
+  const wrapSumRef = useRef(0);
+  const wrapHeightCacheRef = useRef<Map<number, number>>(new Map());
   const wrapVirtualizer = useVirtualizer({
     count: entries.length,
     getScrollElement: () => outerRef.current,
-    estimateSize: () => 32, // rough estimate; actual heights measured by measureElement
-    measureElement: (el) => el.getBoundingClientRect().height,
+    estimateSize: () => wrapAvgRef.current,
+    measureElement: (el) => {
+      const idxAttr = el.getAttribute("data-index");
+      const idx = idxAttr != null ? Number(idxAttr) : NaN;
+      const cache = wrapHeightCacheRef.current;
+      if (Number.isFinite(idx) && cache.has(idx)) {
+        return cache.get(idx)!;
+      }
+      const h = el.getBoundingClientRect().height;
+      if (Number.isFinite(idx)) {
+        cache.set(idx, h);
+        wrapSumRef.current += h;
+        if (cache.size >= 5 && cache.size < 60) {
+          wrapAvgRef.current = wrapSumRef.current / cache.size;
+        }
+      }
+      return h;
+    },
     overscan: TERMINAL_OVERSCAN,
     enabled: wrapLines,
   });
+
+  // Helper: convert virtual scroll position (in row-pixel space) to actual
+  // scrollTop pixels accounting for nowrap scrollHeight capping.
+  const virtualToActualScrollTop = useCallback((virtual: number) => {
+    const el = outerRef.current;
+    if (!el) return virtual;
+    const intrinsicH = entries.length * TERMINAL_ROW_H;
+    const cap = computeNowrapScrollCap(el.clientHeight);
+    if (intrinsicH <= cap) return virtual;
+    const intrinsicScroll = Math.max(1, intrinsicH - el.clientHeight);
+    const actualScroll = Math.max(1, cap - el.clientHeight);
+    return Math.max(0, (virtual / intrinsicScroll) * actualScroll);
+  }, [entries.length]);
 
   // Auto-scroll to bottom when new entries arrive
   useEffect(() => {
@@ -882,6 +1131,43 @@ const TailTerminal = memo(function TailTerminal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries.length, wrapLines, autoScroll]);
 
+  // Stabilize viewport when buffer evicts from the front. When autoScroll is
+  // off (or the user has scrolled away from bottom), every front-eviction
+  // shifts every row up by N indices. Without compensation the same scrollTop
+  // now reveals different content — that's the "jiggle". We subtract the
+  // dropped row height from scrollTop so the rows the user is looking at stay
+  // anchored on screen.
+  const prevEvictedRef = useRef(evictedCount);
+  useEffect(() => {
+    const delta = evictedCount - prevEvictedRef.current;
+    prevEvictedRef.current = evictedCount;
+    if (delta <= 0) return;
+    // Re-key the wrap-mode per-index height cache.
+    const cache = wrapHeightCacheRef.current;
+    if (cache.size > 0) {
+      const next = new Map<number, number>();
+      for (const [k, v] of cache) {
+        const shifted = k - delta;
+        if (shifted >= 0) next.set(shifted, v);
+      }
+      wrapHeightCacheRef.current = next;
+    }
+    if (autoScroll && atBottomRef.current) return; // following tail — separate effect handles scroll
+    const el = outerRef.current;
+    if (!el) return;
+    lastProgrammaticScrollRef.current = Date.now();
+    if (wrapLines) {
+      el.scrollTop = Math.max(0, el.scrollTop - delta * wrapAvgRef.current);
+    } else {
+      // Translate the equivalent virtual delta (delta * ROW_H) into actual
+      // scroll px, respecting the nowrap scrollHeight cap.
+      const intrinsicH = entries.length * TERMINAL_ROW_H;
+      const cap = computeNowrapScrollCap(el.clientHeight);
+      const scale = intrinsicH > cap ? cap / intrinsicH : 1;
+      el.scrollTop = Math.max(0, el.scrollTop - delta * TERMINAL_ROW_H * scale);
+    }
+  }, [evictedCount, autoScroll, wrapLines, entries.length, wrapVirtualizer]);
+
   // Scroll to match index
   const scrollRequestIndex = scrollRequest?.index;
   const scrollRequestNonce = scrollRequest?.nonce;
@@ -891,7 +1177,9 @@ const TailTerminal = memo(function TailTerminal({
     if (wrapLines) {
       wrapVirtualizer.scrollToIndex(scrollRequestIndex, { align: "center" });
     } else if (outerRef.current) {
-      outerRef.current.scrollTop = scrollRequestIndex * TERMINAL_ROW_H - outerRef.current.clientHeight / 2 + TERMINAL_ROW_H / 2;
+      const virtualCenter = scrollRequestIndex * TERMINAL_ROW_H
+        - outerRef.current.clientHeight / 2 + TERMINAL_ROW_H / 2;
+      outerRef.current.scrollTop = virtualToActualScrollTop(virtualCenter);
     }
     atBottomRef.current = false;
     setAtBottom(false);
@@ -903,8 +1191,18 @@ const TailTerminal = memo(function TailTerminal({
     scrollTopRef.current = el.scrollTop;
     // Only re-render when the visible row window actually shifts
     if (!wrapLines) {
-      const newStart = Math.max(0, Math.floor(el.scrollTop / TERMINAL_ROW_H) - TERMINAL_OVERSCAN);
+      const intrinsicH = entries.length * TERMINAL_ROW_H;
+      const cap = computeNowrapScrollCap(el.clientHeight);
+      const denom = Math.max(1, Math.min(intrinsicH, cap) - el.clientHeight);
+      const intrinsicScroll = Math.max(1, intrinsicH - el.clientHeight);
+      const virtualScrollTop = intrinsicH > cap
+        ? (el.scrollTop / denom) * intrinsicScroll
+        : el.scrollTop;
+      const newStart = Math.max(0, Math.floor(virtualScrollTop / TERMINAL_ROW_H) - TERMINAL_OVERSCAN);
       setStartIdx((prev) => (prev === newStart ? prev : newStart));
+      // Update the imperative transform now so the rendered rows track the
+      // scroll position immediately during drag (before React reconciles).
+      syncNowrapTransformRef.current?.(newStart);
     }
     // Within ~400ms of a programmatic scroll, skip the at-bottom flip so
     // the cascade of scroll events from that programmatic scroll can't
@@ -917,8 +1215,40 @@ const TailTerminal = memo(function TailTerminal({
     }
   }
 
+  // Imperatively compute and apply the nowrap row-group transform. Called from
+  // both onScroll (so drag tracks the cursor) and a useLayoutEffect (so React
+  // re-renders don't clobber it). Stored in a ref so handleScroll can call
+  // the latest closure without re-binding on every render.
+  const syncNowrapTransformRef = useRef<((nextStart?: number) => void) | null>(null);
+  syncNowrapTransformRef.current = (nextStart?: number) => {
+    if (wrapLines) return;
+    const group = nowrapGroupRef.current;
+    const el = outerRef.current;
+    if (!group || !el) return;
+    const intrinsicH = entries.length * TERMINAL_ROW_H;
+    const cap = computeNowrapScrollCap(el.clientHeight);
+    const denom = Math.max(1, Math.min(intrinsicH, cap) - el.clientHeight);
+    const intrinsicScroll = Math.max(1, intrinsicH - el.clientHeight);
+    const virtualScrollTop = intrinsicH > cap
+      ? (el.scrollTop / denom) * intrinsicScroll
+      : el.scrollTop;
+    const s = nextStart ?? startIdx;
+    const groupTop = el.scrollTop + (s * TERMINAL_ROW_H - virtualScrollTop);
+    group.style.transform = `translateY(${groupTop}px)`;
+  };
+  // After every render, re-sync the transform so changes to entries / startIdx
+  // / selection state don't leave the row group at a stale offset (which is
+  // what caused the visible row overlap).
+  useLayoutEffect(() => {
+    syncNowrapTransformRef.current?.();
+  });
+
   // Virtual list window — startIdx is now state-driven (only updates when visible range shifts)
-  const totalH = entries.length * TERMINAL_ROW_H;
+  // Cap nowrap scrollHeight so the scrollbar thumb stays at the browser's
+  // minimum size and the cursor-to-thumb mapping stays linear during drag.
+  const intrinsicNowrapH = entries.length * TERMINAL_ROW_H;
+  const nowrapCap = computeNowrapScrollCap(viewH);
+  const totalH = Math.min(intrinsicNowrapH, nowrapCap);
   const endIdx = Math.min(entries.length - 1, startIdx + Math.ceil(viewH / TERMINAL_ROW_H) + TERMINAL_OVERSCAN * 2);
 
   // Flash key: increments each time we navigate to a match, re-triggers the CSS animation
@@ -1047,7 +1377,21 @@ const TailTerminal = memo(function TailTerminal({
         ) : (
           /* Nowrap mode: fixed row height — virtual list for performance */
           <div style={{ height: totalH, position: "relative" }}>
-            <div style={{ position: "absolute", top: startIdx * TERMINAL_ROW_H, left: 0, right: 0 }}>
+            <div
+              ref={nowrapGroupRef}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                right: 0,
+                // transform is set imperatively by syncNowrapTransformRef which
+                // runs in a useLayoutEffect after every render AND from onScroll.
+                // We avoid setting it in JSX so React re-renders don't reset it
+                // to a value based on stale scrollTopRef (which would cause the
+                // rows to visually overlap each other).
+                willChange: "transform",
+              }}
+            >
               {entries.slice(startIdx, endIdx + 1).map((entry, i) => {
                 const absIdx = startIdx + i;
                 const count = dupeCounts?.get(absIdx) ?? 1;
@@ -1910,14 +2254,20 @@ export function LogsExplorer({
       : entries.filter((e) => levelPassesFilter(getLevel(e), levelFilter)),
     [entries, levelFilter]);
 
-  // Pre-compute searchable strings once per levelFiltered change
-  const defaultSourceForNav = selectedSources[0] ?? "";
-  const entryStrings = useMemo(() =>
-    levelFiltered.map((e) => ({
-      json: JSON.stringify(e),
-      line: formatTerminalLine(e, defaultSourceForNav),
-    })),
-    [levelFiltered, defaultSourceForNav]);
+  // Lazy per-entry JSON cache. JSON.stringify is the hottest op (used by
+  // filterQuery/searchKeywordsParsed/highlightQuery .test calls). At 200k
+  // entries an eager parallel array re-stringifies the whole buffer on every
+  // tail tick — hundreds of MB churned per second. WeakMap keyed on the entry
+  // object survives across re-renders; entries dropped from the circular
+  // buffer are GC'd automatically. We also only stringify on demand: if no
+  // filter / search / highlight is active, no entry is stringified at all.
+  const entryJsonCacheRef = useRef<WeakMap<LogEntry, string>>(new WeakMap());
+  const getEntryJson = useCallback((e: LogEntry): string => {
+    const cache = entryJsonCacheRef.current;
+    let s = cache.get(e);
+    if (s === undefined) { s = JSON.stringify(e); cache.set(e, s); }
+    return s;
+  }, []);
 
   // Parse the Filter box as a boolean query supporting && / || / ( ) and quoted phrases.
   // Comma is also accepted as `||` for backwards compatibility with older usage.
@@ -1970,16 +2320,21 @@ export function LogsExplorer({
     // contain && / () precedence) client-side. The Filter box query is always applied.
     const applySearch =
       mode === "search" && !searchKeywordsParsed.empty && !searchKeywordsParsed.error;
-    if (filterQuery.empty && !applySearch) return levelFiltered.map((e, i) => ({ e, i }));
+    // Fast path: no filter active, no search-mode client-side gate — return a
+    // single shared identity-mapped array. Avoids allocating 200k wrapper
+    // objects on every tail tick when the user isn't filtering.
+    if (filterQuery.empty && !applySearch) {
+      return levelFiltered.map((e, i) => ({ e, i }));
+    }
     if (filterQuery.error) return [] as { e: LogEntry; i: number }[];
     return levelFiltered.reduce<{ e: LogEntry; i: number }[]>((acc, e, i) => {
-      const json = entryStrings[i].json;
+      const json = getEntryJson(e);
       if (!filterQuery.test(json)) return acc;
       if (applySearch && !searchKeywordsParsed.test(json)) return acc;
       acc.push({ e, i });
       return acc;
     }, []);
-  }, [levelFiltered, entryStrings, filterQuery, mode, searchKeywordsParsed]);
+  }, [levelFiltered, filterQuery, mode, searchKeywordsParsed, getEntryJson]);
 
   // Dedupe pass — collapses exact-match duplicates to the first occurrence and tracks counts.
   // Key: source + level + message text. When off, dupeCounts is empty and everything passes through.
@@ -2016,7 +2371,52 @@ export function LogsExplorer({
     return bestIdx;
   }, [anchorTimestamp, filteredWithIdx]);
 
-  const filtered = useMemo(() => filteredWithIdx.map(({ e }) => e), [filteredWithIdx]);
+  // Fast path: when no filter / search / dedupe altered the data, reuse the
+  // levelFiltered array reference directly instead of allocating a new O(n)
+  // unwrapped copy on every tail tick.
+  const filtered = useMemo(() => {
+    if (
+      filteredWithIdx.length === levelFiltered.length &&
+      filteredWithIdx.length > 0 &&
+      filteredWithIdx[0].e === levelFiltered[0] &&
+      filteredWithIdx[filteredWithIdx.length - 1].e === levelFiltered[levelFiltered.length - 1]
+    ) {
+      return levelFiltered;
+    }
+    return filteredWithIdx.map(({ e }) => e);
+  }, [filteredWithIdx, levelFiltered]);
+
+  // Track cumulative count of entries evicted from the front of `filtered`.
+  // Passed to viewers so they can compensate scrollTop and keep the viewport
+  // stable while the circular buffer trims the oldest entries during tail.
+  // Algorithm: between renders, locate the previous tail's last entry in the
+  // new array. If it shifted toward index 0, that's the eviction count.
+  const filteredEvictedRef = useRef(0);
+  const prevFilteredRef = useRef<LogEntry[] | null>(null);
+  const [filteredEvictedCount, setFilteredEvictedCount] = useState(0);
+  useEffect(() => {
+    const prev = prevFilteredRef.current;
+    prevFilteredRef.current = filtered;
+    if (!prev || prev === filtered || prev.length === 0) return;
+    // Use the last entry of prev as anchor — it's almost certainly still
+    // present (eviction happens at the head, not the tail).
+    const anchor = prev[prev.length - 1];
+    // The anchor (prev's last entry) sits near the end of `filtered` since
+    // tail only appends to the back. Scan backward from the end with a
+    // bounded window so this stays O(batch) instead of O(buffer).
+    let newPos = -1;
+    const SCAN_LIMIT = 5000;
+    const lo = Math.max(0, filtered.length - SCAN_LIMIT);
+    for (let k = filtered.length - 1; k >= lo; k--) {
+      if (filtered[k] === anchor) { newPos = k; break; }
+    }
+    if (newPos < 0) return; // anchor not found in window — skip this round
+    const evicted = (prev.length - 1) - newPos;
+    if (evicted > 0) {
+      filteredEvictedRef.current += evicted;
+      setFilteredEvictedCount(filteredEvictedRef.current);
+    }
+  }, [filtered]);
 
   // Compute indices into `filtered` where the highlight query matches the
   // entry's full JSON — so a match in a payload field that's not in the
@@ -2026,12 +2426,12 @@ export function LogsExplorer({
     const out: { key: string; index: number }[] = [];
     for (let idx = 0; idx < filteredWithIdx.length; idx++) {
       const { e, i } = filteredWithIdx[idx];
-      if (highlightQuery.test(entryStrings[i].json)) {
+      if (highlightQuery.test(getEntryJson(e))) {
         out.push({ key: logEntryMatchKey(e, i), index: idx });
       }
     }
     return out;
-  }, [filteredWithIdx, entryStrings, highlightQuery]);
+  }, [filteredWithIdx, highlightQuery, getEntryJson]);
   const matchIndices = useMemo(() => matchRows.map((m) => m.index), [matchRows]);
 
   // Auto-expand rows in table view when Filter or Highlight is active.
@@ -2155,18 +2555,61 @@ export function LogsExplorer({
   // Reset jump flag whenever the filter terms change so we jump fresh on the next match
   useEffect(() => { firstMatchJumpedRef.current = false; }, [search, levelFilter]);
 
+  // Reset expanded rows only when the *filter context* changes (user changed
+  // search/level filter, or initial load). New tail entries must NOT collapse
+  // the rows the user has manually expanded for inspection.
   useEffect(() => {
     setExpandedTableRows(new Set());
+  }, [search, levelFilter]);
+
+  // Page tracking on tail / filter changes (separate from expanded-row reset
+  // so streaming entries don't keep collapsing inspected rows).
+  useEffect(() => {
     if (search && filtered.length > 0 && !firstMatchJumpedRef.current) {
       // First matching entry found — jump to page 1 (oldest = first match) and stay there
       firstMatchJumpedRef.current = true;
       setPage(1);
-    } else if (!search) {
-      // No filter active — follow the latest page as results stream in
+    } else if (!search && autoScroll) {
+      // No filter active and auto-scroll on — follow the latest page as results stream in.
+      // When auto-scroll is off, leave the page alone so the user can inspect a stable view.
       setPage(Math.max(1, Math.ceil(filtered.length / pageSize)));
     }
     // search active + already jumped: leave page alone so user can browse
-  }, [search, levelFilter, filtered.length, pageSize]);
+  }, [search, levelFilter, filtered.length, pageSize, autoScroll]);
+
+  // When the buffer evicts from the front, the global indices that
+  // expandedTableRows is keyed on shift down by the eviction delta. Remap
+  // the Set so the same logical entries stay expanded, and drop any indices
+  // that fell off the front of the buffer.
+  const prevEvictedForExpandRef = useRef(filteredEvictedCount);
+  useEffect(() => {
+    const delta = filteredEvictedCount - prevEvictedForExpandRef.current;
+    prevEvictedForExpandRef.current = filteredEvictedCount;
+    if (delta <= 0) return;
+    setExpandedTableRows((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Set<number>();
+      for (const i of prev) {
+        const shifted = i - delta;
+        if (shifted >= 0) next.add(shifted);
+      }
+      return next;
+    });
+  }, [filteredEvictedCount]);
+
+  // Stabilize table view when buffer evicts from the front. Each evicted
+  // entry shifts every entry's index, so the same `page` would now show
+  // different rows. When autoScroll is off, decrement the page index to
+  // keep the user's content in view (best-effort, integer-page granularity).
+  const prevEvictedForPageRef = useRef(filteredEvictedCount);
+  useEffect(() => {
+    const delta = filteredEvictedCount - prevEvictedForPageRef.current;
+    prevEvictedForPageRef.current = filteredEvictedCount;
+    if (delta <= 0) return;
+    if (autoScroll) return; // auto-tail effect already handles page tracking
+    const pagesShift = Math.floor(delta / pageSize);
+    if (pagesShift > 0) setPage((p) => Math.max(1, p - pagesShift));
+  }, [filteredEvictedCount, autoScroll, pageSize]);
 
   // Bump scroll nonce whenever the view mode changes (with a selection set),
   // so each viewer's scroll-to-selection effect re-fires in the new view.
@@ -2947,6 +3390,7 @@ export function LogsExplorer({
                 matchIndices={matchIndices}
                 filterActive={!!search}
                 selectedEntryIdx={selectedEntryIdx}
+                evictedCount={filteredEvictedCount}
               />
             )
           ) : viewMode === "json" ? (
@@ -2977,6 +3421,8 @@ export function LogsExplorer({
                     ? { index: selectedEntryIdx, nonce: selectedScrollNonce }
                     : null
                 }
+                autoScroll={autoScroll}
+                evictedCount={filteredEvictedCount}
               />
             )
           ) : !fetched ? (
