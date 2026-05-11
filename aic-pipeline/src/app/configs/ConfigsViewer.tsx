@@ -16,6 +16,7 @@ import { JourneyGraph } from "./JourneyGraph";
 import type { FileCommit } from "@/lib/git-history";
 import { FileDiffViewer } from "@/components/FileDiffViewer";
 import { useVersionPicker, DefaultCompareBody } from "@/components/VersionPicker";
+import { ItemComparePanel } from "@/components/ItemComparePanel";
 
 // ── Compare-mode slot reference ────────────────────────────────────────────
 // Each slot is either the live working-tree file or a specific commit.
@@ -1602,6 +1603,15 @@ function SectionsView({
               )}
               {/* Versions dropdown + Compare button (non-journey/workflow scopes only) */}
               {showVersionUi && activeFile && versionUi.headerControls}
+              {/* Item-level compare for multi-file items (journey, IGA workflow) */}
+              {(selectedScope === "journeys" || selectedScope === "iga-workflows") && selectedItem && (
+                <ItemComparePanel
+                  environment={environment}
+                  scope={selectedScope}
+                  item={selectedItem.id}
+                  itemLabel={selectedItem.label}
+                />
+              )}
               {selectedScope === "scripts" && (
                 <button
                   type="button"
@@ -1880,7 +1890,7 @@ function SectionsView({
             )}
 
             {/* Content */}
-            <div className="flex-1 overflow-hidden min-h-0">
+            <div className="flex-1 flex flex-col overflow-hidden min-h-0">
               {fileLoading && (
                 <div className={cn("flex items-center justify-center h-full text-sm", selectedScope === "journeys" ? "text-slate-400" : "text-slate-500")}>
                   Loading…
