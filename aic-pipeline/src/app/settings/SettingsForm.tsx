@@ -81,6 +81,8 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
   const [rootEntry, setRootEntry] = useState<EnvEntry | null>(null);
   const [selectedScopes, setSelectedScopes] = useState<Set<string>>(new Set());
   const SCOPE_STORAGE_KEY = "pinghub.repo.pushScopes";
+  // Force-push toggle. Not persisted — must be re-enabled per session for safety.
+  const [forcePush, setForcePush] = useState(false);
 
   // ---------- Live push progress ----------
   interface ProgressLine {
@@ -327,7 +329,7 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
    * Streaming push: parses Server-Sent Events from POST /api/git/push.
    * Events: `step` (one-shot), `step-start`, `progress`, `step-end`, `done`.
    */
-  async function streamPush(confirmFlag: boolean): Promise<{
+  async function streamPush(confirmFlag: boolean, forceFlag?: boolean): Promise<{
     ok: boolean;
     cancelled: boolean;
     error?: string;
@@ -335,10 +337,11 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
     const controller = new AbortController();
     pushAbortRef.current = controller;
     const paths = isPushAll ? [] : Array.from(selectedScopes);
+    const useForce = forceFlag ?? forcePush;
     const res = await fetch("/api/git/push", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-      body: JSON.stringify({ confirm: confirmFlag, paths }),
+      body: JSON.stringify({ confirm: confirmFlag, paths, force: useForce }),
       signal: controller.signal,
     });
 
@@ -354,7 +357,7 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
           variant: "warning",
         });
         if (!proceed) return { ok: false, cancelled: true };
-        return streamPush(true); // re-issue with confirm=true
+        return streamPush(true, useForce); // re-issue with confirm=true
       }
       const err = data?.error ?? `Push failed (HTTP ${res.status})`;
       return { ok: false, cancelled: false, error: err };
@@ -450,10 +453,50 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
       if (result.cancelled) {
         flash("err", "Push cancelled.");
       } else if (!result.ok) {
+        // If the remote rejected the push (non-fast-forward), offer to retry
+        // with --force-with-lease instead of just showing the bare error.
+        const err = result.error ?? "Push failed.";
+        const looksRejected =
+          /rejected/i.test(err) ||
+          /non-fast-forward/i.test(err) ||
+          /fetch first/i.test(err);
+        if (looksRejected && !forcePush) {
+          const proceed = await confirm({
+            title: "Force push?",
+            message:
+              "The remote branch has commits you don't have locally. " +
+              "Force pushing will overwrite the remote branch with your local history. " +
+              "This is destructive and may discard work from other contributors. Continue?",
+            confirmLabel: "Force push",
+            variant: "warning",
+          });
+          if (proceed) {
+            setPushSteps([]);
+            setPushLines([]);
+            const retry = await streamPush(true, true);
+            if (retry.ok) {
+              flash("ok", "Force push succeeded.");
+            } else if (retry.cancelled) {
+              flash("err", "Push cancelled.");
+            } else {
+              flash(
+                "err",
+                retry.error ?? "Force push failed.",
+                pushStepsRef.current.map((s) => ({
+                  cmd: s.cmd,
+                  ok: s.ok === true,
+                  out: s.out,
+                })),
+              );
+            }
+            await refreshStatus();
+            await loadEnvs();
+            return;
+          }
+        }
         flash(
           "err",
-          result.error ?? "Push failed.",
-          // Convert the streamed steps into the existing details format.
+          err,
           pushStepsRef.current.map((s) => ({
             cmd: s.cmd,
             ok: s.ok === true,
@@ -461,7 +504,7 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
           })),
         );
       } else {
-        flash("ok", "Push succeeded.");
+        flash("ok", forcePush ? "Force push succeeded." : "Push succeeded.");
       }
       await refreshStatus();
       await loadEnvs();
@@ -659,16 +702,37 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
                   type="button"
                   onClick={handlePush}
                   disabled={busy !== null}
-                  className={btnPrimary}
+                  className={cn(
+                    btnPrimary,
+                    forcePush && "!bg-red-600 hover:!bg-red-700 focus:!ring-red-500",
+                  )}
                   title={
-                    isPushAll
-                      ? "Push everything"
-                      : `Push ${selectedScopes.size} of ${totalScopeCount} scope(s)`
+                    forcePush
+                      ? "Force push (overwrites remote branch with --force-with-lease)"
+                      : isPushAll
+                        ? "Push everything"
+                        : `Push ${selectedScopes.size} of ${totalScopeCount} scope(s)`
                   }
                 >
-                  Push{isPushAll ? " all" : ` (${selectedScopes.size})`}
+                  {forcePush ? "Force push" : `Push${isPushAll ? " all" : ` (${selectedScopes.size})`}`}
                 </button>
               )}
+              <label
+                className={cn(
+                  "flex items-center gap-1.5 text-xs select-none cursor-pointer",
+                  forcePush ? "text-red-700 font-medium" : "text-slate-600",
+                )}
+                title="Use --force-with-lease to overwrite the remote branch. Safer than --force but still destructive."
+              >
+                <input
+                  type="checkbox"
+                  checked={forcePush}
+                  onChange={(e) => setForcePush(e.target.checked)}
+                  disabled={pushRunning}
+                  className="h-3.5 w-3.5 rounded border-slate-300 text-red-600 focus:ring-red-500"
+                />
+                Force push
+              </label>
 
               {/* compact status badges */}
               <div className="ml-auto flex items-center gap-2 text-[11px]">
@@ -890,8 +954,8 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
                     s.ok === null
                       ? "border-indigo-200 bg-indigo-50/40 text-indigo-900"
                       : s.ok
-                      ? "border-green-100 bg-green-50/40 text-green-800"
-                      : "border-red-200 bg-red-50/40 text-red-800",
+                        ? "border-green-100 bg-green-50/40 text-green-800"
+                        : "border-red-200 bg-red-50/40 text-red-800",
                   )}
                 >
                   <span className="shrink-0">

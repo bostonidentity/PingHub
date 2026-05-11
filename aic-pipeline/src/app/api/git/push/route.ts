@@ -84,6 +84,7 @@ export async function POST(req: NextRequest) {
   const cwd = resolveTargetDir(settings);
   const body = await req.json().catch(() => ({}));
   const confirmed = body.confirm === true;
+  const force = body.force === true;
   const paths: string[] = Array.isArray(body.paths)
     ? body.paths.filter((p: unknown): p is string => typeof p === "string" && p.length > 0)
     : [];
@@ -119,7 +120,7 @@ export async function POST(req: NextRequest) {
 
   // Stream the rest as Server-Sent Events. Each step emits step-start /
   // progress (line) / step-end events; final event is `done`.
-  return runPushStream({ cwd, settings, preflight, paths });
+  return runPushStream({ cwd, settings, preflight, paths, force });
 }
 
 /**
@@ -151,9 +152,10 @@ interface RunPushArgs {
   settings: GitSettings;
   preflight: PreflightResult | null;
   paths: string[];
+  force: boolean;
 }
 
-function runPushStream({ cwd, settings, preflight, paths }: RunPushArgs): Response {
+function runPushStream({ cwd, settings, preflight, paths, force }: RunPushArgs): Response {
   const encoder = new TextEncoder();
   const steps: StreamStep[] = [];
   let cancelled = false;
@@ -206,14 +208,14 @@ function runPushStream({ cwd, settings, preflight, paths }: RunPushArgs): Respon
         activeStream = handle;
         const timer = timeoutMs
           ? setTimeout(() => {
-              if (!cancelled) {
-                send("progress", {
-                  kind: "stderr",
-                  line: `(timeout: killing git after ${timeoutMs}ms)`,
-                });
-              }
-              handle.cancel();
-            }, timeoutMs)
+            if (!cancelled) {
+              send("progress", {
+                kind: "stderr",
+                line: `(timeout: killing git after ${timeoutMs}ms)`,
+              });
+            }
+            handle.cancel();
+          }, timeoutMs)
           : null;
         return handle.done.then(({ code, killed }) => {
           if (timer) clearTimeout(timer);
@@ -333,8 +335,8 @@ function runPushStream({ cwd, settings, preflight, paths }: RunPushArgs): Respon
             preflight?.reason === "not-initialized"
               ? "Initial environments snapshot"
               : paths.length > 0
-              ? `Snapshot before push (${paths.length} scope${paths.length === 1 ? "" : "s"})`
-              : "Snapshot before push";
+                ? `Snapshot before push (${paths.length} scope${paths.length === 1 ? "" : "s"})`
+                : "Snapshot before push";
 
           // -c gc.auto=0 prevents the "Auto packing the repository" stderr
           // noise that masquerades as a commit failure on large repos.
@@ -371,12 +373,42 @@ function runPushStream({ cwd, settings, preflight, paths }: RunPushArgs): Respon
         if (cancelled) return fail("Cancelled");
 
         // ---------------- PUSH ----------------
-        const pushRes = await stepStream(
-          ["-c", "gc.auto=0", "push", "--progress", "-u", "origin", settings.branch],
-          15 * 60 * 1000,
-        );
+        // --force-with-lease is safer than --force: it still refuses if the
+        // remote moved since we last fetched, so a stale tab can't silently
+        // wipe out a teammate's push.
+        const pushArgs = [
+          "-c",
+          "gc.auto=0",
+          "push",
+          "--progress",
+          "-u",
+          ...(force ? ["--force-with-lease"] : []),
+          "origin",
+          settings.branch,
+        ];
+        const pushRes = await stepStream(pushArgs, 15 * 60 * 1000);
         if (!pushRes.ok) {
           if (cancelled) return fail("Cancelled");
+          const last = steps[steps.length - 1];
+          const out = last?.out ?? "";
+          // Detect non-fast-forward / rejected pushes so the UI can offer the
+          // force-push option instead of just "git push failed: To <url>".
+          if (
+            /\[rejected\]/i.test(out) ||
+            /non-fast-forward/i.test(out) ||
+            /fetch first/i.test(out) ||
+            /Updates were rejected/i.test(out)
+          ) {
+            return fail(
+              "git push rejected: remote has commits you don't have locally. " +
+              "Pull first, or retry with \"Force push\" if you want to overwrite the remote branch.",
+            );
+          }
+          if (force && /stale info|rejected.*force-with-lease/i.test(out)) {
+            return fail(
+              "git push --force-with-lease refused: remote moved since last fetch. Fetch and try again.",
+            );
+          }
           return fail("git push failed");
         }
 
