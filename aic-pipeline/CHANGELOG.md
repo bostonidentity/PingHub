@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6.3] - 2026-05-11
+
+### Fixed
+
+- **Logs → Transaction-ID search no longer leaks across tabs.** The traceId/transactionId input at the top of the Logs page is shared by all tabs, but each tab keeps its own results. Previously, the latest submitted search was delivered to *whichever tab happened to be active*, keyed only by a monotonic `seq`. That meant: search X in Tab A → switch to Tab B and search Y → switch back to Tab A, and Tab A's results got overwritten with Y's because its `prevTxSeq` was still behind. Each submit is now stamped with the originating `tabId`, and the search is only delivered to that specific tab — switching tabs no longer triggers a re-fetch.
+
 ## [0.2.6.2] - 2026-05-11
 
 ### Added
