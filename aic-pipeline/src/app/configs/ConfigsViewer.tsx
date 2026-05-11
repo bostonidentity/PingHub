@@ -15,6 +15,7 @@ import { useEsvDisplayMode, isEsvScope, applyEsvDecoding } from "@/lib/esv-decod
 import { JourneyGraph } from "./JourneyGraph";
 import type { FileCommit } from "@/lib/git-history";
 import { FileDiffViewer } from "@/components/FileDiffViewer";
+import { useVersionPicker, DefaultCompareBody } from "@/components/VersionPicker";
 
 // ── Compare-mode slot reference ────────────────────────────────────────────
 // Each slot is either the live working-tree file or a specific commit.
@@ -1271,6 +1272,83 @@ function SectionsView({
 
   const activeFile = files?.[activeTab];
 
+  // ── Versions / Compare for non-journey/non-workflow scopes ──────────────
+  // SectionsView is the default Browse view; we wire the same Versions
+  // dropdown + Compare mode that TreeView has, but only for scopes where the
+  // active file is text (journeys/iga-workflows render visual graphs, so we
+  // skip them here and let TreeView handle those for now).
+  const showVersionUi = selectedScope !== "journeys" && selectedScope !== "iga-workflows";
+  const versionUi = useVersionPicker({
+    environment,
+    filePath: activeFile?.relPath ?? null,
+    fileName: activeFile?.name ?? "",
+    workingContent: activeFile?.content ?? null,
+    theme: "dark",
+    renderBody: (mode) => {
+      if (!activeFile) return null;
+      if (mode.kind === "compare") {
+        return (
+          <DefaultCompareBody
+            aContent={mode.aContent}
+            bContent={mode.bContent}
+            aLabel={mode.aLabel}
+            bLabel={mode.bLabel}
+            fileName={activeFile.name}
+            loading={mode.loading}
+            error={mode.error}
+          />
+        );
+      }
+      if (mode.loading) {
+        return <div className="flex items-center justify-center h-full text-sm text-slate-500">Loading version…</div>;
+      }
+      const content = mode.content ?? "";
+      const lower = activeFile.name.toLowerCase();
+      const isJson = lower.endsWith(".json");
+      const isScript = lower.endsWith(".js") || lower.endsWith(".groovy");
+      const lineHighlight = mode.viewingSha ? undefined : highlightLine;
+      const queryHighlight = mode.viewingSha ? undefined : highlightQuery;
+      if (isJson) {
+        return (
+          <div className="h-full min-h-0 overflow-hidden">
+            <JsonFileViewer
+              key={`${selectedItem?.id ?? ""}:${activeFile.name}:${isEsvScope(selectedScope) ? esvMode : ""}:${mode.viewingSha ?? "current"}`}
+              content={isEsvScope(selectedScope) ? applyEsvDecoding(content, esvMode) : content}
+              fileName={activeFile.name}
+              highlightLine={lineHighlight}
+            />
+          </div>
+        );
+      }
+      if (isScript) {
+        return (
+          <div className="h-full min-h-0 overflow-hidden">
+            <ScriptFileViewer
+              key={`${selectedItem?.id ?? ""}:${activeFile.name}:${mode.viewingSha ?? "current"}`}
+              content={content}
+              fileName={activeFile.name}
+              environment={environment}
+              relPath={activeFile.relPath}
+              highlightLine={lineHighlight}
+              highlightQuery={queryHighlight}
+              onNavigate={handleNavigateTarget}
+            />
+          </div>
+        );
+      }
+      return (
+        <div className="overflow-auto h-full">
+          <FileContent
+            content={content}
+            fileName={activeFile.name}
+            highlightLine={lineHighlight}
+            wrap={(selectedScope === "scripts" || selectedScope === "endpoints") && wrapScripts}
+          />
+        </div>
+      );
+    },
+  });
+
   return (
     <div className="flex flex-1 min-h-0 rounded-lg border border-slate-200 overflow-hidden">
 
@@ -1517,11 +1595,13 @@ function SectionsView({
                     </svg>
                   ) : (
                     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.184" />
                     </svg>
                   )}
                 </button>
               )}
+              {/* Versions dropdown + Compare button (non-journey/workflow scopes only) */}
+              {showVersionUi && activeFile && versionUi.headerControls}
               {selectedScope === "scripts" && (
                 <button
                   type="button"
@@ -1822,38 +1902,12 @@ function SectionsView({
                 </div>
               )}
               {!fileLoading && activeFile && selectedScope !== "journeys" && selectedScope !== "iga-workflows" && (
-                activeFile.name.toLowerCase().endsWith(".json") ? (
-                  <div className="h-full min-h-0 overflow-hidden">
-                    <JsonFileViewer
-                      key={`${selectedItem?.id ?? ""}:${activeFile.name}:${isEsvScope(selectedScope) ? esvMode : ""}`}
-                      content={isEsvScope(selectedScope) ? applyEsvDecoding(activeFile.content, esvMode) : activeFile.content}
-                      fileName={activeFile.name}
-                      highlightLine={highlightLine}
-                    />
+                <>
+                  {versionUi.banner}
+                  <div className="flex-1 min-h-0 overflow-hidden">
+                    {versionUi.bodyNode}
                   </div>
-                ) : (activeFile.name.toLowerCase().endsWith(".js") || activeFile.name.toLowerCase().endsWith(".groovy")) ? (
-                  <div className="h-full min-h-0 overflow-hidden">
-                    <ScriptFileViewer
-                      key={`${selectedItem?.id ?? ""}:${activeFile.name}`}
-                      content={activeFile.content}
-                      fileName={activeFile.name}
-                      environment={environment}
-                      relPath={activeFile.relPath}
-                      highlightLine={highlightLine}
-                      highlightQuery={highlightQuery}
-                      onNavigate={handleNavigateTarget}
-                    />
-                  </div>
-                ) : (
-                  <div className="overflow-auto h-full">
-                    <FileContent
-                      content={activeFile.content}
-                      fileName={activeFile.name}
-                      highlightLine={highlightLine}
-                      wrap={(selectedScope === "scripts" || selectedScope === "endpoints") && wrapScripts}
-                    />
-                  </div>
-                )
+                </>
               )}
             </div>
           </>

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6.2] - 2026-05-11
+
+### Added
+
+- **Browse → Sections view also gets Versions + Compare**: the file-version-history UI (introduced in 0.2.6.0 / 0.2.6.1) was previously only wired into the Tree view. It now also appears in the default **Sections** view header for any non-journey/non-workflow file (JSON, JS, Groovy, generic text). The two views share the same logic via a new reusable hook **`useVersionPicker`** in `src/components/VersionPicker.tsx`, which encapsulates the history dropdown, slot pickers, compare-mode state, and the rendering contract (it asks the caller to provide the single-version viewer and the compare-mode viewer, so JSON/JS/Groovy formatting and ESV decoding behave identically in Sections mode). Journey and IGA-workflow scopes still render their visual graphs and are intentionally excluded for now (see Phase 3 — dependency-pinned diff).
+- **`DefaultCompareBody`** convenience component that wraps `FileDiffViewer` with the standard loading / error states for callers that don't need a custom compare renderer.
+
 ## [0.2.6.1] - 2026-05-11
 
 ### Added
