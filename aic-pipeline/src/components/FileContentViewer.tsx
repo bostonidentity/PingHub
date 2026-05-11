@@ -71,8 +71,34 @@ interface RowProps {
   indentGuides?: boolean;
   /** Fixed gutter width in ch units, sized off the file's largest line number. */
   gutterWidthCh: number;
+  /** Identifier currently double-click-highlighted; matching word occurrences are visually emphasised. */
+  wordHighlight?: string;
   onToggleFold?: (startLine: number) => void;
   onLineClick?: (line: number) => void;
+}
+
+// Split a token's text into match/non-match segments for the current
+// wordHighlight. Returns null when there are no matches so callers can
+// short-circuit and render the token unchanged.
+function splitTokenForHighlight(text: string, word: string): Array<{ text: string; match: boolean }> | null {
+  if (!word) return null;
+  // Whole-word match, case-sensitive — same convention as most editors'
+  // "highlight occurrences of selection". We escape to be safe even though
+  // we filter to \w-only words below.
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`\\b${escaped}\\b`, "g");
+  let m: RegExpExecArray | null;
+  let lastIndex = 0;
+  const parts: Array<{ text: string; match: boolean }> = [];
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > lastIndex) parts.push({ text: text.slice(lastIndex, m.index), match: false });
+    parts.push({ text: m[0], match: true });
+    lastIndex = m.index + m[0].length;
+    if (m[0].length === 0) re.lastIndex++; // safety: never happens for \w words
+  }
+  if (parts.length === 0) return null;
+  if (lastIndex < text.length) parts.push({ text: text.slice(lastIndex), match: false });
+  return parts;
 }
 
 const Row = memo(function Row({
@@ -89,6 +115,7 @@ const Row = memo(function Row({
   overlay,
   indentGuides,
   gutterWidthCh,
+  wordHighlight,
   onToggleFold,
   onLineClick,
 }: RowProps) {
@@ -170,17 +197,43 @@ const Row = memo(function Row({
         {displayTokens.length === 0 ? (
           <span> </span>
         ) : (
-          displayTokens.map((t, j) => (
-            <Fragment key={j}>
-              {t.color ? (
-                <span style={{ color: t.color, fontWeight: t.bold ? 500 : undefined }}>
-                  {t.text}
-                </span>
-              ) : (
-                t.text
-              )}
-            </Fragment>
-          ))
+          displayTokens.map((t, j) => {
+            const parts = wordHighlight ? splitTokenForHighlight(t.text, wordHighlight) : null;
+            if (!parts) {
+              return (
+                <Fragment key={j}>
+                  {t.color ? (
+                    <span style={{ color: t.color, fontWeight: t.bold ? 500 : undefined }}>
+                      {t.text}
+                    </span>
+                  ) : (
+                    t.text
+                  )}
+                </Fragment>
+              );
+            }
+            return (
+              <Fragment key={j}>
+                {parts.map((p, k) =>
+                  p.match ? (
+                    <span
+                      key={k}
+                      className="bg-yellow-500/30 ring-1 ring-yellow-400/60 rounded-sm"
+                      style={{ color: t.color, fontWeight: t.bold ? 500 : undefined }}
+                    >
+                      {p.text}
+                    </span>
+                  ) : t.color ? (
+                    <span key={k} style={{ color: t.color, fontWeight: t.bold ? 500 : undefined }}>
+                      {p.text}
+                    </span>
+                  ) : (
+                    <Fragment key={k}>{p.text}</Fragment>
+                  ),
+                )}
+              </Fragment>
+            );
+          })
         )}
         {isFolded && foldEnd != null && (
           <>
@@ -223,6 +276,18 @@ export function FileContentViewer({
 }: Props) {
   const lang = language ?? detectLanguage(fileName);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Double-click word highlight — mirror the editor convention where
+  // dbl-clicking an identifier emphasises every occurrence of the same word.
+  // Filters to identifier-ish tokens (\w with 1–60 chars) so a stray dbl on
+  // punctuation/whitespace doesn't poison the view; dbl-clicking again on
+  // non-identifier content clears the highlight.
+  const [wordHighlight, setWordHighlight] = useState<string>("");
+  const handleDoubleClick = () => {
+    const sel = typeof window !== "undefined" ? window.getSelection()?.toString().trim() ?? "" : "";
+    if (/^[\w$]{1,60}$/.test(sel)) setWordHighlight(sel);
+    else setWordHighlight("");
+  };
 
   // Auto-format HTML-bearing email-template files (.md/.html) so the viewer
   // shows structured indentation regardless of how messy the source file is.
@@ -380,6 +445,7 @@ export function FileContentViewer({
     <div
       ref={containerRef}
       onScroll={onScroll}
+      onDoubleClick={handleDoubleClick}
       className={cn(
         "h-full overflow-auto bg-slate-900 text-slate-300 code-mono text-[13px] leading-[1.55] scrollbar-thin",
         className,
@@ -426,6 +492,7 @@ export function FileContentViewer({
                 overlay={lineOverlays?.get(ln)}
                 indentGuides={indentGuides}
                 gutterWidthCh={gutterWidthCh}
+                wordHighlight={wordHighlight}
                 onToggleFold={onToggleFold}
                 onLineClick={onLineClick}
               />
