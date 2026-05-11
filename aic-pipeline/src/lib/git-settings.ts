@@ -1,4 +1,4 @@
-import { spawnSync } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import fs from "fs";
 import path from "path";
 
@@ -91,4 +91,74 @@ export function runGit(args: string[], cwd: string, timeoutMs = 120_000): RunRes
     return { ok: true, stdout: stdout.trim(), stderr: stderr.trim(), code: 0 };
   }
   return { ok: false, stdout, stderr: stderr.trim() || stdout.trim(), code };
+}
+
+/**
+ * Spawn `git` and stream stdout/stderr line-by-line to `onLine`. Returns a
+ * promise resolving to the final exit code, plus a `cancel()` function that
+ * SIGKILLs the child. Used by the Push streaming endpoint to surface live
+ * progress (e.g. `--progress` from `git push`).
+ */
+export interface StreamHandle {
+  done: Promise<{ code: number; killed: boolean }>;
+  cancel: () => void;
+  pid: number | undefined;
+}
+
+export function runGitStream(
+  args: string[],
+  cwd: string,
+  onLine: (stream: "stdout" | "stderr", line: string) => void,
+): StreamHandle {
+  const child = spawn("git", args, {
+    cwd,
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: false,
+    windowsHide: true,
+    env: {
+      ...process.env,
+      // Force git's progress output (e.g. "Counting objects: …") even though
+      // stderr is a pipe, not a TTY. Without this `git push` only emits the
+      // final ref-update summary.
+      GIT_PROGRESS_DELAY: "0",
+    },
+  });
+
+  let killed = false;
+  const splitToLines = (stream: "stdout" | "stderr") => {
+    let buf = "";
+    return (chunk: Buffer) => {
+      buf += chunk.toString("utf-8");
+      // git uses \r for in-place progress updates; treat both as line breaks.
+      const parts = buf.split(/\r\n|\r|\n/);
+      buf = parts.pop() ?? "";
+      for (const line of parts) {
+        if (line.length > 0) onLine(stream, line);
+      }
+    };
+  };
+  child.stdout?.on("data", splitToLines("stdout"));
+  child.stderr?.on("data", splitToLines("stderr"));
+
+  const done = new Promise<{ code: number; killed: boolean }>((resolve) => {
+    child.on("close", (code) => {
+      resolve({ code: typeof code === "number" ? code : 1, killed });
+    });
+    child.on("error", () => {
+      resolve({ code: 1, killed });
+    });
+  });
+
+  return {
+    done,
+    pid: child.pid,
+    cancel: () => {
+      killed = true;
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* ignore */
+      }
+    },
+  };
 }

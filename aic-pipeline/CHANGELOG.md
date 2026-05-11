@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5.3] - 2026-05-10
+
+### Added
+
+- **Repo → Push scope selector**: a chip list of every top-level environment folder under the target dir (auto-detected, e.g. `ide/`, `ide3/`, `prod/`, `sit/`, `uat/`) plus a "Root files" entry. Each chip shows a dirty-count badge. Default selection = everything (push-all). Selection persists in localStorage so the choice carries across reloads. The Push button label updates to `Push all` vs `Push (N)`. When scoped, the server runs `git add -A -- <paths> .gitignore` instead of `git add -A`, then commits and pushes the whole branch (other dirty files stay uncommitted).
+- **Repo → live push progress**: the Push handler is now a Server-Sent Events stream. Each `git` command emits `step-start` / `progress` / `step-end` events, so the UI shows a live timeline with a spinner per running step, ✓/✗ once each completes, and a collapsible "Live output" pane streaming `git push --progress` line-by-line (counting objects, compressing, writing, etc.). A red **Cancel** button maps to `DELETE /api/git/push` which SIGKILLs the active git child server-side. A second Push request while one is in flight returns 409 instead of racing on the index.
+- **`GET /api/git/envs`**: new endpoint listing immediate subfolders of the env target dir with per-folder dirty counts, used by the scope selector. `node_modules/` and `.git/` are skipped.
+
+### Fixed
+
+- **Repo → "git commit failed: Auto packing the repository for optimum performance"**: on a fresh repo with ~10k objects, `git commit` triggers `git gc --auto`, which writes the "Auto packing…" notice to stderr and exits non-zero on Windows even though the commit itself succeeded. The push pipeline now runs every git invocation with `-c gc.auto=0`, sets `gc.auto=0` on the env repo's local config, and double-checks the commit landed via `git log -1 --pretty=%s` if the exit code looks suspicious.
+
 ## [0.2.5.2] - 2026-05-10
 
 ### Fixed

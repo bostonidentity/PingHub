@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { GitSettings } from "@/lib/git-settings";
 import { useDialog } from "@/components/ConfirmDialog";
 import { cn } from "@/lib/utils";
@@ -70,6 +70,33 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
   const [commitsError, setCommitsError] = useState<string | null>(null);
   const COMMITS_PAGE_SIZE = 25;
 
+  // ---------- Push scope (multi-select) ----------
+  interface EnvEntry {
+    name: string;
+    path: string;
+    dirtyCount: number;
+    isFolder: boolean;
+  }
+  const [envs, setEnvs] = useState<EnvEntry[]>([]);
+  const [rootEntry, setRootEntry] = useState<EnvEntry | null>(null);
+  const [selectedScopes, setSelectedScopes] = useState<Set<string>>(new Set());
+  const SCOPE_STORAGE_KEY = "pinghub.repo.pushScopes";
+
+  // ---------- Live push progress ----------
+  interface ProgressLine {
+    kind: "stdout" | "stderr" | "info";
+    line: string;
+  }
+  interface ProgressStep {
+    cmd: string;
+    ok: boolean | null; // null = still running
+    out: string;
+  }
+  const [pushRunning, setPushRunning] = useState(false);
+  const [pushSteps, setPushSteps] = useState<ProgressStep[]>([]);
+  const [pushLines, setPushLines] = useState<ProgressLine[]>([]);
+  const pushAbortRef = useRef<AbortController | null>(null);
+
   const dirty = JSON.stringify(settings) !== JSON.stringify(savedSettings);
 
   const update = <K extends keyof GitSettings>(key: K, value: GitSettings[K]) =>
@@ -132,6 +159,7 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
       setStatus(data);
       setHasGit(Boolean(data.initialized));
       if (data.targetDir) setTargetAbs(data.targetDir);
+      if (data.initialized) void loadEnvs();
     } finally {
       setBusy(null);
     }
@@ -227,6 +255,242 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
     [],
   );
 
+  const loadEnvs = useCallback(async () => {
+    try {
+      const res = await fetch("/api/git/envs");
+      const data = await res.json();
+      if (!data.ok) return;
+      setEnvs(data.envs ?? []);
+      setRootEntry(data.rootFiles ?? null);
+      // Initialise selection: restore from localStorage if present, otherwise
+      // select everything (push-all is the default).
+      setSelectedScopes((prev) => {
+        if (prev.size > 0) return prev;
+        let restored: string[] | null = null;
+        if (typeof window !== "undefined") {
+          const raw = window.localStorage.getItem(SCOPE_STORAGE_KEY);
+          if (raw) {
+            try {
+              restored = JSON.parse(raw);
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+        const all = [
+          ...(data.envs ?? []).map((e: EnvEntry) => e.path),
+          ...(data.rootFiles ? [data.rootFiles.path] : []),
+        ];
+        if (restored && Array.isArray(restored)) {
+          // Filter to entries that still exist.
+          return new Set(restored.filter((p) => all.includes(p)));
+        }
+        return new Set(all);
+      });
+    } catch {
+      /* no envs panel if endpoint unreachable */
+    }
+  }, []);
+
+  // Persist selection.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (envs.length === 0 && !rootEntry) return;
+    window.localStorage.setItem(
+      SCOPE_STORAGE_KEY,
+      JSON.stringify(Array.from(selectedScopes)),
+    );
+  }, [selectedScopes, envs.length, rootEntry]);
+
+  function toggleScope(path: string) {
+    setSelectedScopes((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }
+
+  function selectAllScopes() {
+    const all = [...envs.map((e) => e.path), ...(rootEntry ? [rootEntry.path] : [])];
+    setSelectedScopes(new Set(all));
+  }
+  function selectNoneScopes() {
+    setSelectedScopes(new Set());
+  }
+
+  const totalScopeCount = envs.length + (rootEntry ? 1 : 0);
+  const isPushAll =
+    selectedScopes.size === 0 || selectedScopes.size === totalScopeCount;
+
+  /**
+   * Streaming push: parses Server-Sent Events from POST /api/git/push.
+   * Events: `step` (one-shot), `step-start`, `progress`, `step-end`, `done`.
+   */
+  async function streamPush(confirmFlag: boolean): Promise<{
+    ok: boolean;
+    cancelled: boolean;
+    error?: string;
+  }> {
+    const controller = new AbortController();
+    pushAbortRef.current = controller;
+    const paths = isPushAll ? [] : Array.from(selectedScopes);
+    const res = await fetch("/api/git/push", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify({ confirm: confirmFlag, paths }),
+      signal: controller.signal,
+    });
+
+    // Preflight (JSON) — server returns JSON when confirmation is needed.
+    const ctype = res.headers.get("content-type") ?? "";
+    if (!ctype.includes("text/event-stream")) {
+      const data = await res.json().catch(() => ({}));
+      if (data?.needsConfirm && data.preflight?.message) {
+        const proceed = await confirm({
+          title: "Confirm push",
+          message: data.preflight.message,
+          confirmLabel: "Proceed",
+          variant: "warning",
+        });
+        if (!proceed) return { ok: false, cancelled: true };
+        return streamPush(true); // re-issue with confirm=true
+      }
+      const err = data?.error ?? `Push failed (HTTP ${res.status})`;
+      return { ok: false, cancelled: false, error: err };
+    }
+
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let final: { ok: boolean; cancelled: boolean; error?: string } = {
+      ok: false,
+      cancelled: false,
+      error: "Stream ended unexpectedly",
+    };
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      // Split into SSE messages (separated by blank lines).
+      const messages = buf.split(/\r?\n\r?\n/);
+      buf = messages.pop() ?? "";
+      for (const msg of messages) {
+        if (!msg.trim()) continue;
+        let event = "message";
+        let dataLine = "";
+        for (const line of msg.split(/\r?\n/)) {
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          else if (line.startsWith("data:")) dataLine += line.slice(5).trim();
+        }
+        let payload: unknown = null;
+        try {
+          payload = JSON.parse(dataLine);
+        } catch {
+          /* ignore */
+        }
+        handleSseEvent(event, payload, (f) => {
+          final = f;
+        });
+      }
+    }
+    return final;
+  }
+
+  function handleSseEvent(
+    event: string,
+    payload: unknown,
+    setFinal: (f: { ok: boolean; cancelled: boolean; error?: string }) => void,
+  ) {
+    if (event === "step") {
+      const s = payload as ProgressStep;
+      setPushSteps((prev) => [...prev, s]);
+    } else if (event === "step-start") {
+      const { cmd } = payload as { cmd: string };
+      setPushSteps((prev) => [...prev, { cmd, ok: null, out: "" }]);
+    } else if (event === "progress") {
+      const p = payload as ProgressLine;
+      setPushLines((prev) => {
+        const next = [...prev, p];
+        // cap memory: keep last 500 lines
+        return next.length > 500 ? next.slice(next.length - 500) : next;
+      });
+    } else if (event === "step-end") {
+      const s = payload as ProgressStep;
+      setPushSteps((prev) => {
+        // Replace the last in-progress step with the final result.
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i].cmd === s.cmd && prev[i].ok === null) {
+            const next = prev.slice();
+            next[i] = s;
+            return next;
+          }
+        }
+        return [...prev, s];
+      });
+    } else if (event === "done") {
+      const d = payload as { ok: boolean; cancelled?: boolean; error?: string };
+      setFinal({
+        ok: Boolean(d.ok),
+        cancelled: Boolean(d.cancelled),
+        error: d.error,
+      });
+    }
+  }
+
+  async function handlePush() {
+    if (pushRunning) return;
+    setPushRunning(true);
+    setPushSteps([]);
+    setPushLines([]);
+    setBusy("push");
+    setToast(null);
+    try {
+      const result = await streamPush(false);
+      if (result.cancelled) {
+        flash("err", "Push cancelled.");
+      } else if (!result.ok) {
+        flash(
+          "err",
+          result.error ?? "Push failed.",
+          // Convert the streamed steps into the existing details format.
+          pushStepsRef.current.map((s) => ({
+            cmd: s.cmd,
+            ok: s.ok === true,
+            out: s.out,
+          })),
+        );
+      } else {
+        flash("ok", "Push succeeded.");
+      }
+      await refreshStatus();
+      await loadEnvs();
+    } catch (e) {
+      flash("err", (e as Error).message);
+    } finally {
+      pushAbortRef.current = null;
+      setPushRunning(false);
+      setBusy(null);
+    }
+  }
+
+  // Mirror pushSteps into a ref so the final flash() call sees the latest
+  // value (state updates from SSE handlers may not have settled yet).
+  const pushStepsRef = useRef<ProgressStep[]>([]);
+  useEffect(() => {
+    pushStepsRef.current = pushSteps;
+  }, [pushSteps]);
+
+  async function cancelPush() {
+    if (!pushRunning) return;
+    try {
+      await fetch("/api/git/push", { method: "DELETE" });
+    } catch {
+      /* server may already be done */
+    }
+    pushAbortRef.current?.abort();
+  }
+
   useEffect(() => {
     // History card is collapsed by default; only reset when the repo goes away.
     if (!hasGit) {
@@ -235,9 +499,13 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
     }
   }, [hasGit]);
 
-  // Load status badges (branch, ahead/behind, dirty count) on first mount.
+  // Load status badges (branch, ahead/behind, dirty count) on first mount,
+  // plus the per-folder envs list for the Push scope selector.
   useEffect(() => {
-    if (initialHasGit) void refreshStatus();
+    if (initialHasGit) {
+      void refreshStatus();
+      void loadEnvs();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -378,14 +646,29 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
               >
                 {busy === "commit" ? "Committing…" : "Commit all"}
               </button>
-              <button
-                type="button"
-                onClick={() => handleAction("push")}
-                disabled={busy !== null}
-                className={btnPrimary}
-              >
-                {busy === "push" ? "Pushing…" : "Push"}
-              </button>
+              {pushRunning ? (
+                <button
+                  type="button"
+                  onClick={cancelPush}
+                  className="btn-secondary border-red-300 text-red-700 hover:bg-red-50"
+                >
+                  Cancel push
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handlePush}
+                  disabled={busy !== null}
+                  className={btnPrimary}
+                  title={
+                    isPushAll
+                      ? "Push everything"
+                      : `Push ${selectedScopes.size} of ${totalScopeCount} scope(s)`
+                  }
+                >
+                  Push{isPushAll ? " all" : ` (${selectedScopes.size})`}
+                </button>
+              )}
 
               {/* compact status badges */}
               <div className="ml-auto flex items-center gap-2 text-[11px]">
@@ -418,6 +701,70 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
                     </span>
                   )}
               </div>
+            </div>
+          )}
+
+          {/* Push scope selector */}
+          {hasGit && totalScopeCount > 0 && (
+            <div className="border border-slate-100 rounded p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-slate-700">Push scope</span>
+                <div className="flex items-center gap-2 text-[11px]">
+                  <button
+                    type="button"
+                    onClick={selectAllScopes}
+                    className="text-indigo-600 hover:underline"
+                  >
+                    All
+                  </button>
+                  <span className="text-slate-300">·</span>
+                  <button
+                    type="button"
+                    onClick={selectNoneScopes}
+                    className="text-indigo-600 hover:underline"
+                  >
+                    None
+                  </button>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {[...envs, ...(rootEntry ? [rootEntry] : [])].map((env) => {
+                  const checked = selectedScopes.has(env.path);
+                  const dirty = env.dirtyCount > 0;
+                  return (
+                    <button
+                      key={env.path}
+                      type="button"
+                      onClick={() => toggleScope(env.path)}
+                      className={cn(
+                        "inline-flex items-center gap-1 px-2.5 py-1 rounded-full border text-[11px] font-mono transition",
+                        checked
+                          ? "border-indigo-300 bg-indigo-50 text-indigo-800"
+                          : "border-slate-200 bg-white text-slate-500 hover:border-slate-300",
+                      )}
+                      title={dirty ? `${env.dirtyCount} uncommitted file(s)` : "no changes"}
+                    >
+                      <span
+                        className={cn(
+                          "inline-block w-1.5 h-1.5 rounded-full",
+                          dirty ? "bg-orange-400" : "bg-slate-300",
+                        )}
+                      />
+                      {env.name}
+                      {dirty && (
+                        <span className="ml-0.5 font-sans text-[10px] text-orange-700">
+                          ({env.dirtyCount})
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-slate-500">
+                {isPushAll
+                  ? "All environments will be staged."
+                  : `Only the ${selectedScopes.size} selected scope(s) will be staged. Other dirty files stay uncommitted; the push always sends the whole branch.`}
+              </p>
             </div>
           )}
 
@@ -501,6 +848,87 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
             </div>
           )}
         </section>
+
+        {/* Live push progress */}
+        {hasGit && (pushRunning || pushSteps.length > 0) && (
+          <section className="card-padded space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold text-slate-900">
+                {pushRunning ? "Push in progress…" : "Push log"}
+              </h2>
+              <div className="flex items-center gap-2">
+                {pushRunning && (
+                  <button
+                    type="button"
+                    onClick={cancelPush}
+                    className="text-xs text-red-600 hover:underline"
+                  >
+                    Cancel
+                  </button>
+                )}
+                {!pushRunning && pushSteps.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPushSteps([]);
+                      setPushLines([]);
+                    }}
+                    className="text-xs text-slate-500 hover:underline"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <ol className="space-y-1 text-xs font-mono">
+              {pushSteps.map((s, i) => (
+                <li
+                  key={i}
+                  className={cn(
+                    "rounded border px-2 py-1.5 flex items-center gap-2",
+                    s.ok === null
+                      ? "border-indigo-200 bg-indigo-50/40 text-indigo-900"
+                      : s.ok
+                      ? "border-green-100 bg-green-50/40 text-green-800"
+                      : "border-red-200 bg-red-50/40 text-red-800",
+                  )}
+                >
+                  <span className="shrink-0">
+                    {s.ok === null ? (
+                      <span className="inline-block w-3 h-3 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin" />
+                    ) : s.ok ? (
+                      "✓"
+                    ) : (
+                      "✗"
+                    )}
+                  </span>
+                  <span className="break-all">{s.cmd}</span>
+                </li>
+              ))}
+            </ol>
+
+            {pushLines.length > 0 && (
+              <details open>
+                <summary className="text-xs text-slate-600 cursor-pointer select-none">
+                  Live output ({pushLines.length} line{pushLines.length === 1 ? "" : "s"})
+                </summary>
+                <pre className="mt-2 max-h-64 overflow-auto rounded border border-slate-100 bg-slate-50 p-2 text-[11px] font-mono whitespace-pre-wrap break-words">
+                  {pushLines.map((l, i) => (
+                    <div
+                      key={i}
+                      className={
+                        l.kind === "stderr" ? "text-amber-700" : "text-slate-700"
+                      }
+                    >
+                      {l.line}
+                    </div>
+                  ))}
+                </pre>
+              </details>
+            )}
+          </section>
+        )}
 
         {/* Working tree (collapsible) */}
         {hasGit && status && (status.dirtyFiles?.length || status.unpushedCommits?.length) ? (
