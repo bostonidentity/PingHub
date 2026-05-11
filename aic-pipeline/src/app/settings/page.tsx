@@ -6,8 +6,10 @@ export default function SettingsPage() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="page-title">Settings</h1>
-        <p className="section-subtitle mt-1">App-level preferences.</p>
+        <h1 className="page-title">Repo</h1>
+        <p className="section-subtitle mt-1">
+          Git repository for environment snapshots and history.
+        </p>
       </header>
       <SettingsForm
         initialSettings={settings}

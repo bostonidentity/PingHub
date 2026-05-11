@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6.3] - 2026-05-11
+
+### Fixed
+
+- **Logs → Transaction-ID search no longer leaks across tabs.** The traceId/transactionId input at the top of the Logs page is shared by all tabs, but each tab keeps its own results. Previously, the latest submitted search was delivered to *whichever tab happened to be active*, keyed only by a monotonic `seq`. That meant: search X in Tab A → switch to Tab B and search Y → switch back to Tab A, and Tab A's results got overwritten with Y's because its `prevTxSeq` was still behind. Each submit is now stamped with the originating `tabId`, and the search is only delivered to that specific tab — switching tabs no longer triggers a re-fetch.
+
+## [0.2.6.2] - 2026-05-11
+
+### Added
+
+- **Browse → Sections view also gets Versions + Compare**: the file-version-history UI (introduced in 0.2.6.0 / 0.2.6.1) was previously only wired into the Tree view. It now also appears in the default **Sections** view header for any non-journey/non-workflow file (JSON, JS, Groovy, generic text). The two views share the same logic via a new reusable hook **`useVersionPicker`** in `src/components/VersionPicker.tsx`, which encapsulates the history dropdown, slot pickers, compare-mode state, and the rendering contract (it asks the caller to provide the single-version viewer and the compare-mode viewer, so JSON/JS/Groovy formatting and ESV decoding behave identically in Sections mode). Journey and IGA-workflow scopes still render their visual graphs and are intentionally excluded for now (see Phase 3 — dependency-pinned diff).
+- **`DefaultCompareBody`** convenience component that wraps `FileDiffViewer` with the standard loading / error states for callers that don't need a custom compare renderer.
+
+## [0.2.6.1] - 2026-05-11
+
+### Added
+
+- **Browse → Compare mode** (Phase 2 of file version history): the file viewer header now has a **Compare** button next to Versions. Compare mode shows two slot pickers — **A** (rose) and **B** (emerald) — each independently choosable from the same history dropdown (Working tree + up to 50 prior commits). A **⇄** button swaps slots; **✕** exits compare. Default on entry: A = Working tree, B = newest prior commit. The viewer body switches to a compact unified line diff with per-side line numbers, +/- gutter, syntax-aware formatting (JSON pretty-printed, JS/Groovy beautified), and a summary header (`+N -M`). Files larger than 2000 lines fall back to a "too large" notice instead of locking the browser.
+- **`src/lib/client-diff.ts`** — shared client-side LCS line diff + content formatting, extracted from the Compare-page rendering pipeline.
+- **`src/components/FileDiffViewer.tsx`** — the new compact diff viewer used by Browse compare mode.
+
+## [0.2.6.0] - 2026-05-11
+
+### Added
+
+- **Browse → Versions dropdown** (Phase 1 of file version history): when viewing any file in the Browse tab, click the new **Versions** button in the header to see up to 50 commits from the env-repo that touched this file (with `--follow` so renames don’t truncate history). Each row is color-tagged by op kind (pull, push, promote, manual, auto, merge), and shows short SHA, timestamp, commit subject, and author. Picking a row swaps the viewer to that historical version and shows an amber “Viewing version `<sha>` from `<date>`” banner with a **Back to current** button. Hidden when the env-repo isn’t initialised. Compare and dependency-pinning land in Phases 2 and 3.
+- **`GET /api/configs/[env]/file-history`** — returns `{ gitAvailable, repoRelPath, workingTreeExists, entries }` for a given config-relative path.
+- **`GET /api/configs/[env]/file-at`** — returns `{ exists, content, sha, repoRelPath }` for a given path at a specific commit.
+
+## [0.2.5.4] - 2026-05-10
+
+### Added
+
+- **Repo → Force push**: checkbox next to the Push button enables `git push --force-with-lease` (safer than `--force` — still refuses if the remote moved since your last fetch). When enabled, the button turns red and reads “Force push”. The flag is **not** persisted across page loads.
+- **Repo → auto-detect non-fast-forward**: when a normal push is rejected (remote has commits you don’t have locally), the error message now explains the situation and a “Force push?” confirm dialog appears immediately, so you can retry with `--force-with-lease` in one click instead of having to manually toggle the checkbox.
+
+### Fixed
+
+- **Repo → unhelpful “git push failed: To <url>” error**: rejected pushes now surface the actual reason (non-fast-forward, stale `--force-with-lease` lease, etc.) instead of just the first stderr line from `git push --progress`.
+
+## [0.2.5.3] - 2026-05-10
+
+### Added
+
+- **Repo → Push scope selector**: a chip list of every top-level environment folder under the target dir (auto-detected, e.g. `ide/`, `ide3/`, `prod/`, `sit/`, `uat/`) plus a "Root files" entry. Each chip shows a dirty-count badge. Default selection = everything (push-all). Selection persists in localStorage so the choice carries across reloads. The Push button label updates to `Push all` vs `Push (N)`. When scoped, the server runs `git add -A -- <paths> .gitignore` instead of `git add -A`, then commits and pushes the whole branch (other dirty files stay uncommitted).
+- **Repo → live push progress**: the Push handler is now a Server-Sent Events stream. Each `git` command emits `step-start` / `progress` / `step-end` events, so the UI shows a live timeline with a spinner per running step, ✓/✗ once each completes, and a collapsible "Live output" pane streaming `git push --progress` line-by-line (counting objects, compressing, writing, etc.). A red **Cancel** button maps to `DELETE /api/git/push` which SIGKILLs the active git child server-side. A second Push request while one is in flight returns 409 instead of racing on the index.
+- **`GET /api/git/envs`**: new endpoint listing immediate subfolders of the env target dir with per-folder dirty counts, used by the scope selector. `node_modules/` and `.git/` are skipped.
+
+### Fixed
+
+- **Repo → "git commit failed: Auto packing the repository for optimum performance"**: on a fresh repo with ~10k objects, `git commit` triggers `git gc --auto`, which writes the "Auto packing…" notice to stderr and exits non-zero on Windows even though the commit itself succeeded. The push pipeline now runs every git invocation with `-c gc.auto=0`, sets `gc.auto=0` on the env repo's local config, and double-checks the commit landed via `git log -1 --pretty=%s` if the exit code looks suspicious.
+
+## [0.2.5.2] - 2026-05-10
+
+### Fixed
+
+- **Settings → Push reliability on Windows**: `runGit` now uses `spawnSync` with `shell: false` instead of joining argv into a single shell string, eliminating the broken single-quote escaping that caused both the spurious `fatal: invalid object name '--pretty=format'` in the commit-history panel and silent failures of any git command containing `:`, `%`, or spaces in its arguments.
+- **Settings → "git add failed" on first push**: `git init` and every subsequent Push attempt now pin `core.autocrlf=false`, `core.safecrlf=false`, and `core.longpaths=true` in the env repo's local config, with `-c` overrides on `git add -A` as a fallback. Previously, users with `safecrlf=true` in their global git config saw `git add` exit non-zero on the CRLF warnings emitted for LF-formatted JSON pulled from ForgeRock, and journey nodes with long UUID-suffixed filenames blew past the Windows 260-character path limit with `Filename too long`.
+- **Settings → stuck `index.lock` after a slow `git add`**: indexing 10k+ JSON configs on Windows can take several minutes; the previous 2-minute timeout left the spawned `git` process alive (Windows ignores `SIGTERM`), holding `.git/index.lock` and blocking every retry with `fatal: Unable to create '.git/index.lock': File exists.`. `runGit` now sends `SIGKILL` so timeouts actually terminate the child, the `git add -A` step gets a 10-minute budget, and Push proactively removes a `.git/index.lock` file older than 5 seconds before staging. A surviving lock now produces a plain-English error with manual-cleanup instructions instead of git's raw stderr.
+
+### Changed
+
+- **Repo page (formerly Settings)**: top nav tab renamed from "Settings" to "Repo". Page restructured into a sticky left rail (Connection settings) plus a right rail with three stacked cards: Repository (action bar + status badges + toast), Working tree changes (collapsible, auto-open when dirty), and Commit history (collapsed by default to cut visual noise).
+- **Repo page error visibility**: every git action now surfaces the underlying stderr in the failure message (e.g. `git add failed: <real reason>`) and the toast renders an expandable "Show details" panel listing every git command that ran with its full stdout/stderr. Error toasts persist with a Dismiss button instead of vanishing after 4s.
+- **Repo page action bar**: Pull / Commit all / Push moved to the top of the right rail beside compact branch / ahead / behind / dirty / clean status badges, so action results sit next to the buttons that triggered them.
+
 ## [0.2.5.1] - 2026-05-10
 
 ### Added

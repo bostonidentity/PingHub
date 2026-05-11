@@ -3208,11 +3208,14 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
   const cfg = activeTab?.config;
 
   const [txInput, setTxInput] = useState("");
-  const [txSearch, setTxSearch] = useState<{ id: string; seq: number } | undefined>(undefined);
+  // txSearch is stamped with the originating tabId so the search only loads
+  // into that tab. Without `tabId`, switching back to a previously-active
+  // tab would re-deliver the latest search and clobber its results.
+  const [txSearch, setTxSearch] = useState<{ id: string; seq: number; tabId: number } | undefined>(undefined);
 
   function submitTxSearch() {
     const id = txInput.trim();
-    if (id) setTxSearch((prev) => ({ id, seq: (prev?.seq ?? 0) + 1 }));
+    if (id && activeId != null) setTxSearch((prev) => ({ id, seq: (prev?.seq ?? 0) + 1, tabId: activeId }));
   }
 
   const updateActiveConfig = useCallback((updates: Partial<TabConfig>) => {
@@ -3519,7 +3522,7 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
                   onTabSwitch={setActiveId}
                   fullscreen={fullscreen}
                   onFullscreenChange={setFullscreen}
-                  txSearchId={tab.id === activeId ? txSearch : undefined}
+                  txSearchId={txSearch && txSearch.tabId === tab.id ? { id: txSearch.id, seq: txSearch.seq } : undefined}
                   onOpenContextTab={openContextTab}
                   onOpenEntryContextTab={openEntryContextTab}
                   anchorTimestamp={tab.anchorTimestamp}
