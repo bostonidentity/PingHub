@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5.4] - 2026-05-10
+
+### Added
+
+- **Repo → Force push**: checkbox next to the Push button enables `git push --force-with-lease` (safer than `--force` — still refuses if the remote moved since your last fetch). When enabled, the button turns red and reads “Force push”. The flag is **not** persisted across page loads.
+- **Repo → auto-detect non-fast-forward**: when a normal push is rejected (remote has commits you don’t have locally), the error message now explains the situation and a “Force push?” confirm dialog appears immediately, so you can retry with `--force-with-lease` in one click instead of having to manually toggle the checkbox.
+
+### Fixed
+
+- **Repo → unhelpful “git push failed: To <url>” error**: rejected pushes now surface the actual reason (non-fast-forward, stale `--force-with-lease` lease, etc.) instead of just the first stderr line from `git push --progress`.
+
 ## [0.2.5.3] - 2026-05-10
 
 ### Added
