@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6.0] - 2026-05-11
+
+### Added
+
+- **Browse → Versions dropdown** (Phase 1 of file version history): when viewing any file in the Browse tab, click the new **Versions** button in the header to see up to 50 commits from the env-repo that touched this file (with `--follow` so renames don’t truncate history). Each row is color-tagged by op kind (pull, push, promote, manual, auto, merge), and shows short SHA, timestamp, commit subject, and author. Picking a row swaps the viewer to that historical version and shows an amber “Viewing version `<sha>` from `<date>`” banner with a **Back to current** button. Hidden when the env-repo isn’t initialised. Compare and dependency-pinning land in Phases 2 and 3.
+- **`GET /api/configs/[env]/file-history`** — returns `{ gitAvailable, repoRelPath, workingTreeExists, entries }` for a given config-relative path.
+- **`GET /api/configs/[env]/file-at`** — returns `{ exists, content, sha, repoRelPath }` for a given path at a specific commit.
+
 ## [0.2.5.4] - 2026-05-10
 
 ### Added

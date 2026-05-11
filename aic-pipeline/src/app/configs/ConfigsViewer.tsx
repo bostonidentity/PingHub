@@ -13,6 +13,7 @@ import { ScriptFileViewer, type NavigateTarget } from "@/components/ScriptFileVi
 import { EsvDisplayToggle } from "@/components/EsvDisplayToggle";
 import { useEsvDisplayMode, isEsvScope, applyEsvDecoding } from "@/lib/esv-decode";
 import { JourneyGraph } from "./JourneyGraph";
+import type { FileCommit } from "@/lib/git-history";
 import { WorkflowGraph } from "./WorkflowGraph";
 import { ManagedObjectUsagePanel, type Hit as ManagedObjectHit } from "@/app/data/browse/ManagedObjectUsagePanel";
 
@@ -154,6 +155,20 @@ function TreeView({ environment }: { environment: string }) {
   const [usagesLoading, setUsagesLoading] = useState(false);
   const [usages, setUsages] = useState<UsageRef[] | null>(null);
   const [usagesError, setUsagesError] = useState<string | null>(null);
+  // ── File version history (Versions dropdown) ─────────────────────────────
+  // Lazy-loaded the first time the user opens the dropdown for a given file.
+  // `viewingSha` is null when the working-tree (current) version is shown;
+  // setting it swaps the viewer content to the file as it existed at that sha.
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyEntries, setHistoryEntries] = useState<FileCommit[] | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [gitAvailable, setGitAvailable] = useState<boolean | null>(null);
+  const [viewingSha, setViewingSha] = useState<string | null>(null);
+  const [viewingShortSha, setViewingShortSha] = useState<string | null>(null);
+  const [viewingDate, setViewingDate] = useState<string | null>(null);
+  const [versionLoading, setVersionLoading] = useState(false);
+  const historyDropdownRef = useRef<HTMLDivElement | null>(null);
   const esvMeta = esvNameFromPath(selectedFile);
 
   useEffect(() => {
@@ -201,6 +216,14 @@ function TreeView({ environment }: { environment: string }) {
     setFileContent(null);
     setFileLoading(true);
     setHighlightLine(line);
+    // Reset version-history state for the new file. Entries are reloaded
+    // lazily the next time the user opens the Versions dropdown.
+    setHistoryOpen(false);
+    setHistoryEntries(null);
+    setHistoryError(null);
+    setViewingSha(null);
+    setViewingShortSha(null);
+    setViewingDate(null);
     // Clear cross-file usages state whenever the user changes file through
     // the tree click (not through a usage click).
     if (line === undefined) {
@@ -239,6 +262,108 @@ function TreeView({ environment }: { environment: string }) {
     const basename = ref.path.split("/").pop() ?? ref.path;
     handleFileSelect(ref.path, basename, ref.line);
   };
+
+  // ── Version history ─────────────────────────────────────────────────────
+  // Lazy load on dropdown open. The first response also tells us whether the
+  // env-repo is a git repo at all (if not, the dropdown stays hidden on
+  // subsequent renders).
+  const loadHistory = useCallback(async () => {
+    if (!selectedFile) return;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const res = await fetch(
+        `/api/configs/${environment}/file-history?path=${encodeURIComponent(selectedFile)}&limit=50`,
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        setHistoryError(data.error ?? `HTTP ${res.status}`);
+        setHistoryEntries([]);
+        return;
+      }
+      setGitAvailable(Boolean(data.gitAvailable));
+      setHistoryEntries(Array.isArray(data.entries) ? data.entries : []);
+    } catch (e) {
+      setHistoryError((e as Error).message);
+      setHistoryEntries([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [environment, selectedFile]);
+
+  const handleOpenHistory = () => {
+    if (historyOpen) {
+      setHistoryOpen(false);
+      return;
+    }
+    setHistoryOpen(true);
+    if (historyEntries === null) void loadHistory();
+  };
+
+  // Switch the right pane to a historical version of the current file.
+  const handleVersionSelect = async (entry: FileCommit) => {
+    if (!selectedFile) return;
+    setHistoryOpen(false);
+    setVersionLoading(true);
+    setFileLoading(true);
+    setHighlightLine(undefined);
+    try {
+      const res = await fetch(
+        `/api/configs/${environment}/file-at?path=${encodeURIComponent(selectedFile)}&sha=${encodeURIComponent(entry.sha)}`,
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        setFileContent(`// Failed to load version: ${data.error ?? `HTTP ${res.status}`}`);
+      } else if (!data.exists) {
+        setFileContent(
+          `// File did not exist at commit ${entry.shortSha} (${new Date(entry.isoDate).toLocaleString()}).`,
+        );
+      } else {
+        setFileContent(data.content ?? "");
+      }
+      setViewingSha(entry.sha);
+      setViewingShortSha(entry.shortSha);
+      setViewingDate(entry.isoDate);
+    } catch (e) {
+      setFileContent(`// Failed to load version: ${(e as Error).message}`);
+    } finally {
+      setVersionLoading(false);
+      setFileLoading(false);
+    }
+  };
+
+  // Restore the working-tree (current on-disk) version.
+  const handleViewCurrent = async () => {
+    if (!selectedFile) return;
+    setViewingSha(null);
+    setViewingShortSha(null);
+    setViewingDate(null);
+    setVersionLoading(true);
+    setFileLoading(true);
+    try {
+      const res = await fetch(`/api/configs/${environment}/file?path=${encodeURIComponent(selectedFile)}`);
+      const data = await res.json();
+      setFileContent(data.content ?? "");
+    } finally {
+      setVersionLoading(false);
+      setFileLoading(false);
+    }
+  };
+
+  // Close the dropdown when clicking outside.
+  useEffect(() => {
+    if (!historyOpen) return;
+    const onClick = (e: MouseEvent) => {
+      if (
+        historyDropdownRef.current &&
+        !historyDropdownRef.current.contains(e.target as Node)
+      ) {
+        setHistoryOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [historyOpen]);
 
   const fileCount = countFiles(tree);
 
@@ -279,7 +404,98 @@ function TreeView({ environment }: { environment: string }) {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
               </svg>
               <span className="text-xs font-mono text-slate-300 truncate flex-1">{selectedFile}</span>
-              {esvMeta && (
+              {gitAvailable !== false && (
+                <div className="relative shrink-0" ref={historyDropdownRef}>
+                  <button
+                    type="button"
+                    onClick={handleOpenHistory}
+                    title="View previous versions of this file"
+                    className={cn(
+                      "px-2 py-0.5 text-[11px] font-medium rounded border transition-colors flex items-center gap-1",
+                      viewingSha
+                        ? "border-amber-500 bg-amber-700/30 text-amber-200 hover:bg-amber-600/40"
+                        : "border-slate-600 bg-slate-700/40 text-slate-200 hover:bg-slate-600/40",
+                    )}
+                  >
+                    {viewingSha ? `@ ${viewingShortSha}` : "Versions"}
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                  {historyOpen && (
+                    <div className="absolute right-0 top-full mt-1 w-[28rem] max-h-96 overflow-y-auto rounded-md border border-slate-600 bg-slate-800 shadow-xl z-30 text-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setHistoryOpen(false);
+                          if (viewingSha) void handleViewCurrent();
+                        }}
+                        className={cn(
+                          "w-full text-left px-3 py-2 text-xs border-b border-slate-700 hover:bg-slate-700/60",
+                          !viewingSha && "bg-sky-900/30",
+                        )}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">Working tree (current)</span>
+                          {!viewingSha && <span className="text-[10px] text-sky-300">● viewing</span>}
+                        </div>
+                        <div className="text-[10px] text-slate-400">Live file on disk</div>
+                      </button>
+                      {historyLoading && (
+                        <div className="px-3 py-3 text-xs text-slate-400">Loading history…</div>
+                      )}
+                      {historyError && (
+                        <div className="px-3 py-3 text-xs text-rose-400">{historyError}</div>
+                      )}
+                      {!historyLoading && !historyError && historyEntries && historyEntries.length === 0 && (
+                        <div className="px-3 py-3 text-xs text-slate-400">No earlier versions in git.</div>
+                      )}
+                      {historyEntries?.map((entry) => {
+                        const isActive = viewingSha === entry.sha;
+                        return (
+                          <button
+                            key={entry.sha}
+                            type="button"
+                            onClick={() => handleVersionSelect(entry)}
+                            className={cn(
+                              "w-full text-left px-3 py-2 text-xs border-t border-slate-700/60 hover:bg-slate-700/60 transition-colors",
+                              isActive && "bg-amber-900/30",
+                            )}
+                          >
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={cn(
+                                  "shrink-0 px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider",
+                                  entry.opKind === "pull" && "bg-sky-900/60 text-sky-200",
+                                  entry.opKind === "push" && "bg-emerald-900/60 text-emerald-200",
+                                  entry.opKind === "promote" && "bg-purple-900/60 text-purple-200",
+                                  entry.opKind === "manual" && "bg-slate-700 text-slate-200",
+                                  entry.opKind === "auto" && "bg-amber-900/60 text-amber-200",
+                                  entry.opKind === "merge" && "bg-indigo-900/60 text-indigo-200",
+                                  entry.opKind === "other" && "bg-slate-700 text-slate-300",
+                                )}
+                              >
+                                {entry.opKind}
+                              </span>
+                              <span className="font-mono text-slate-400">{entry.shortSha}</span>
+                              <span className="text-slate-500">·</span>
+                              <span className="text-slate-400">
+                                {new Date(entry.isoDate).toLocaleString()}
+                              </span>
+                              {isActive && <span className="ml-auto text-[10px] text-amber-300">● viewing</span>}
+                            </div>
+                            <div className="mt-0.5 text-slate-300 truncate" title={entry.subject}>
+                              {entry.subject.length > 120 ? entry.subject.slice(0, 117) + "…" : entry.subject}
+                            </div>
+                            <div className="text-[10px] text-slate-500 truncate">{entry.author}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+              {esvMeta && !viewingSha && (
                 <button
                   type="button"
                   title={`Find usages of esv-${esvMeta.name}`}
@@ -313,6 +529,25 @@ function TreeView({ environment }: { environment: string }) {
               </button>
               <FullscreenButton fullscreen={fullscreen} onToggle={() => setFullscreen((f) => !f)} dark />
             </div>
+            {viewingSha && (
+              <div className="px-4 py-1.5 border-b border-amber-700/40 bg-amber-900/30 flex items-center gap-3 text-xs text-amber-100">
+                <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span>
+                  Viewing version <span className="font-mono">{viewingShortSha}</span>
+                  {viewingDate && <> from {new Date(viewingDate).toLocaleString()}</>}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleViewCurrent}
+                  disabled={versionLoading}
+                  className="ml-auto px-2 py-0.5 text-[11px] font-medium rounded border border-amber-600 bg-amber-800/40 hover:bg-amber-700/50 disabled:opacity-50"
+                >
+                  Back to current
+                </button>
+              </div>
+            )}
             {usagesOpen && esvMeta && (
               <div className="border-b border-slate-700 bg-slate-800/80 max-h-56 overflow-y-auto">
                 <div className="px-4 py-1.5 border-b border-slate-700 bg-slate-800 flex items-center gap-2">
