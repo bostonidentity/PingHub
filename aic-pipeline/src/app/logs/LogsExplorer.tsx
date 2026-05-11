@@ -146,12 +146,16 @@ const TRANSACTION_SOURCES = [
 
 // ── Tab config (shared between parent controls and tab content) ──────────────
 
-type LogMode = "tail" | "search";
-type Preset = "15m" | "1h" | "6h" | "24h" | "3d" | "5d" | "7d" | "30d" | "custom";
+type LogMode = "tail" | "search" | "transaction";
+type Preset = "15m" | "1h" | "2h" | "3h" | "4h" | "5h" | "6h" | "24h" | "3d" | "5d" | "7d" | "30d" | "custom";
 
 const PRESETS: { label: string; value: Preset; ms: number }[] = [
   { label: "15 min", value: "15m", ms: 15 * 60 * 1000 },
   { label: "1 hour", value: "1h", ms: 60 * 60 * 1000 },
+  { label: "2 hours", value: "2h", ms: 2 * 60 * 60 * 1000 },
+  { label: "3 hours", value: "3h", ms: 3 * 60 * 60 * 1000 },
+  { label: "4 hours", value: "4h", ms: 4 * 60 * 60 * 1000 },
+  { label: "5 hours", value: "5h", ms: 5 * 60 * 60 * 1000 },
   { label: "6 hours", value: "6h", ms: 6 * 60 * 60 * 1000 },
   { label: "24 hours", value: "24h", ms: 24 * 60 * 60 * 1000 },
   { label: "3 days", value: "3d", ms: 3 * 24 * 60 * 60 * 1000 },
@@ -209,6 +213,11 @@ export interface TabConfig {
   searchSeq: number;
   /** True while search is auto-paginating through server pages */
   searching: boolean;
+  // Transaction mode
+  /** Transaction ID input value (per-tab). */
+  txQuery?: string;
+  /** Incremented to trigger a transaction trace fetch. */
+  txSeq?: number;
   // View prefs (persisted per tab)
   viewMode?: "terminal" | "table" | "json";
   /** @deprecated — use viewMode. Retained so old persisted tabs still open on the right view. */
@@ -505,7 +514,10 @@ function JsonLogView({
   matchCase = false,
   wholeWord = false,
   onEntryDoubleClick,
+  onEntryClick,
   contextAnchorIdx = -1,
+  selectedEntryIdx = null,
+  selectedScrollRequest = null,
 }: {
   entries: LogEntry[];
   wrapLines?: boolean;
@@ -516,7 +528,12 @@ function JsonLogView({
   matchCase?: boolean;
   wholeWord?: boolean;
   onEntryDoubleClick?: (idx: number) => void;
+  onEntryClick?: (idx: number) => void;
   contextAnchorIdx?: number;
+  /** Entry index currently selected by user click (sky highlight, distinct from match-amber). */
+  selectedEntryIdx?: number | null;
+  /** Bumped to (re)scroll to selectedEntryIdx — e.g. on view-mode switch. */
+  selectedScrollRequest?: { index: number; nonce: number } | null;
 }) {
   // Per-entry pretty-printed JSON, cached by entry reference so we never
   // re-stringify the same entry twice (scrolling, re-renders, tail appends).
@@ -625,6 +642,15 @@ function JsonLogView({
     }
   }, [activeEntryIdx, entries.length, virtualizer]);
 
+  // Scroll to the selected entry on demand (initial click + view-mode switch).
+  const selectedNonce = selectedScrollRequest?.nonce;
+  const selectedIdx = selectedScrollRequest?.index;
+  useEffect(() => {
+    if (selectedIdx == null || selectedIdx < 0 || selectedIdx >= entries.length) return;
+    virtualizer.scrollToIndex(selectedIdx, { align: "center" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedNonce]);
+
   const items = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
   const copyLabel =
@@ -660,6 +686,7 @@ function JsonLogView({
             const etxt = getEntryText(entry);
             const isMatch = matchSet.has(i);
             const isActive = i === activeEntryIdx;
+            const isSelected = i === selectedEntryIdx;
             const isCtxAnchor = i === contextAnchorIdx;
             const isLast = i === entries.length - 1;
             return (
@@ -668,12 +695,14 @@ function JsonLogView({
                 ref={virtualizer.measureElement}
                 data-index={i}
                 data-entry-idx={i}
+                onClick={() => onEntryClick?.(i)}
                 onDoubleClick={() => onEntryDoubleClick?.(i)}
                 className={cn(
-                  "absolute left-0 right-0 px-4",
+                  "absolute left-0 right-0 px-4 cursor-pointer",
                   isActive && "bg-amber-50 ring-1 ring-inset ring-amber-300 rounded",
-                  isMatch && !isActive && "bg-yellow-50/60",
-                  isCtxAnchor && !isActive && "bg-violet-50 ring-1 ring-inset ring-violet-300 rounded",
+                  !isActive && isSelected && "bg-sky-50 ring-1 ring-inset ring-sky-400 rounded",
+                  isMatch && !isActive && !isSelected && "bg-yellow-50/60",
+                  isCtxAnchor && !isActive && !isSelected && "bg-violet-50 ring-1 ring-inset ring-violet-300 rounded",
                 )}
                 style={{ transform: `translateY(${vi.start}px)` }}
               >
@@ -726,8 +755,8 @@ function terminalMsgClass(level: string): string {
 const TailTerminal = memo(function TailTerminal({
   entries, defaultSource, searchTerm, keywords, wrapLines = false,
   scrollRequest = null, activeMatchIndex = null, matchCase = false, wholeWord = false,
-  dupeCounts, autoScroll = true, onEntryDoubleClick, contextAnchorIdx = null,
-  expandCommand = null, matchIndices = null, filterActive = false,
+  dupeCounts, autoScroll = true, onEntryDoubleClick, onEntryClick, contextAnchorIdx = null,
+  expandCommand = null, matchIndices = null, filterActive = false, selectedEntryIdx = null,
 }: {
   entries: LogEntry[];
   defaultSource: string;
@@ -741,6 +770,7 @@ const TailTerminal = memo(function TailTerminal({
   wholeWord?: boolean;
   autoScroll?: boolean;
   onEntryDoubleClick?: (idx: number) => void;
+  onEntryClick?: (idx: number) => void;
   contextAnchorIdx?: number | null;
   /** Bulk expand/collapse signal from parent. Bumped via nonce to retrigger. */
   expandCommand?: { kind: "all" | "none"; nonce: number } | null;
@@ -748,6 +778,8 @@ const TailTerminal = memo(function TailTerminal({
   matchIndices?: number[] | null;
   /** Whether the parent Filter is active. When true, every visible row matches → expand all. */
   filterActive?: boolean;
+  /** Entry index currently selected by user click (sky highlight, distinct from match-amber). */
+  selectedEntryIdx?: number | null;
 }) {
   const outerRef = useRef<HTMLDivElement>(null);
   const [viewH, setViewH] = useState(400);
@@ -986,13 +1018,14 @@ const TailTerminal = memo(function TailTerminal({
                   {/* Inner div: re-keyed on flashKey so CSS animation re-fires on each navigation */}
                   <div
                     key={isActive ? flashKey : undefined}
-                    onClick={() => toggleRow(vRow.index)}
+                    onClick={() => { onEntryClick?.(vRow.index); toggleRow(vRow.index); }}
                     onDoubleClick={() => onEntryDoubleClick?.(vRow.index)}
                     className={cn(
                       "px-3 py-px font-mono text-[11px] select-text leading-snug border-b border-slate-200 cursor-pointer",
                       vRow.index % 2 === 0 && "bg-slate-100/60",
                       isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
-                      isCtxAnchor && !isActive && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
+                      !isActive && selectedEntryIdx === vRow.index && "border-l-[3px] border-sky-400 pl-2.5 bg-sky-50 ring-1 ring-inset ring-sky-400/40",
+                      isCtxAnchor && !isActive && selectedEntryIdx !== vRow.index && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
                     )}
                   >
                     <span className={cn(
@@ -1023,13 +1056,15 @@ const TailTerminal = memo(function TailTerminal({
                 return (
                   <div
                     key={isActive ? `flash-${flashKey}` : absIdx}
+                    onClick={() => onEntryClick?.(absIdx)}
                     onDoubleClick={() => onEntryDoubleClick?.(absIdx)}
                     style={{ height: TERMINAL_ROW_H, lineHeight: `${TERMINAL_ROW_H}px` }}
                     className={cn(
-                      "px-3 font-mono text-[11px] whitespace-nowrap select-text border-b border-slate-200",
+                      "px-3 font-mono text-[11px] whitespace-nowrap select-text border-b border-slate-200 cursor-pointer",
                       absIdx % 2 === 0 && "bg-slate-100/60",
                       isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
-                      isCtxAnchor && !isActive && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
+                      !isActive && selectedEntryIdx === absIdx && "border-l-[3px] border-sky-400 pl-2.5 bg-sky-50 ring-1 ring-inset ring-sky-400/40",
+                      isCtxAnchor && !isActive && selectedEntryIdx !== absIdx && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
                     )}
                   >
                     {renderStructuredLine(entry, isActive)}
@@ -1418,7 +1453,6 @@ export function LogsExplorer({
   onTabSwitch,
   fullscreen = false,
   onFullscreenChange,
-  txSearchId,
   onOpenContextTab,
   onOpenEntryContextTab,
   anchorTimestamp,
@@ -1433,7 +1467,6 @@ export function LogsExplorer({
   onTabSwitch?: (id: number) => void;
   fullscreen?: boolean;
   onFullscreenChange?: (v: boolean) => void;
-  txSearchId?: { id: string; seq: number };
   onOpenContextTab?: (timestamp: string, source: string) => void;
   onOpenEntryContextTab?: (anchorTimestamp: string, beginTimestamp: string, endTimestamp: string) => void;
   anchorTimestamp?: string;
@@ -1466,7 +1499,18 @@ export function LogsExplorer({
   const [matchCursor, setMatchCursor] = useState(-1); // index into matchRows; -1 = none selected
   const [activeMatchKey, setActiveMatchKey] = useState<string | null>(null);
   const [matchScrollNonce, setMatchScrollNonce] = useState(0);
-  const [highlightedTableIdx, setHighlightedTableIdx] = useState<number | null>(null); // filtered idx to highlight in table view
+  // Unified "selected entry" — driven by single-click in any view (terminal,
+  // table, JSON). Persists across view switches. Click only updates the index
+  // (no scroll — viewport stays put). selectedScrollNonce is bumped only when
+  // the view mode changes (or when explicitly jumping from match-nav), so a
+  // view switch auto-scrolls the new view to the previously selected entry.
+  const [selectedEntryIdx, setSelectedEntryIdx] = useState<number | null>(null); // index into `filtered`
+  const [selectedScrollNonce, setSelectedScrollNonce] = useState(0);
+  const handleEntrySelect = useCallback((displayIdx: number) => {
+    setSelectedEntryIdx(displayIdx);
+    // Intentionally do NOT bump selectedScrollNonce — clicking should not move
+    // the viewport. Scroll-to-selection only fires on view-mode switch.
+  }, []);
   const [highlightMatchCase, setHighlightMatchCase] = useState(false);
   const [highlightWholeWord, setHighlightWholeWord] = useState(false);
   // Per-field case/word toggles. Each field's predicate honours its own pair;
@@ -1589,12 +1633,18 @@ export function LogsExplorer({
   // ── Transaction drill-down (from clicking inline txId in table) ──
   const [drilldown, setDrilldown] = useState<{ txId: string } | null>(null);
 
-  // ── Transaction search from control section → load into main table ──
+  // ── Transaction search from per-tab Transaction mode → load into main table ──
+  // Triggered by bumping `config.txSeq` (the Trace button or Enter in the
+  // transaction-mode input). Uses `config.txQuery` as the ID. Replaces the
+  // earlier global top-bar search — each tab now owns its own input.
   const prevTxSeq = useRef(0);
   useEffect(() => {
-    if (!txSearchId || !env) return;
-    if (txSearchId.seq <= prevTxSeq.current) return;
-    prevTxSeq.current = txSearchId.seq;
+    const seq = config.txSeq ?? 0;
+    const txId = (config.txQuery ?? "").trim();
+    if (mode !== "transaction") return;
+    if (!txId || !env) return;
+    if (seq === 0 || seq <= prevTxSeq.current) return;
+    prevTxSeq.current = seq;
 
     // Stop any active tail
     onConfigChange({ tailing: false });
@@ -1606,7 +1656,7 @@ export function LogsExplorer({
     setFetched(false);
     setExpandedTableRows(new Set());
 
-    // Query all selected sources (or both if none selected)
+    // Query all selected sources (or both broad sources if none selected)
     const querySources = selectedSources.length > 0 ? selectedSources : [...LOG_SOURCES];
 
     Promise.all(
@@ -1614,7 +1664,7 @@ export function LogsExplorer({
         fetch("/api/logs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ env, source: src, transactionId: txSearchId.id, pageSize: 1000 }),
+          body: JSON.stringify({ env, source: src, transactionId: txId, pageSize: 1000 }),
         })
           .then((r) => r.json())
           .then((data): LogEntry[] => {
@@ -1632,7 +1682,7 @@ export function LogsExplorer({
       onConfigChange({ loading: false });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [txSearchId]);
+  }, [config.txSeq, mode]);
 
   const deferredIsActive = useDeferredValue(isActive);
 
@@ -2049,7 +2099,7 @@ export function LogsExplorer({
     if (viewMode === "table") {
       const targetPage = Math.floor(row.index / pageSize) + 1;
       setPage(targetPage);
-      setHighlightedTableIdx(row.index);
+      setSelectedEntryIdx(row.index);
       setExpandedTableRows(new Set());
       // Scroll into view after React re-renders the page
       requestAnimationFrame(() => {
@@ -2118,18 +2168,33 @@ export function LogsExplorer({
     // search active + already jumped: leave page alone so user can browse
   }, [search, levelFilter, filtered.length, pageSize]);
 
-  // Scroll highlighted row into view after switching to table view
+  // Bump scroll nonce whenever the view mode changes (with a selection set),
+  // so each viewer's scroll-to-selection effect re-fires in the new view.
+  // Click-driven selection deliberately does not bump this; only view switches.
   useEffect(() => {
-    if (viewMode !== "table" || highlightedTableIdx === null) return;
-    const el = scrollContainerRef.current?.querySelector(`[data-row-idx="${highlightedTableIdx}"]`);
-    if (el) {
-      lastProgrammaticScrollAtRef.current = Date.now();
-      el.scrollIntoView({ block: "center" });
-      // Landing on a match means we're no longer tailing from the bottom —
-      // suppress the next round of auto-scroll so the user stays on the match.
-      scrollAtBottomRef.current = false;
-    }
-  }, [viewMode, highlightedTableIdx]);
+    if (selectedEntryIdx === null) return;
+    setSelectedScrollNonce((n) => n + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode]);
+
+  // Scroll selected entry into view after switching view modes (table only;
+  // JSON / terminal viewers handle their own scroll via selectedScrollRequest).
+  useEffect(() => {
+    if (selectedEntryIdx === null) return;
+    if (viewMode !== "table") return; // table is the only one parent-scrolled
+    // Make sure the right page is loaded so the row exists in the DOM.
+    const targetPage = Math.floor(selectedEntryIdx / pageSize) + 1;
+    if (targetPage !== page) setPage(targetPage);
+    requestAnimationFrame(() => {
+      const el = scrollContainerRef.current?.querySelector(`[data-row-idx="${selectedEntryIdx}"]`);
+      if (el) {
+        lastProgrammaticScrollAtRef.current = Date.now();
+        el.scrollIntoView({ block: "center" });
+        scrollAtBottomRef.current = false;
+      }
+    });
+    // viewMode is intentionally a dep so a switch to table re-fires the scroll.
+  }, [viewMode, selectedScrollNonce, selectedEntryIdx, pageSize, page]);
 
   return (
     <div className="space-y-4">
@@ -2195,7 +2260,7 @@ export function LogsExplorer({
           <div className="flex items-center gap-2 px-4 py-2">
             {/* Mode toggle */}
             <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
-              {(["tail", "search"] as LogMode[]).map((m) => (
+              {(["tail", "search", "transaction"] as LogMode[]).map((m) => (
                 <button
                   key={m}
                   type="button"
@@ -2211,7 +2276,7 @@ export function LogsExplorer({
                       : "bg-white text-slate-500 hover:bg-slate-50"
                   )}
                 >
-                  {m === "tail" ? "Tail" : "Search"}
+                  {m === "tail" ? "Tail" : m === "search" ? "Search" : "Transaction"}
                 </button>
               ))}
             </div>
@@ -2360,6 +2425,62 @@ export function LogsExplorer({
                       )}
                     >[W]</button>
                   </div>
+                </div>
+              );
+            })()}
+
+            {/* Transaction mode controls */}
+            {mode === "transaction" && (() => {
+              const txQuery = config.txQuery ?? "";
+              const txTrim = txQuery.trim();
+              const submit = () => {
+                if (!txTrim || !env || loading) return;
+                onConfigChange({ txSeq: (config.txSeq ?? 0) + 1 });
+              };
+              return (
+                <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                  <input
+                    type="text"
+                    value={txQuery}
+                    onChange={(e) => onConfigChange({ txQuery: e.target.value })}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
+                    placeholder="Paste a transaction ID to trace…"
+                    disabled={loading}
+                    className="flex-1 min-w-0 text-xs rounded border border-slate-300 px-2.5 py-1 font-mono focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500 disabled:opacity-50"
+                  />
+                  <button
+                    type="button"
+                    onClick={submit}
+                    disabled={!txTrim || !env || loading}
+                    className="px-3 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 disabled:opacity-50 transition-colors flex items-center gap-1 shrink-0"
+                  >
+                    {loading ? (
+                      <>
+                        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Tracing…
+                      </>
+                    ) : (
+                      "Trace"
+                    )}
+                  </button>
+                  {txQuery && (
+                    <button
+                      type="button"
+                      onClick={() => onConfigChange({ txQuery: "" })}
+                      className="text-xs text-slate-400 hover:text-slate-600 shrink-0"
+                    >
+                      Clear
+                    </button>
+                  )}
+                  <span
+                    className="text-[10px] text-slate-400 ml-1 whitespace-nowrap"
+                    title="Transaction-ID search is indexed by AIC and scans the full retention window — time range is ignored."
+                  >
+                    full retention
+                  </span>
                 </div>
               );
             })()}
@@ -2530,7 +2651,8 @@ export function LogsExplorer({
                 onClick={() => {
                   setViewMode("table");
                   if (activeMatchIndex !== null) {
-                    setHighlightedTableIdx(activeMatchIndex);
+                    setSelectedEntryIdx(activeMatchIndex);
+                    setSelectedScrollNonce((n) => n + 1);
                     setPage(Math.floor(activeMatchIndex / pageSize) + 1);
                     setExpandedTableRows(new Set());
                   }
@@ -2806,16 +2928,25 @@ export function LogsExplorer({
                 keywords={keywords}
                 wrapLines={wrapLines}
                 dupeCounts={dupeCounts}
-                scrollRequest={matchScrollRequest}
+                scrollRequest={
+                  // Match-nav scrolls take precedence over selection scrolls;
+                  // when no active match, fall back to selection-driven scroll
+                  // so view-mode switches and clicks both reveal the row.
+                  matchScrollRequest ?? (selectedEntryIdx !== null && selectedScrollNonce > 0
+                    ? { index: selectedEntryIdx, nonce: selectedScrollNonce + 1_000_000 }
+                    : null)
+                }
                 activeMatchIndex={activeMatchIndex}
                 matchCase={highlightMatchCase}
                 wholeWord={highlightWholeWord}
                 autoScroll={autoScroll}
+                onEntryClick={handleEntrySelect}
                 onEntryDoubleClick={handleContextEntry}
                 contextAnchorIdx={contextAnchorDisplay}
                 expandCommand={expandCmd}
                 matchIndices={matchIndices}
                 filterActive={!!search}
+                selectedEntryIdx={selectedEntryIdx}
               />
             )
           ) : viewMode === "json" ? (
@@ -2837,8 +2968,15 @@ export function LogsExplorer({
                 matchIndices={matchIndices}
                 matchCase={highlightMatchCase}
                 wholeWord={highlightWholeWord}
+                onEntryClick={handleEntrySelect}
                 onEntryDoubleClick={handleContextEntry}
                 contextAnchorIdx={contextAnchorDisplay ?? -1}
+                selectedEntryIdx={selectedEntryIdx}
+                selectedScrollRequest={
+                  selectedEntryIdx !== null && selectedScrollNonce > 0
+                    ? { index: selectedEntryIdx, nonce: selectedScrollNonce }
+                    : null
+                }
               />
             )
           ) : !fetched ? (
@@ -2870,7 +3008,7 @@ export function LogsExplorer({
                       entry={entry}
                       source={tailSource}
                       expanded={expandedTableRows.has(globalIdx)}
-                      onToggle={() => toggleTableRow(globalIdx)}
+                      onToggle={() => { toggleTableRow(globalIdx); handleEntrySelect(globalIdx); }}
                       searchTerm={search}
                       keywords={keywords}
                       onTransactionClick={(txId) => setDrilldown({ txId })}
@@ -2878,7 +3016,7 @@ export function LogsExplorer({
                       onContextClick={() => handleContextEntry(globalIdx)}
                       fullscreen={fullscreen}
                       showFullMessage={showFullMessage}
-                      highlighted={highlightedTableIdx === globalIdx || activeMatchIndex === globalIdx}
+                      highlighted={selectedEntryIdx === globalIdx || activeMatchIndex === globalIdx}
                       isContextAnchor={contextAnchorDisplay === globalIdx}
                       rowIdx={globalIdx}
                       matchCase={highlightMatchCase}
@@ -3133,6 +3271,9 @@ function sanitizeConfigForPersist(cfg: TabConfig): TabConfig {
     searching: false,
     sourcesError: "",
     searchSeq: 0,
+    // Don't re-fire a transaction trace on reload; keep the input value
+    // (txQuery) so the user can re-submit.
+    txSeq: 0,
   };
 }
 
@@ -3206,17 +3347,6 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
 
   const activeTab = tabs.find((t) => t.id === activeId) ?? tabs[0];
   const cfg = activeTab?.config;
-
-  const [txInput, setTxInput] = useState("");
-  // txSearch is stamped with the originating tabId so the search only loads
-  // into that tab. Without `tabId`, switching back to a previously-active
-  // tab would re-deliver the latest search and clobber its results.
-  const [txSearch, setTxSearch] = useState<{ id: string; seq: number; tabId: number } | undefined>(undefined);
-
-  function submitTxSearch() {
-    const id = txInput.trim();
-    if (id && activeId != null) setTxSearch((prev) => ({ id, seq: (prev?.seq ?? 0) + 1, tabId: activeId }));
-  }
 
   const updateActiveConfig = useCallback((updates: Partial<TabConfig>) => {
     setTabs((prev) =>
@@ -3431,42 +3561,6 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
                   </div>
                 )}
               </div>
-
-              {/* Row 2: transaction ID search */}
-              <div className="flex items-center gap-2">
-                <label className="label-xs shrink-0">Transaction ID</label>
-                <input
-                  type="text"
-                  value={txInput}
-                  onChange={(e) => setTxInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") submitTxSearch(); }}
-                  placeholder="Paste a transaction ID to trace…"
-                  className="px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 font-mono w-96"
-                />
-                <button
-                  type="button"
-                  onClick={submitTxSearch}
-                  disabled={!txInput.trim() || !cfg?.env || cfg?.loading}
-                  className="btn-primary disabled:opacity-40 flex items-center gap-1.5"
-                >
-                  {cfg?.loading && txSearch ? (
-                    <>
-                      <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                      Tracing…
-                    </>
-                  ) : (
-                    "Trace"
-                  )}
-                </button>
-                {txInput && (
-                  <button type="button" onClick={() => { setTxInput(""); setTxSearch(undefined); }} className="text-xs text-slate-400 hover:text-slate-600 transition-colors">
-                    Clear
-                  </button>
-                )}
-              </div>
             </div>
           )}
 
@@ -3522,7 +3616,6 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
                   onTabSwitch={setActiveId}
                   fullscreen={fullscreen}
                   onFullscreenChange={setFullscreen}
-                  txSearchId={txSearch && txSearch.tabId === tab.id ? { id: txSearch.id, seq: txSearch.seq } : undefined}
                   onOpenContextTab={openContextTab}
                   onOpenEntryContextTab={openEntryContextTab}
                   anchorTimestamp={tab.anchorTimestamp}
