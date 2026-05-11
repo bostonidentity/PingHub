@@ -6,6 +6,8 @@ import {
   resolveTargetDir,
   targetHasGit,
   runGit,
+  runGitStream,
+  type StreamHandle,
   GitSettings,
 } from "@/lib/git-settings";
 
@@ -63,10 +65,11 @@ function isIgnoredFileName(name: string): boolean {
 }
 
 /** Write `.gitignore` if absent. Never overwrites a user-managed one. */
-function ensureDefaultGitignore(cwd: string): void {
+function ensureDefaultGitignore(cwd: string): boolean {
   const target = path.join(cwd, ".gitignore");
-  if (fs.existsSync(target)) return;
+  if (fs.existsSync(target)) return false;
   fs.writeFileSync(target, DEFAULT_GITIGNORE, "utf8");
+  return true;
 }
 
 interface PreflightResult {
@@ -81,6 +84,10 @@ export async function POST(req: NextRequest) {
   const cwd = resolveTargetDir(settings);
   const body = await req.json().catch(() => ({}));
   const confirmed = body.confirm === true;
+  const force = body.force === true;
+  const paths: string[] = Array.isArray(body.paths)
+    ? body.paths.filter((p: unknown): p is string => typeof p === "string" && p.length > 0)
+    : [];
 
   if (!fs.existsSync(cwd)) {
     return NextResponse.json(
@@ -102,19 +109,367 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  if (preflight) {
-    const applied = applySetup(cwd, settings, preflight);
-    if (!applied.ok) {
-      return NextResponse.json({ ok: false, error: applied.error, steps: applied.steps }, { status: 500 });
-    }
+  // Fail fast if a previous push is still in flight, so the user gets a clear
+  // error instead of two git processes racing on .git/index.lock.
+  if (CURRENT_JOB) {
+    return NextResponse.json(
+      { ok: false, error: "A push is already in progress. Cancel it or wait for it to finish." },
+      { status: 409 },
+    );
   }
 
-  const pushRes = runGit(["push", "-u", "origin", settings.branch], cwd, 120_000);
-  return NextResponse.json({
-    ok: pushRes.ok,
-    stdout: pushRes.stdout,
-    stderr: pushRes.stderr,
+  // Stream the rest as Server-Sent Events. Each step emits step-start /
+  // progress (line) / step-end events; final event is `done`.
+  return runPushStream({ cwd, settings, preflight, paths, force });
+}
+
+/**
+ * DELETE /api/git/push — cancel the in-flight push. Sends SIGKILL to the
+ * current git child (if any). The streaming response will emit a final
+ * `done` event with `cancelled: true`.
+ */
+export async function DELETE() {
+  if (!CURRENT_JOB) {
+    return NextResponse.json({ ok: false, error: "No push in progress." }, { status: 404 });
+  }
+  CURRENT_JOB.cancel();
+  return NextResponse.json({ ok: true });
+}
+
+interface JobRef {
+  cancel: () => void;
+}
+let CURRENT_JOB: JobRef | null = null;
+
+interface StreamStep {
+  cmd: string;
+  ok: boolean;
+  out: string;
+}
+
+interface RunPushArgs {
+  cwd: string;
+  settings: GitSettings;
+  preflight: PreflightResult | null;
+  paths: string[];
+  force: boolean;
+}
+
+function runPushStream({ cwd, settings, preflight, paths, force }: RunPushArgs): Response {
+  const encoder = new TextEncoder();
+  const steps: StreamStep[] = [];
+  let cancelled = false;
+  let activeStream: StreamHandle | null = null;
+
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: string, data: unknown) => {
+        try {
+          controller.enqueue(
+            encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`),
+          );
+        } catch {
+          /* client disconnected */
+        }
+      };
+
+      // Module-level handle so DELETE can cancel us.
+      CURRENT_JOB = {
+        cancel: () => {
+          cancelled = true;
+          activeStream?.cancel();
+        },
+      };
+
+      // ------- helpers shared with applySetup -------
+      const stepOnce = (args: string[], options?: { quietGc?: boolean }) => {
+        const allArgs = options?.quietGc
+          ? ["-c", "gc.auto=0", ...args]
+          : args;
+        const res = runGit(allArgs, cwd);
+        const step: StreamStep = {
+          cmd: `git ${args.join(" ")}`,
+          ok: res.ok,
+          out: res.ok ? res.stdout : res.stderr,
+        };
+        steps.push(step);
+        send("step", step);
+        return res;
+      };
+
+      const stepStream = (args: string[], timeoutMs?: number) => {
+        const cmd = `git ${args.join(" ")}`;
+        send("step-start", { cmd });
+        let outBuf = "";
+        const handle = runGitStream(args, cwd, (kind, line) => {
+          outBuf += line + "\n";
+          send("progress", { kind, line });
+        });
+        activeStream = handle;
+        const timer = timeoutMs
+          ? setTimeout(() => {
+            if (!cancelled) {
+              send("progress", {
+                kind: "stderr",
+                line: `(timeout: killing git after ${timeoutMs}ms)`,
+              });
+            }
+            handle.cancel();
+          }, timeoutMs)
+          : null;
+        return handle.done.then(({ code, killed }) => {
+          if (timer) clearTimeout(timer);
+          activeStream = null;
+          const ok = code === 0 && !killed;
+          const step: StreamStep = { cmd, ok, out: outBuf.trim() };
+          steps.push(step);
+          send("step-end", step);
+          return { ok, code, killed };
+        });
+      };
+
+      const fail = (label: string) => {
+        const last = steps[steps.length - 1];
+        const detail = last?.out?.trim();
+        const error = detail ? `${label}: ${detail.split("\n")[0]}` : label;
+        send("done", { ok: false, cancelled, error });
+        try {
+          controller.close();
+        } catch {
+          /* ignore */
+        }
+        CURRENT_JOB = null;
+      };
+
+      try {
+        // ---------------- SETUP (only when preflight required it) ----------------
+        if (preflight?.reason === "not-initialized") {
+          if (!stepOnce(["init", "-b", settings.branch]).ok) return fail("git init failed");
+          ensureDefaultGitignore(cwd);
+          steps.push({ cmd: "write .gitignore (default)", ok: true, out: "" });
+          send("step", steps[steps.length - 1]);
+          stepOnce(["config", "core.autocrlf", "false"]);
+          stepOnce(["config", "core.safecrlf", "false"]);
+          stepOnce(["config", "core.longpaths", "true"]);
+          // gc.auto on a fresh repo with 10k objects fires immediately after the
+          // first commit and writes "Auto packing the repository for optimum
+          // performance." to stderr with a non-zero exit code on Windows. Pin
+          // it off; users can run `git gc` manually whenever they want.
+          stepOnce(["config", "gc.auto", "0"]);
+          if (settings.authorName) stepOnce(["config", "user.name", settings.authorName]);
+          if (settings.authorEmail) stepOnce(["config", "user.email", settings.authorEmail]);
+          if (!stepOnce(["remote", "add", "origin", settings.remoteUrl]).ok)
+            return fail("git remote add failed");
+        } else if (preflight) {
+          if (ensureDefaultGitignore(cwd)) {
+            steps.push({ cmd: "write .gitignore (default)", ok: true, out: "" });
+            send("step", steps[steps.length - 1]);
+          }
+          stepOnce(["config", "core.autocrlf", "false"]);
+          stepOnce(["config", "core.safecrlf", "false"]);
+          stepOnce(["config", "core.longpaths", "true"]);
+          stepOnce(["config", "gc.auto", "0"]);
+        }
+
+        if (preflight?.reason === "branch-mismatch") {
+          const created = stepOnce(["checkout", "-b", settings.branch]);
+          if (!created.ok) {
+            const switched = stepOnce(["checkout", settings.branch]);
+            if (!switched.ok) return fail("git checkout failed");
+          }
+        }
+
+        if (cancelled) return fail("Cancelled");
+
+        // ---------------- STAGE + COMMIT ----------------
+        const dirty = runGit(["status", "--porcelain"], cwd);
+        if (dirty.ok && dirty.stdout.trim()) {
+          clearStaleIndexLock(cwd, (s) => {
+            steps.push(s);
+            send("step", s);
+          });
+
+          // Build the `git add` argv. When paths are scoped, use `--` to
+          // terminate options and pass each path separately. The "." entry
+          // (root files) becomes a no-op and we drop it; if it was the only
+          // path the user effectively asked for "everything in repo root",
+          // which `git add -A` covers.
+          const scoped = paths.filter((p) => p && p !== ".");
+          const includeRoot = paths.length === 0 || paths.includes(".");
+          const baseArgs = [
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.safecrlf=false",
+            "-c",
+            "core.longpaths=true",
+          ];
+          // `git add -A` when nothing scoped (default), otherwise scoped paths.
+          let addArgs: string[];
+          if (paths.length === 0) {
+            addArgs = [...baseArgs, "add", "-A"];
+          } else {
+            addArgs = [...baseArgs, "add", "-A", "--"];
+            for (const p of scoped) addArgs.push(p);
+            // Always include .gitignore when scoping so a freshly-written one
+            // gets staged on the first scoped push.
+            if (includeRoot && fs.existsSync(path.join(cwd, ".gitignore"))) {
+              addArgs.push(".gitignore");
+            }
+          }
+          const addRes = await stepStream(addArgs, 10 * 60 * 1000);
+          if (!addRes.ok) {
+            const last = steps[steps.length - 1];
+            if (cancelled) return fail("Cancelled");
+            if (last && /index\.lock.*File exists/i.test(last.out)) {
+              return fail(
+                "git add failed: another git process is holding .git/index.lock",
+              );
+            }
+            return fail("git add failed");
+          }
+
+          if (cancelled) return fail("Cancelled");
+
+          const commitMsg =
+            preflight?.reason === "not-initialized"
+              ? "Initial environments snapshot"
+              : paths.length > 0
+                ? `Snapshot before push (${paths.length} scope${paths.length === 1 ? "" : "s"})`
+                : "Snapshot before push";
+
+          // -c gc.auto=0 prevents the "Auto packing the repository" stderr
+          // noise that masquerades as a commit failure on large repos.
+          const commitRes = await stepStream(
+            ["-c", "gc.auto=0", "commit", "-m", commitMsg],
+          );
+          if (!commitRes.ok) {
+            // Did the commit actually land? Auto-gc / hook noise sometimes
+            // poisons the exit code even though the commit succeeded.
+            const head = runGit(["log", "-1", "--pretty=%s"], cwd);
+            if (head.ok && head.stdout.trim() === commitMsg) {
+              const recovered: StreamStep = {
+                cmd: "verified commit landed",
+                ok: true,
+                out: head.stdout,
+              };
+              steps.push(recovered);
+              send("step", recovered);
+            } else {
+              if (cancelled) return fail("Cancelled");
+              return fail("git commit failed");
+            }
+          }
+        } else {
+          const noChanges: StreamStep = {
+            cmd: "git status --porcelain",
+            ok: true,
+            out: "(no local changes to stage)",
+          };
+          steps.push(noChanges);
+          send("step", noChanges);
+        }
+
+        if (cancelled) return fail("Cancelled");
+
+        // ---------------- PUSH ----------------
+        // --force-with-lease is safer than --force: it still refuses if the
+        // remote moved since we last fetched, so a stale tab can't silently
+        // wipe out a teammate's push.
+        const pushArgs = [
+          "-c",
+          "gc.auto=0",
+          "push",
+          "--progress",
+          "-u",
+          ...(force ? ["--force-with-lease"] : []),
+          "origin",
+          settings.branch,
+        ];
+        const pushRes = await stepStream(pushArgs, 15 * 60 * 1000);
+        if (!pushRes.ok) {
+          if (cancelled) return fail("Cancelled");
+          const last = steps[steps.length - 1];
+          const out = last?.out ?? "";
+          // Detect non-fast-forward / rejected pushes so the UI can offer the
+          // force-push option instead of just "git push failed: To <url>".
+          if (
+            /\[rejected\]/i.test(out) ||
+            /non-fast-forward/i.test(out) ||
+            /fetch first/i.test(out) ||
+            /Updates were rejected/i.test(out)
+          ) {
+            return fail(
+              "git push rejected: remote has commits you don't have locally. " +
+              "Pull first, or retry with \"Force push\" if you want to overwrite the remote branch.",
+            );
+          }
+          if (force && /stale info|rejected.*force-with-lease/i.test(out)) {
+            return fail(
+              "git push --force-with-lease refused: remote moved since last fetch. Fetch and try again.",
+            );
+          }
+          return fail("git push failed");
+        }
+
+        send("done", { ok: true, cancelled: false, steps: steps.length });
+        try {
+          controller.close();
+        } catch {
+          /* ignore */
+        }
+        CURRENT_JOB = null;
+      } catch (e) {
+        send("done", {
+          ok: false,
+          cancelled,
+          error: (e as Error).message ?? "Unexpected error",
+        });
+        try {
+          controller.close();
+        } catch {
+          /* ignore */
+        }
+        CURRENT_JOB = null;
+      }
+    },
+    cancel() {
+      cancelled = true;
+      activeStream?.cancel();
+      CURRENT_JOB = null;
+    },
   });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    },
+  });
+}
+
+/**
+ * Remove a stale .git/index.lock left over from a crashed or killed git
+ * process. We touch the file lazily — only delete it if it's older than 5
+ * seconds, to avoid racing a legitimate concurrent git invocation.
+ */
+function clearStaleIndexLock(cwd: string, emit: (s: StreamStep) => void): void {
+  const lock = path.join(cwd, ".git", "index.lock");
+  try {
+    const stat = fs.statSync(lock);
+    const ageMs = Date.now() - stat.mtimeMs;
+    if (ageMs < 5_000) return;
+    fs.unlinkSync(lock);
+    emit({
+      cmd: "rm .git/index.lock (stale)",
+      ok: true,
+      out: `removed lock file (age ${Math.round(ageMs / 1000)}s)`,
+    });
+  } catch {
+    /* no lock or can't unlink — let git report */
+  }
 }
 
 function detectSetupNeed(cwd: string, settings: GitSettings): PreflightResult | null {
@@ -156,47 +511,10 @@ interface ApplyResult {
   steps: { cmd: string; ok: boolean; out: string }[];
 }
 
-function applySetup(cwd: string, settings: GitSettings, preflight: PreflightResult): ApplyResult {
-  const steps: ApplyResult["steps"] = [];
-  const run = (args: string[]) => {
-    const res = runGit(args, cwd);
-    steps.push({ cmd: `git ${args.join(" ")}`, ok: res.ok, out: res.ok ? res.stdout : res.stderr });
-    return res;
-  };
-
-  if (preflight.reason === "not-initialized") {
-    if (!run(["init", "-b", settings.branch]).ok) return { ok: false, error: "git init failed", steps };
-    // Drop in a sensible default .gitignore so the initial commit doesn't
-    // capture pulled managed-data, secrets, or the op-log. No-op if the user
-    // has already provided one.
-    ensureDefaultGitignore(cwd);
-    steps.push({ cmd: "write .gitignore (default)", ok: true, out: "" });
-    if (settings.authorName) run(["config", "user.name", settings.authorName]);
-    if (settings.authorEmail) run(["config", "user.email", settings.authorEmail]);
-    if (!run(["remote", "add", "origin", settings.remoteUrl]).ok)
-      return { ok: false, error: "git remote add failed", steps };
-  }
-
-  if (preflight.reason === "branch-mismatch") {
-    const created = run(["checkout", "-b", settings.branch]);
-    if (!created.ok) {
-      const switched = run(["checkout", settings.branch]);
-      if (!switched.ok) return { ok: false, error: created.stderr || "checkout failed", steps };
-    }
-  }
-
-  const dirty = runGit(["status", "--porcelain"], cwd);
-  if (dirty.ok && dirty.stdout.trim()) {
-    if (!run(["add", "-A"]).ok) return { ok: false, error: "git add failed", steps };
-    const commitMsg =
-      preflight.reason === "not-initialized"
-        ? "Initial environments snapshot"
-        : "Snapshot before push";
-    if (!run(["commit", "-m", commitMsg]).ok) return { ok: false, error: "git commit failed", steps };
-  }
-
-  return { ok: true, steps };
-}
+// (applySetup / clearStaleIndexLock have been replaced by the streaming
+// pipeline in runPushStream. Kept ApplyResult around because external callers
+// — none today, but the type name is referenced in the response shape — may
+// still import it.)
 
 function countDirty(cwd: string, requireGit: boolean): number {
   if (requireGit) {
