@@ -169,22 +169,37 @@ const LOG_SOURCES = ["am-everything", "idm-everything"] as const;
 
 const TERMINAL_ROW_H = 20;     // px — fixed height per row (nowrap lines)
 const TERMINAL_OVERSCAN = 15;    // extra rows rendered above/below viewport
-// Browsers eventually become imprecise with extremely tall scroll surfaces.
-// Keep the DOM scrollHeight under a safe ceiling, but make that ceiling large
-// enough that dragging the scrollbar still has useful resolution for 100K+
-// log buffers. A tiny cap keeps the thumb visually large, but it maps one
-// scroll pixel to too much content and feels jumpy near the bottom.
-const LOG_SCROLL_MAX_H = 8_000_000;
-function computeLogScrollCap(clientH: number): number {
-  return Math.max(clientH + 1, LOG_SCROLL_MAX_H);
+type ScrollCapFn = (clientH: number) => number;
+
+// Terminal rows are compact and uniform, so prioritize keeping the native
+// scrollbar thumb above the browser's minimum size. That keeps the thumb and
+// cursor in sync while dragging, even for very large tail buffers.
+const TERMINAL_SCROLL_MIN_THUMB_H = 28;
+function computeTerminalScrollCap(clientH: number): number {
+  return Math.max(clientH + 1, Math.floor((clientH * clientH) / TERMINAL_SCROLL_MIN_THUMB_H));
 }
 
-function intendedScrollHeight(el: HTMLElement, intrinsicH: number): number {
-  return Math.min(intrinsicH, computeLogScrollCap(el.clientHeight));
+// JSON rows are much taller and more variable. Use a large browser-safe
+// scroll surface so near-bottom dragging has enough resolution.
+const JSON_SCROLL_MAX_H = 8_000_000;
+function computeJsonScrollCap(clientH: number): number {
+  return Math.max(clientH + 1, JSON_SCROLL_MAX_H);
 }
 
-function actualScrollRange(el: HTMLElement, intrinsicH?: number): number {
-  const intended = intrinsicH === undefined ? 0 : intendedScrollHeight(el, intrinsicH);
+function intendedScrollHeight(
+  el: HTMLElement,
+  intrinsicH: number,
+  capFn: ScrollCapFn = computeTerminalScrollCap,
+): number {
+  return Math.min(intrinsicH, capFn(el.clientHeight));
+}
+
+function actualScrollRange(
+  el: HTMLElement,
+  intrinsicH?: number,
+  capFn: ScrollCapFn = computeTerminalScrollCap,
+): number {
+  const intended = intrinsicH === undefined ? 0 : intendedScrollHeight(el, intrinsicH, capFn);
   return Math.max(1, Math.max(el.scrollHeight, intended) - el.clientHeight);
 }
 
@@ -192,18 +207,31 @@ function intrinsicScrollRange(intrinsicH: number, el: HTMLElement): number {
   return Math.max(1, intrinsicH - el.clientHeight);
 }
 
-function isScrollHeightCapped(intrinsicH: number, el: HTMLElement): boolean {
-  return intrinsicH > computeLogScrollCap(el.clientHeight);
+function isScrollHeightCapped(
+  intrinsicH: number,
+  el: HTMLElement,
+  capFn: ScrollCapFn = computeTerminalScrollCap,
+): boolean {
+  return intrinsicH > capFn(el.clientHeight);
 }
 
-function actualToVirtualScrollTop(el: HTMLElement, intrinsicH: number): number {
-  if (!isScrollHeightCapped(intrinsicH, el)) return el.scrollTop;
-  return (el.scrollTop / actualScrollRange(el, intrinsicH)) * intrinsicScrollRange(intrinsicH, el);
+function actualToVirtualScrollTop(
+  el: HTMLElement,
+  intrinsicH: number,
+  capFn: ScrollCapFn = computeTerminalScrollCap,
+): number {
+  if (!isScrollHeightCapped(intrinsicH, el, capFn)) return el.scrollTop;
+  return (el.scrollTop / actualScrollRange(el, intrinsicH, capFn)) * intrinsicScrollRange(intrinsicH, el);
 }
 
-function virtualToActualScrollTopForElement(el: HTMLElement, intrinsicH: number, virtual: number): number {
-  if (!isScrollHeightCapped(intrinsicH, el)) return virtual;
-  return Math.max(0, (virtual / intrinsicScrollRange(intrinsicH, el)) * actualScrollRange(el, intrinsicH));
+function virtualToActualScrollTopForElement(
+  el: HTMLElement,
+  intrinsicH: number,
+  virtual: number,
+  capFn: ScrollCapFn = computeTerminalScrollCap,
+): number {
+  if (!isScrollHeightCapped(intrinsicH, el, capFn)) return virtual;
+  return Math.max(0, (virtual / intrinsicScrollRange(intrinsicH, el)) * actualScrollRange(el, intrinsicH, capFn));
 }
 
 
@@ -742,17 +770,17 @@ function JsonLogView({
   }, [entries.length, getEstimatedRowHeight]);
 
   const totalSize = rowMetrics.totalSize;
-  const cappedHeight = Math.min(totalSize, computeLogScrollCap(viewClientH));
+  const cappedHeight = Math.min(totalSize, computeJsonScrollCap(viewClientH));
 
   const syncJsonScroll = useCallback((defer = false) => {
     const run = () => {
       scrollRafRef.current = null;
       const el = scrollRef.current;
       if (!el) return;
-      const virtual = actualToVirtualScrollTop(el, totalSize);
+      const virtual = actualToVirtualScrollTop(el, totalSize, computeJsonScrollCap);
       const wrapper = offsetWrapperRef.current;
       if (wrapper) {
-        wrapper.style.transform = isScrollHeightCapped(totalSize, el)
+        wrapper.style.transform = isScrollHeightCapped(totalSize, el, computeJsonScrollCap)
           ? `translateY(${el.scrollTop - virtual}px)`
           : "translateY(0px)";
       }
@@ -805,7 +833,7 @@ function JsonLogView({
     const maxVirtual = Math.max(0, totalSize - el.clientHeight);
     const virtual = Math.max(0, Math.min(maxVirtual, virtualTop));
     el.scrollTo({
-      top: virtualToActualScrollTopForElement(el, totalSize, virtual),
+      top: virtualToActualScrollTopForElement(el, totalSize, virtual, computeJsonScrollCap),
       behavior,
     });
     requestAnimationFrame(() => syncJsonScroll(false));
@@ -853,8 +881,8 @@ function JsonLogView({
     const intrinsicH = totalSize;
     const avgRow = entries.length > 0 ? intrinsicH / entries.length : JSON_VIEW_ROW_H;
     const virtualDelta = delta * avgRow;
-    const scale = isScrollHeightCapped(intrinsicH, el)
-      ? actualScrollRange(el, intrinsicH) / intrinsicScrollRange(intrinsicH, el)
+    const scale = isScrollHeightCapped(intrinsicH, el, computeJsonScrollCap)
+      ? actualScrollRange(el, intrinsicH, computeJsonScrollCap) / intrinsicScrollRange(intrinsicH, el)
       : 1;
     el.scrollTop = Math.max(0, el.scrollTop - virtualDelta * scale);
     requestAnimationFrame(() => syncJsonScroll(false));
@@ -1319,9 +1347,9 @@ const TailTerminal = memo(function TailTerminal({
   // Cap nowrap scrollHeight so the scrollbar thumb stays at the browser's
   // minimum size and the cursor-to-thumb mapping stays linear during drag.
   const intrinsicWrapH = wrapVirtualizer.getTotalSize();
-  const wrapTotalH = Math.min(intrinsicWrapH, computeLogScrollCap(viewH));
+  const wrapTotalH = Math.min(intrinsicWrapH, computeTerminalScrollCap(viewH));
   const intrinsicNowrapH = entries.length * TERMINAL_ROW_H;
-  const nowrapCap = computeLogScrollCap(viewH);
+  const nowrapCap = computeTerminalScrollCap(viewH);
   const totalH = Math.min(intrinsicNowrapH, nowrapCap);
   const endIdx = Math.min(entries.length - 1, startIdx + Math.ceil(viewH / TERMINAL_ROW_H) + TERMINAL_OVERSCAN * 2);
 
@@ -1407,7 +1435,8 @@ const TailTerminal = memo(function TailTerminal({
       <div
         ref={outerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto overflow-x-auto"
+        className="flex-1 overflow-y-auto overflow-x-scroll"
+        style={{ overflowAnchor: "none", scrollbarGutter: "stable" }}
       >
         {entries.length === 0 ? (
           <div className="flex items-center justify-center h-full min-h-[120px]">
@@ -1415,7 +1444,7 @@ const TailTerminal = memo(function TailTerminal({
           </div>
         ) : wrapLines ? (
           /* Wrap mode: variable-height virtual list via @tanstack/react-virtual */
-          <div style={{ height: wrapTotalH, position: "relative" }}>
+          <div style={{ height: wrapTotalH, position: "relative", overflowAnchor: "none" }}>
             <div
               ref={wrapOffsetWrapperRef}
               style={{ position: "absolute", top: 0, left: 0, right: 0, willChange: "transform" }}
@@ -1432,7 +1461,7 @@ const TailTerminal = memo(function TailTerminal({
                     key={vRow.index}
                     data-index={vRow.index}
                     ref={wrapVirtualizer.measureElement}
-                    style={{ position: "absolute", top: vRow.start, left: 0, right: 0 }}
+                    style={{ position: "absolute", top: vRow.start, left: 0, right: 0, overflowAnchor: "none" }}
                   >
                     {/* Inner div: re-keyed on flashKey so CSS animation re-fires on each navigation */}
                     <div
@@ -1466,7 +1495,7 @@ const TailTerminal = memo(function TailTerminal({
           </div>
         ) : (
           /* Nowrap mode: fixed row height — virtual list for performance */
-          <div style={{ height: totalH, position: "relative" }}>
+          <div style={{ height: totalH, position: "relative", overflowAnchor: "none" }}>
             <div
               ref={nowrapGroupRef}
               style={{
@@ -1492,7 +1521,7 @@ const TailTerminal = memo(function TailTerminal({
                     key={isActive ? `flash-${flashKey}` : absIdx}
                     onClick={() => onEntryClick?.(absIdx)}
                     onDoubleClick={() => onEntryDoubleClick?.(absIdx)}
-                    style={{ height: TERMINAL_ROW_H, lineHeight: `${TERMINAL_ROW_H}px` }}
+                    style={{ height: TERMINAL_ROW_H, lineHeight: `${TERMINAL_ROW_H}px`, overflowAnchor: "none" }}
                     className={cn(
                       "px-3 font-mono text-[11px] whitespace-nowrap select-text border-b border-slate-200 cursor-pointer",
                       absIdx % 2 === 0 && "bg-slate-100/60",
