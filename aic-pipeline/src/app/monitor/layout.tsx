@@ -12,6 +12,7 @@ export default function MonitorLayout({ children }: { children: React.ReactNode 
             <SubTabNav
                 tabs={[
                     { href: "/monitor/server-status", label: "Server Status" },
+                    { href: "/monitor/tls", label: "TLS Expiration" },
                     { href: "/monitor/rcs-status", label: "RCS Status" },
                 ]}
             />
