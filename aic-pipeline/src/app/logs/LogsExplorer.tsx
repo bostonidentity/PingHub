@@ -1168,7 +1168,7 @@ function JsonLogView({
           )}
           style={{ willChange: "transform" }}
         >
-          <div style={{ height: totalSize, position: "relative", transform: `translateY(${-virtualOffset}px)` }}>
+          <div style={{ position: "relative", height: "100%" }}>
             {items.map((vi) => {
               const i = vi.index;
               const entry = entries[i];
@@ -1179,6 +1179,15 @@ function JsonLogView({
               const isSelected = i === selectedEntryIdx;
               const isCtxAnchor = i === contextAnchorIdx;
               const isLast = i === entries.length - 1;
+              // Position each item directly at `vi.start - virtualOffset`
+              // (always a small number near the viewport) instead of
+              // translating a giant parent by `-virtualOffset`. At
+              // 50k+ entries the totalSize can exceed 30M px; browser
+              // compositors use float32 for transforms and start
+              // clipping / blanking once offsets cross ~16M (2^24).
+              // Per-item `top` values stay within ±viewport regardless
+              // of scroll position, so we never hit that limit.
+              const top = vi.start - virtualOffset;
               return (
                 <div
                   key={vi.key}
@@ -1194,7 +1203,7 @@ function JsonLogView({
                     isMatch && !isActive && !isSelected && "bg-yellow-50/60",
                     isCtxAnchor && !isActive && !isSelected && "bg-violet-50 ring-1 ring-inset ring-violet-300 rounded",
                   )}
-                  style={{ transform: `translateY(${vi.start}px)` }}
+                  style={{ top }}
                 >
                   {i === 0 ? "[\n" : null}
                   {isMatch ? highlightText(etxt, isActive) : etxt}
