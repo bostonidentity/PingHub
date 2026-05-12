@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useLayoutEffect, useRef, Fragment, startTransition, useDeferredValue, useCallback, useMemo, memo, createContext, useContext } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, Fragment, startTransition, useDeferredValue, useCallback, useMemo, memo, createContext, useContext, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Environment } from "@/lib/fr-config-types";
 import { EnvironmentBadge } from "@/components/EnvironmentBadge";
@@ -521,6 +522,131 @@ function findJsonStart(s: string): number {
   return -1;
 }
 
+/**
+ * ScrollbarOverlay — visually consistent custom vertical scrollbar that
+ * mirrors and drives a native scroll container's scrollTop. Renders via
+ * portal in fixed positioning so it doesn't fight parent stacking contexts
+ * or get clipped by the container's `overflow`. Pair with the
+ * `scrollbar-hidden` CSS class on the container to suppress the native bar.
+ */
+function ScrollbarOverlay({ containerRef }: { containerRef: RefObject<HTMLElement | null> }) {
+  const [layout, setLayout] = useState<{
+    top: number; height: number; left: number;
+    st: number; sh: number; ch: number;
+  } | null>(null);
+  const dragRef = useRef<{ startY: number; startTop: number; travel: number; scrollable: number } | null>(null);
+
+  const measure = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setLayout((prev) => {
+      const next = {
+        top: r.top, height: r.height, left: r.right,
+        st: el.scrollTop, sh: el.scrollHeight, ch: el.clientHeight,
+      };
+      if (
+        prev &&
+        prev.top === next.top && prev.height === next.height && prev.left === next.left &&
+        prev.st === next.st && prev.sh === next.sh && prev.ch === next.ch
+      ) return prev;
+      return next;
+    });
+  }, [containerRef]);
+
+  // Initial + listeners.
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    measure();
+    const onScroll = () => measure();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    window.addEventListener("resize", measure);
+    // Capture any ancestor scroll so our fixed position stays correct.
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [containerRef, measure]);
+
+  // Re-measure after every render of the parent (catches content height changes).
+  useLayoutEffect(() => { measure(); });
+
+  if (!layout) return null;
+  const scrollable = Math.max(0, layout.sh - layout.ch);
+  if (scrollable <= 0 || layout.height <= 0) return null;
+
+  const trackH = layout.ch;
+  const thumbH = Math.max(24, Math.min(trackH, (layout.ch / layout.sh) * trackH));
+  const thumbTravel = Math.max(1, trackH - thumbH);
+  const thumbTop = (layout.st / scrollable) * thumbTravel;
+
+  const onThumbPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const el = containerRef.current;
+    if (!el) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    const sc = Math.max(0, el.scrollHeight - el.clientHeight);
+    const travel = Math.max(1, el.clientHeight - thumbH);
+    dragRef.current = { startY: e.clientY, startTop: el.scrollTop, travel, scrollable: sc };
+  };
+  const onThumbPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const el = containerRef.current;
+    if (!el) return;
+    const next = d.startTop + (e.clientY - d.startY) * (d.scrollable / d.travel);
+    el.scrollTop = Math.min(d.scrollable, Math.max(0, next));
+  };
+  const onThumbPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    dragRef.current = null;
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+  };
+  const onTrackPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return; // ignore clicks on the thumb
+    const el = containerRef.current;
+    if (!el) return;
+    const trackTop = (e.currentTarget as HTMLElement).getBoundingClientRect().top;
+    const clickY = e.clientY - trackTop;
+    const page = el.clientHeight * 0.9;
+    const sc = Math.max(0, el.scrollHeight - el.clientHeight);
+    el.scrollTop = Math.min(sc, Math.max(0, el.scrollTop + (clickY < thumbTop ? -page : page)));
+  };
+
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      onPointerDown={onTrackPointerDown}
+      className="bg-slate-100/40 hover:bg-slate-100/70 transition-colors"
+      style={{
+        position: "fixed",
+        top: layout.top, height: layout.height,
+        left: layout.left,
+        width: 12,
+        zIndex: 50,
+        touchAction: "none",
+        pointerEvents: "auto",
+      }}
+    >
+      <div
+        onPointerDown={onThumbPointerDown}
+        onPointerMove={onThumbPointerMove}
+        onPointerUp={onThumbPointerUp}
+        onPointerCancel={onThumbPointerUp}
+        className="absolute left-0.5 right-0.5 rounded bg-slate-400/70 hover:bg-slate-500/80 active:bg-slate-600 cursor-grab active:cursor-grabbing"
+        style={{ top: thumbTop, height: thumbH, touchAction: "none" }}
+      />
+    </div>,
+    document.body,
+  );
+}
+
 function JsonLogView({
   entries,
   wrapLines = false,
@@ -647,7 +773,36 @@ function JsonLogView({
   // Variable-height virtualizer over the full entry list. Only rows in the
   // viewport (+ overscan) are mounted, so cost is O(visible) regardless of
   // total entry count.
+  //
+  // Scroll model: CUSTOM. We hide the native scrollbar (overflow: hidden) and
+  // drive react-virtual via an internal `virtualOffset` state. A custom thumb
+  // widget on the right edge handles pointer drag, the wheel handler adds
+  // deltaY directly to the offset, and keyboard nav (PgUp/PgDn/Home/End)
+  // pages through the offset. This avoids browser scrollbar pathologies at
+  // very large `scrollHeight` (sub-pixel thumb, non-linear drag, scrollTop
+  // precision loss) — everything is in our coordinate space.
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [virtualOffset, setVirtualOffset] = useState(0);
+  const virtualOffsetRef = useRef(0);
+  const [viewportH, setViewportH] = useState(600);
+  // React-virtual's offset observer callback. We hold a ref so we can push
+  // updates whenever our internal offset changes.
+  const offsetCbRef = useRef<((offset: number, isScrolling: boolean) => void) | null>(null);
+  const isScrollingTimeoutRef = useRef<number | null>(null);
+  const applyVirtualOffset = useCallback((next: number) => {
+    const clamped = Math.max(0, next);
+    virtualOffsetRef.current = clamped;
+    setVirtualOffset(clamped);
+    // Notify react-virtual of the new offset. Deferred via microtask because
+    // react-virtual calls flushSync internally; calling synchronously from
+    // here can land during a render commit phase (e.g. when scrollToFn is
+    // invoked from an effect cascading off a render), which React forbids.
+    queueMicrotask(() => { offsetCbRef.current?.(clamped, true); });
+    if (isScrollingTimeoutRef.current) window.clearTimeout(isScrollingTimeoutRef.current);
+    isScrollingTimeoutRef.current = window.setTimeout(() => {
+      offsetCbRef.current?.(virtualOffsetRef.current, false);
+    }, 150);
+  }, []);
   // Per-index height cache + running average estimate. We sample each row's
   // height the first time it mounts, then lock both the per-row cache and
   // the estimate so subsequent renders cannot shift totalSize. This keeps
@@ -695,6 +850,19 @@ function JsonLogView({
       return h;
     },
     overscan: JSON_VIEW_OVERSCAN,
+    // Feed react-virtual our internal offset instead of el.scrollTop.
+    observeElementOffset: (_inst, cb) => {
+      offsetCbRef.current = cb;
+      // Defer the initial push outside the virtualizer's commit phase
+      // (flushSync forbidden there).
+      queueMicrotask(() => { cb(virtualOffsetRef.current, false); });
+      return () => { offsetCbRef.current = null; };
+    },
+    // Programmatic scrolls (scrollToIndex) deliver a target offset; apply it
+    // to our state instead of el.scrollTop.
+    scrollToFn: (offset) => {
+      applyVirtualOffset(offset);
+    },
   });
 
   // Reset measurement samples + average when wrap mode changes (heights differ).
@@ -709,11 +877,14 @@ function JsonLogView({
   // Track whether the user is pinned to the bottom of the JSON view. Auto-tail
   // and eviction compensation behave differently depending on this.
   const atBottomRef = useRef(true);
-  const handleViewScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-  }, []);
+  // Total content size — refreshed each render via virtualizer.getTotalSize()
+  // below in JSX. We snapshot into a ref so handlers can read it.
+  const totalSizeRef = useRef(0);
+  const updateAtBottom = useCallback(() => {
+    const total = totalSizeRef.current;
+    const max = Math.max(0, total - viewportH);
+    atBottomRef.current = max - virtualOffsetRef.current < 60;
+  }, [viewportH]);
 
   // Auto-tail: when pinned to bottom and autoScroll is on, follow new entries.
   useEffect(() => {
@@ -724,16 +895,14 @@ function JsonLogView({
   }, [entries.length, autoScroll]);
 
   // Stabilize viewport when buffer evicts from the front. Without this, every
-  // eviction shifts every row's index, so the same scrollTop now reveals
+  // eviction shifts every row's index, so the same offset now reveals
   // different content ("jiggle"). Compensate by subtracting the approximate
-  // height of evicted rows from scrollTop so the user's anchor stays put.
+  // height of evicted rows from the offset so the user's anchor stays put.
   const prevEvictedRef = useRef(evictedCount);
   useEffect(() => {
     const delta = evictedCount - prevEvictedRef.current;
     prevEvictedRef.current = evictedCount;
     if (delta <= 0) return;
-    // Re-key the per-index height cache: row N is now at N-delta. Drop any
-    // entries that fell off the front.
     const cache = heightCacheRef.current;
     if (cache.size > 0) {
       const next = new Map<number, number>();
@@ -743,11 +912,9 @@ function JsonLogView({
       }
       heightCacheRef.current = next;
     }
-    if (autoScroll && atBottomRef.current) return; // following tail — separate effect handles scroll
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTop = Math.max(0, el.scrollTop - delta * avgRowHeightRef.current);
-  }, [evictedCount, autoScroll, entries.length, virtualizer]);
+    if (autoScroll && atBottomRef.current) return; // following tail
+    applyVirtualOffset(virtualOffsetRef.current - delta * avgRowHeightRef.current);
+  }, [evictedCount, autoScroll, entries.length, applyVirtualOffset]);
 
   // Scroll to the active match when it changes.
   useEffect(() => {
@@ -767,6 +934,104 @@ function JsonLogView({
 
   const items = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
+  totalSizeRef.current = totalSize;
+  // Re-check atBottom whenever offset, viewport or total changes.
+  useEffect(() => { updateAtBottom(); }, [virtualOffset, totalSize, viewportH, updateAtBottom]);
+
+  // Track scroll container size (clientHeight) — needed for thumb sizing,
+  // wheel, page nav, and atBottom calculation. ResizeObserver keeps it live.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setViewportH(el.clientHeight);
+    const ro = new ResizeObserver(() => {
+      const h = el.clientHeight;
+      if (h > 0) setViewportH(h);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // ── Custom scrollbar geometry ──
+  const SCROLLBAR_MIN_THUMB = 24;
+  const scrollable = Math.max(0, totalSize - viewportH);
+  const trackH = viewportH;
+  const thumbH = scrollable > 0
+    ? Math.max(SCROLLBAR_MIN_THUMB, Math.min(trackH, (viewportH / totalSize) * trackH))
+    : 0;
+  const thumbTravel = Math.max(1, trackH - thumbH);
+  const thumbTop = scrollable > 0 ? (virtualOffset / scrollable) * thumbTravel : 0;
+
+  // ── Input handlers ──
+  // Wheel: add deltaY directly to virtual offset.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      let dy = e.deltaY;
+      if (e.deltaMode === 1) dy *= avgRowHeightRef.current;
+      else if (e.deltaMode === 2) dy *= viewportH;
+      const max = Math.max(0, totalSizeRef.current - viewportH);
+      applyVirtualOffset(Math.min(max, virtualOffsetRef.current + dy));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [viewportH, applyVirtualOffset]);
+
+  // Keyboard nav when focused.
+  const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    const max = Math.max(0, totalSizeRef.current - viewportH);
+    const page = viewportH * 0.9;
+    const row = avgRowHeightRef.current;
+    let next = virtualOffsetRef.current;
+    switch (e.key) {
+      case "PageDown": next += page; break;
+      case "PageUp": next -= page; break;
+      case "Home": next = 0; break;
+      case "End": next = max; break;
+      case "ArrowDown": next += row; break;
+      case "ArrowUp": next -= row; break;
+      default: return;
+    }
+    e.preventDefault();
+    applyVirtualOffset(Math.min(max, Math.max(0, next)));
+  }, [viewportH, applyVirtualOffset]);
+
+  // Thumb pointer drag.
+  const dragStateRef = useRef<{ startY: number; startOffset: number } | null>(null);
+  const onThumbPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    dragStateRef.current = { startY: e.clientY, startOffset: virtualOffsetRef.current };
+  }, []);
+  const onThumbPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragStateRef.current;
+    if (!drag) return;
+    const dy = e.clientY - drag.startY;
+    const scrollableNow = Math.max(0, totalSizeRef.current - viewportH);
+    const travel = Math.max(1, trackH - thumbH);
+    const next = drag.startOffset + (dy / travel) * scrollableNow;
+    applyVirtualOffset(Math.min(scrollableNow, Math.max(0, next)));
+  }, [trackH, thumbH, viewportH, applyVirtualOffset]);
+  const onThumbPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    dragStateRef.current = null;
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+  }, []);
+
+  // Click on the track (outside the thumb) — page up/down.
+  const onTrackPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return; // ignore clicks on the thumb
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clickY = e.clientY - rect.top;
+    const max = Math.max(0, totalSizeRef.current - viewportH);
+    const page = viewportH * 0.9;
+    const next = clickY < thumbTop
+      ? virtualOffsetRef.current - page
+      : virtualOffsetRef.current + page;
+    applyVirtualOffset(Math.min(max, Math.max(0, next)));
+  }, [thumbTop, viewportH, applyVirtualOffset]);
+
   const copyLabel =
     copyState.phase === "building" ? `Copying… ${copyState.pct}%` :
       copyState.phase === "done" ? "Copied" : "Copy JSON";
@@ -784,50 +1049,71 @@ function JsonLogView({
       </button>
       <div
         ref={scrollRef}
-        onScroll={handleViewScroll}
-        className="flex-1 overflow-y-auto overflow-x-auto"
+        tabIndex={0}
+        onKeyDown={onKeyDown}
+        className="flex-1 overflow-hidden relative outline-none"
       >
         <div
           className={cn(
-            "p-4 pt-2 font-mono text-[12px] leading-5 text-slate-700 relative",
+            "p-4 pt-2 font-mono text-[12px] leading-5 text-slate-700 absolute inset-0",
             wrapLines ? "whitespace-pre-wrap break-all" : "whitespace-pre",
+            "overflow-x-auto overflow-y-hidden",
           )}
-          style={{ height: totalSize, width: "100%" }}
+          style={{ willChange: "transform" }}
         >
-          {items.map((vi) => {
-            const i = vi.index;
-            const entry = entries[i];
-            if (!entry) return null;
-            const etxt = getEntryText(entry);
-            const isMatch = matchSet.has(i);
-            const isActive = i === activeEntryIdx;
-            const isSelected = i === selectedEntryIdx;
-            const isCtxAnchor = i === contextAnchorIdx;
-            const isLast = i === entries.length - 1;
-            return (
-              <div
-                key={vi.key}
-                ref={virtualizer.measureElement}
-                data-index={i}
-                data-entry-idx={i}
-                onClick={() => onEntryClick?.(i)}
-                onDoubleClick={() => onEntryDoubleClick?.(i)}
-                className={cn(
-                  "absolute left-0 right-0 px-4 cursor-pointer",
-                  isActive && "bg-amber-50 ring-1 ring-inset ring-amber-300 rounded",
-                  !isActive && isSelected && "bg-sky-50 ring-1 ring-inset ring-sky-400 rounded",
-                  isMatch && !isActive && !isSelected && "bg-yellow-50/60",
-                  isCtxAnchor && !isActive && !isSelected && "bg-violet-50 ring-1 ring-inset ring-violet-300 rounded",
-                )}
-                style={{ transform: `translateY(${vi.start}px)` }}
-              >
-                {i === 0 ? "[\n" : null}
-                {isMatch ? highlightText(etxt, isActive) : etxt}
-                {isLast ? "\n]" : ","}
-              </div>
-            );
-          })}
+          <div style={{ height: totalSize, position: "relative", transform: `translateY(${-virtualOffset}px)` }}>
+            {items.map((vi) => {
+              const i = vi.index;
+              const entry = entries[i];
+              if (!entry) return null;
+              const etxt = getEntryText(entry);
+              const isMatch = matchSet.has(i);
+              const isActive = i === activeEntryIdx;
+              const isSelected = i === selectedEntryIdx;
+              const isCtxAnchor = i === contextAnchorIdx;
+              const isLast = i === entries.length - 1;
+              return (
+                <div
+                  key={vi.key}
+                  ref={virtualizer.measureElement}
+                  data-index={i}
+                  data-entry-idx={i}
+                  onClick={() => onEntryClick?.(i)}
+                  onDoubleClick={() => onEntryDoubleClick?.(i)}
+                  className={cn(
+                    "absolute left-0 right-3 px-4 cursor-pointer",
+                    isActive && "bg-amber-50 ring-1 ring-inset ring-amber-300 rounded",
+                    !isActive && isSelected && "bg-sky-50 ring-1 ring-inset ring-sky-400 rounded",
+                    isMatch && !isActive && !isSelected && "bg-yellow-50/60",
+                    isCtxAnchor && !isActive && !isSelected && "bg-violet-50 ring-1 ring-inset ring-violet-300 rounded",
+                  )}
+                  style={{ transform: `translateY(${vi.start}px)` }}
+                >
+                  {i === 0 ? "[\n" : null}
+                  {isMatch ? highlightText(etxt, isActive) : etxt}
+                  {isLast ? "\n]" : ","}
+                </div>
+              );
+            })}
+          </div>
         </div>
+        {/* Custom scrollbar overlay */}
+        {scrollable > 0 && (
+          <div
+            onPointerDown={onTrackPointerDown}
+            className="absolute top-0 right-0 bottom-0 w-3 bg-slate-100/40 hover:bg-slate-100/70 transition-colors"
+            style={{ touchAction: "none" }}
+          >
+            <div
+              onPointerDown={onThumbPointerDown}
+              onPointerMove={onThumbPointerMove}
+              onPointerUp={onThumbPointerUp}
+              onPointerCancel={onThumbPointerUp}
+              className="absolute left-0.5 right-0.5 rounded bg-slate-400/70 hover:bg-slate-500/80 active:bg-slate-600 cursor-grab active:cursor-grabbing"
+              style={{ top: thumbTop, height: thumbH, touchAction: "none" }}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1261,7 +1547,7 @@ const TailTerminal = memo(function TailTerminal({
       <div
         ref={outerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto overflow-x-auto"
+        className="flex-1 overflow-y-auto overflow-x-auto scrollbar-hidden mr-3"
       >
         {entries.length === 0 ? (
           <div className="flex items-center justify-center h-full min-h-[120px]">
@@ -1375,6 +1661,7 @@ const TailTerminal = memo(function TailTerminal({
           ↓ Jump to bottom
         </button>
       )}
+      <ScrollbarOverlay containerRef={outerRef} />
     </div>
   );
 });
@@ -3284,7 +3571,7 @@ export function LogsExplorer({
             if (h >= 200) { setTableHeight(h); saveHeight(h); }
           }}
           className={cn(
-            terminalView || viewMode === "json" ? "overflow-hidden" : "overflow-y-auto overflow-x-auto",
+            terminalView || viewMode === "json" ? "overflow-hidden" : "overflow-y-auto overflow-x-auto scrollbar-hidden mr-3",
             fullscreen ? "flex-1" : "resize-y min-h-[200px]"
           )}
           style={fullscreen ? undefined : { height: tableHeight }}
@@ -3414,6 +3701,7 @@ export function LogsExplorer({
             </table>
           )}
         </div>
+        {viewMode === "table" && <ScrollbarOverlay containerRef={scrollContainerRef} />}
 
         {/* Pagination controls — table view only */}
         {viewMode === "table" && fetched && filtered.length > 0 && (
