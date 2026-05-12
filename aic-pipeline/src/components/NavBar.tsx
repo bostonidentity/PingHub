@@ -21,7 +21,7 @@ const NAV_ITEMS = [
   { href: "/search", label: "Search" },
   { href: "/history", label: "History" },
   { href: "/environments", label: "Environments" },
-  { href: "/rcs-status", label: "RCS Status" },
+  { href: "/monitor", label: "Monitor" },
   { href: "/settings", label: "Repo" },
 ];
 
