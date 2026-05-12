@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6.6] - 2026-05-12
+
+### Added
+
+- **Monitor section** consolidating health and certificate status. A new top-level **Monitor** nav item replaces the standalone **RCS Status** entry and surfaces three sub-tabs:
+  - **Server Status** — configurable HTTP health checks for arbitrary URLs, grouped by user-defined sections. Each monitor supports custom method, timeout, headers, auth (none / basic / bearer), insecure-TLS opt-in, JSON-path status extraction, healthy/degraded regex, and `bodyContains` substring assertions for HTML landing pages. Results render with colour-coded dots (ok / degraded / down / unknown), per-row last-checked timestamps, an overall summary banner with worst-status pill and counts, and a right-side detail drawer that shows the response body snippet. A red **warning banner** is shown whenever any monitor is `down` (and optionally when any monitor is `degraded`, via the new **Ignore degraded in warnings** toggle which defaults to on). Auto-refresh, refresh interval (15s–7d), the ignore-degraded toggle, and the last set of results are all persisted to `localStorage` via a new `usePersistentState` hook so toggling settings or reloading the page no longer clears status.
+  - **TLS Expiration** — new sub-tab that opens a raw `tls.connect` to each configured target, captures the peer certificate (without enforcing trust, so expired/self-signed certs can still be reported), and surfaces expiry date, days remaining, issuer CN, SAN list, SHA-256 fingerprint, and serial number. Targets are classified as `ok` / `warning` (≤ 30 days by default) / `expired` (≤ 7 days or already past) / `error`, each with its own colour. A red banner highlights any expired/error certificate; warnings render in amber. Editor supports per-target warn/critical day thresholds and an optional SNI servername override. Seeded with the five KYID SSO/AM/IG endpoints.
+  - **RCS Status** — the existing Remote Connector Server matrix, now reachable at `/monitor/rcs-status` (legacy `/rcs-status` redirects). Gains the same auto-refresh + interval controls (with a shared 15s–7d option list reused across all three sub-tabs), a summary banner with last-checked timestamp, and per-environment last-checked indicators.
+- **HTTP check engine** in `src/lib/monitors/check.ts` built on node's `http`/`https` modules (no extra deps). Handles `/health/live`, `/health/ready`, `/openig/ping`, JSON status fields (`status`, `state`, `health.status`, `live`, `ready`, etc.), HTML landing pages via `bodyContains`, and plain-text bodies; classifies network failures (DNS, ECONNREFUSED, timeout, TLS) into structured error messages.
+- **TLS check engine** in `src/lib/monitors/tls-check.ts` using `tls.connect({ rejectUnauthorized: false })` so the check itself never fails on expired or untrusted chains — it inspects the cert regardless and reports the issue.
+- **Persistent UI state hook** `src/hooks/usePersistentState.ts` (strict-mode-safe via a `useState`-backed `loaded` flag) used by all three sub-tabs to remember auto-refresh, intervals, results, and the ignore-degraded toggle across reloads.
+
+### Changed
+
+- `NavBar` now shows **Monitor** in place of **RCS Status**; the old route 302s to `/monitor/rcs-status` for back-compat.
+- `environments/monitors.json` and `environments/tls-monitors.json` follow the existing `rcs-status.json` pattern (gitignored, per-deployment local config). Both can be edited from the in-app **Edit configuration** UI.
+
 ## [0.2.6.5] - 2026-05-12
 
 ### Fixed

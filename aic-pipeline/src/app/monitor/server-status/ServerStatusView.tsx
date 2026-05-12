@@ -26,6 +26,7 @@ export function ServerStatusView() {
     const [error, setError] = useState<string | null>(null);
     const [autoRefresh, setAutoRefresh] = usePersistentState<boolean>("monitor.serverStatus.autoRefresh", false);
     const [intervalSec, setIntervalSec] = usePersistentState<number>("monitor.serverStatus.intervalSec", 30);
+    const [ignoreDegraded, setIgnoreDegraded] = usePersistentState<boolean>("monitor.serverStatus.ignoreDegraded", true);
     const [selected, setSelected] = useState<string | null>(null);
 
     const checkAllRef = useRef<() => void>(() => { });
@@ -178,12 +179,49 @@ export function ServerStatusView() {
         down: enabledResults.filter((r) => r.status === "down").length,
         unknown: totalEnabled - enabledResults.length,
     };
+    const downMonitors = enabledResults.filter((r) => r.status === "down");
+    const degradedMonitors = enabledResults.filter((r) => r.status === "degraded");
+    const showWarning = downMonitors.length > 0 || (!ignoreDegraded && degradedMonitors.length > 0);
+    const monitorById = new Map(config.monitors.map((m) => [m.id, m]));
 
     return (
         <div className="space-y-4">
             {error && (
                 <div className="text-rose-600 text-sm bg-rose-50 border border-rose-200 rounded px-3 py-2">
                     {error}
+                </div>
+            )}
+
+            {showWarning && (
+                <div
+                    role="alert"
+                    className="border border-rose-300 bg-rose-50 rounded-lg px-3 py-2 text-sm text-rose-800"
+                >
+                    <div className="flex items-center gap-2 font-semibold">
+                        <span className="inline-block h-2.5 w-2.5 rounded-full bg-rose-500 animate-pulse" />
+                        Service issue detected
+                        <span className="font-normal text-rose-700">
+                            ({downMonitors.length} down
+                            {!ignoreDegraded && degradedMonitors.length > 0 && `, ${degradedMonitors.length} degraded`})
+                        </span>
+                    </div>
+                    <ul className="mt-1 ml-5 list-disc text-xs text-rose-700 space-y-0.5">
+                        {[...downMonitors, ...(ignoreDegraded ? [] : degradedMonitors)].map((r) => {
+                            const m = monitorById.get(r.id);
+                            return (
+                                <li key={r.id}>
+                                    <button
+                                        type="button"
+                                        onClick={() => setSelected(r.id)}
+                                        className="underline hover:text-rose-900"
+                                    >
+                                        {m?.label ?? r.id}
+                                    </button>
+                                    <span className="text-rose-600"> — {r.status}{r.message ? `: ${r.message}` : ""}</span>
+                                </li>
+                            );
+                        })}
+                    </ul>
                 </div>
             )}
 
@@ -238,6 +276,15 @@ export function ServerStatusView() {
                         </option>
                     ))}
                 </select>
+                <label className="flex items-center gap-1.5 text-xs text-slate-600 select-none">
+                    <input
+                        type="checkbox"
+                        checked={ignoreDegraded}
+                        onChange={(e) => setIgnoreDegraded(e.target.checked)}
+                        className="rounded"
+                    />
+                    Ignore degraded in warnings
+                </label>
                 <div className="flex-1" />
                 <Legend />
                 <button
