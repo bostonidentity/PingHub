@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Cluster, ClusterStatus, Overall, RcsStatusFile } from "@/lib/rcs/types";
 import { buildMatrixRows, type MatrixRow } from "@/lib/rcs/grouping";
+import { REFRESH_INTERVAL_OPTIONS } from "@/lib/monitors/refresh-intervals";
+import { usePersistentState } from "@/hooks/usePersistentState";
 import { StatusDot } from "./StatusDot";
 import { RcsStatusDrawer } from "./RcsStatusDrawer";
 
@@ -59,7 +61,10 @@ export function RcsStatusMatrix() {
   const [running, setRunning] = useState<Set<string>>(new Set());
   const [log, setLog] = useState<string>("");
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
+  const [autoRefresh, setAutoRefresh] = usePersistentState<boolean>("monitor.rcsStatus.autoRefresh", false);
+  const [intervalSec, setIntervalSec] = usePersistentState<number>("monitor.rcsStatus.intervalSec", 60);
   const logRef = useRef<HTMLDivElement | null>(null);
+  const checkAllRef = useRef<() => void>(() => { });
 
   const refresh = useCallback(async () => {
     try {
@@ -101,6 +106,14 @@ export function RcsStatusMatrix() {
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [log]);
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const id = setInterval(() => {
+      checkAllRef.current();
+    }, intervalSec * 1000);
+    return () => clearInterval(id);
+  }, [autoRefresh, intervalSec]);
 
   const runCheck = useCallback(
     async (env: string | null) => {
@@ -167,6 +180,13 @@ export function RcsStatusMatrix() {
     [data, refresh, skippedEnvs],
   );
 
+  // Keep the latest closure on the ref so the auto-refresh interval always
+  // sees current state (data, skippedEnvs, etc.).
+  checkAllRef.current = () => {
+    if (running.size > 0) return;
+    void runCheck(null);
+  };
+
   const [groupByType, setGroupByType] = useState(true);
   const [hideUnused, setHideUnused] = useState(true);
 
@@ -231,8 +251,36 @@ export function RcsStatusMatrix() {
   const allRunning = running.size > 0 && data.some((e) => running.has(e.env));
   const activeEnvCount = data.filter((e) => !skippedEnvs.has(e.env)).length;
 
+  // Summary: most recent checkedAt across non-skipped envs.
+  const lastCheckedAt = data.reduce<string | null>((acc, e) => {
+    if (skippedEnvs.has(e.env)) return acc;
+    const t = e.status?.checkedAt;
+    if (!t) return acc;
+    if (!acc || t > acc) return t;
+    return acc;
+  }, null);
+
   return (
     <div className="space-y-4">
+      <div className="flex items-center gap-3 flex-wrap border border-slate-200 bg-slate-50/60 rounded-lg px-3 py-2 text-sm">
+        <span className="font-medium text-slate-700">
+          {activeEnvCount} environment{activeEnvCount === 1 ? "" : "s"} active
+          {skippedEnvs.size > 0 && (
+            <span className="text-slate-400 font-normal"> · {skippedEnvs.size} skipped</span>
+          )}
+        </span>
+        <div className="flex-1" />
+        <span className="text-xs text-slate-500">
+          {lastCheckedAt ? (
+            <>
+              Last checked <span title={new Date(lastCheckedAt).toLocaleString()}>{formatAgo(lastCheckedAt)}</span>
+            </>
+          ) : (
+            "No checks yet"
+          )}
+        </span>
+      </div>
+
       <div className="flex items-center gap-4 flex-wrap">
         <button
           type="button"
@@ -242,6 +290,27 @@ export function RcsStatusMatrix() {
         >
           {allRunning ? "Checking…" : `Check all (${activeEnvCount}/${data.length})`}
         </button>
+        <label className="flex items-center gap-1.5 text-xs text-slate-600 select-none">
+          <input
+            type="checkbox"
+            checked={autoRefresh}
+            onChange={(e) => setAutoRefresh(e.target.checked)}
+            className="rounded"
+          />
+          Auto-refresh
+        </label>
+        <select
+          value={intervalSec}
+          onChange={(e) => setIntervalSec(Number(e.target.value))}
+          disabled={!autoRefresh}
+          className="text-xs border border-slate-300 rounded px-1 py-0.5 disabled:opacity-50"
+        >
+          {REFRESH_INTERVAL_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              every {opt.label}
+            </option>
+          ))}
+        </select>
         <label className="flex items-center gap-1.5 text-xs text-slate-600 select-none">
           <input
             type="checkbox"
@@ -277,32 +346,37 @@ export function RcsStatusMatrix() {
               {data.map((env) => {
                 const isSkipped = skippedEnvs.has(env.env);
                 return (
-                <th key={env.env} className={`px-3 py-2 font-medium text-slate-600 text-left min-w-[200px] ${isSkipped ? "bg-slate-100/70" : ""}`}>
-                  <div className="flex items-center justify-between gap-2">
-                    <label className="flex items-center gap-2 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={!isSkipped}
-                        onChange={(e) => toggleEnvSkip(env.env, !e.target.checked)}
-                        className="rounded"
-                        aria-label={`Include ${env.env} in RCS Status`}
-                      />
-                      <div>
-                        <div className={isSkipped ? "text-slate-400 line-through" : "text-slate-900"}>{env.label}</div>
-                        <div className="text-xs text-slate-400">{env.env}</div>
-                      </div>
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => runCheck(env.env)}
-                      disabled={running.has(env.env) || isSkipped}
-                      title={isSkipped ? "Env is skipped — un-check to enable" : undefined}
-                      className="text-xs px-2 py-1 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      {running.has(env.env) ? "…" : "Refresh"}
-                    </button>
-                  </div>
-                </th>
+                  <th key={env.env} className={`px-3 py-2 font-medium text-slate-600 text-left min-w-[200px] ${isSkipped ? "bg-slate-100/70" : ""}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="flex items-center gap-2 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={!isSkipped}
+                          onChange={(e) => toggleEnvSkip(env.env, !e.target.checked)}
+                          className="rounded"
+                          aria-label={`Include ${env.env} in RCS Status`}
+                        />
+                        <div>
+                          <div className={isSkipped ? "text-slate-400 line-through" : "text-slate-900"}>{env.label}</div>
+                          <div className="text-xs text-slate-400">{env.env}</div>
+                          {env.status?.checkedAt && !isSkipped && (
+                            <div className="text-[10px] text-slate-400" title={new Date(env.status.checkedAt).toLocaleString()}>
+                              {formatAgo(env.status.checkedAt)}
+                            </div>
+                          )}
+                        </div>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => runCheck(env.env)}
+                        disabled={running.has(env.env) || isSkipped}
+                        title={isSkipped ? "Env is skipped — un-check to enable" : undefined}
+                        className="text-xs px-2 py-1 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {running.has(env.env) ? "…" : "Refresh"}
+                      </button>
+                    </div>
+                  </th>
                 );
               })}
             </tr>
@@ -329,53 +403,53 @@ export function RcsStatusMatrix() {
                 );
               }
               return (
-              <tr key={row.name} className="border-b border-slate-100 last:border-0">
-                <td className="px-3 py-2 sticky left-0 bg-white">
-                  <div className="font-mono text-slate-800">{row.name}</div>
-                  <div className="text-xs text-slate-400">{prettyKind(row.rowKind)}</div>
-                </td>
-                <td className="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">{row.type}</td>
-                {data.map((env) => {
-                  const cluster = env.clusters.find((c) => c.name === row.name);
-                  const status = cellStatus(env, row.name);
-                  const isSkipped = skippedEnvs.has(env.env);
-                  if (!cluster) {
+                <tr key={row.name} className="border-b border-slate-100 last:border-0">
+                  <td className="px-3 py-2 sticky left-0 bg-white">
+                    <div className="font-mono text-slate-800">{row.name}</div>
+                    <div className="text-xs text-slate-400">{prettyKind(row.rowKind)}</div>
+                  </td>
+                  <td className="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">{row.type}</td>
+                  {data.map((env) => {
+                    const cluster = env.clusters.find((c) => c.name === row.name);
+                    const status = cellStatus(env, row.name);
+                    const isSkipped = skippedEnvs.has(env.env);
+                    if (!cluster) {
+                      return (
+                        <td key={env.env} className={`px-3 py-2 text-slate-300 ${isSkipped ? "bg-slate-50/50" : ""}`}>
+                          —
+                        </td>
+                      );
+                    }
+                    const watched = env.watchlist[row.name];
+                    const hasWatchlist = watched !== undefined;
                     return (
-                      <td key={env.env} className={`px-3 py-2 text-slate-300 ${isSkipped ? "bg-slate-50/50" : ""}`}>
-                        —
+                      <td key={env.env} className={`px-3 py-2 ${isSkipped ? "bg-slate-50/50 opacity-50" : ""}`}>
+                        <button
+                          type="button"
+                          onClick={() => setDrawer({ env: env.env, clusterName: row.name })}
+                          className="flex items-center gap-2 text-left hover:bg-slate-50 rounded px-2 py-1 -mx-2 -my-1 w-full"
+                        >
+                          <StatusDot overall={(status?.overall ?? "empty") as Overall} />
+                          <div className="min-w-0">
+                            <div className="text-slate-800 text-xs">
+                              {status ? primaryLabel(row.rowKind, status.okCount, status.totalCount) : "Never checked"}
+                            </div>
+                            <div className="text-[11px] text-slate-400 flex items-center gap-1.5">
+                              <span>
+                                {status ? formatAgo(env.status?.checkedAt) : cluster.connectors.length === 0 ? "no connectors" : ""}
+                              </span>
+                              {hasWatchlist && (
+                                <span className="inline-block px-1.5 py-0.5 text-[10px] rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                  {watched.length}/{cluster.connectors.length} watched
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </button>
                       </td>
                     );
-                  }
-                  const watched = env.watchlist[row.name];
-                  const hasWatchlist = watched !== undefined;
-                  return (
-                    <td key={env.env} className={`px-3 py-2 ${isSkipped ? "bg-slate-50/50 opacity-50" : ""}`}>
-                      <button
-                        type="button"
-                        onClick={() => setDrawer({ env: env.env, clusterName: row.name })}
-                        className="flex items-center gap-2 text-left hover:bg-slate-50 rounded px-2 py-1 -mx-2 -my-1 w-full"
-                      >
-                        <StatusDot overall={(status?.overall ?? "empty") as Overall} />
-                        <div className="min-w-0">
-                          <div className="text-slate-800 text-xs">
-                            {status ? primaryLabel(row.rowKind, status.okCount, status.totalCount) : "Never checked"}
-                          </div>
-                          <div className="text-[11px] text-slate-400 flex items-center gap-1.5">
-                            <span>
-                              {status ? formatAgo(env.status?.checkedAt) : cluster.connectors.length === 0 ? "no connectors" : ""}
-                            </span>
-                            {hasWatchlist && (
-                              <span className="inline-block px-1.5 py-0.5 text-[10px] rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
-                                {watched.length}/{cluster.connectors.length} watched
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </button>
-                    </td>
-                  );
-                })}
-              </tr>
+                  })}
+                </tr>
               );
             })}
           </tbody>
