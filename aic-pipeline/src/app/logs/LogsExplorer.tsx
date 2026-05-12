@@ -884,10 +884,20 @@ function JsonLogView({
 
   // Track whether the user is pinned to the bottom of the JSON view. Auto-tail
   // and eviction compensation behave differently depending on this.
-  const atBottomRef = useRef(true);
+  //
+  // On initial mount, when there's a pending scroll-to-selection request
+  // (e.g. user clicked a row in another view then switched to JSON), start
+  // NOT at bottom — otherwise the auto-tail effect (which fires before our
+  // scroll-to-selection effect because it's declared first) would
+  // immediately yank the viewport to the end, fighting our convergence loop.
+  const atBottomRef = useRef(selectedScrollRequest == null);
   // Total content size — refreshed each render via virtualizer.getTotalSize()
   // below in JSX. We snapshot into a ref so handlers can read it.
   const totalSizeRef = useRef(0);
+  // Forward-declared flag set by the scroll-to-selection rAF loop (below).
+  // The auto-tail effect reads this to skip while a convergence loop is in
+  // flight so the two animations don't compete.
+  const scrollLoopActiveRef = useRef(false);
   const updateAtBottom = useCallback(() => {
     const total = totalSizeRef.current;
     const max = Math.max(0, total - viewportH);
@@ -895,9 +905,12 @@ function JsonLogView({
   }, [viewportH]);
 
   // Auto-tail: when pinned to bottom and autoScroll is on, follow new entries.
+  // Skipped while a scroll-to-selection loop is in flight so the two
+  // animations don't compete.
   useEffect(() => {
     if (!autoScroll || !atBottomRef.current) return;
     if (entries.length === 0) return;
+    if (scrollLoopActiveRef.current) return;
     virtualizer.scrollToIndex(entries.length - 1, { align: "end" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries.length, autoScroll]);
@@ -933,61 +946,89 @@ function JsonLogView({
 
   // Scroll to the selected entry on demand (initial click + view-mode switch).
   //
-  // The flow is awkward because we run our own offset state outside react-virtual:
-  //  1. First scroll uses an estimate-based offset (rows around the target
-  //     mount; their real heights get measured).
-  //  2. Once the target row is rendered to the DOM, we adjust the offset
-  //     based on the row's actual position relative to the viewport — this
-  //     centers it precisely regardless of how off the initial estimate was.
-  //  3. We repeat until the row is within a couple of pixels of center.
+  // With huge entry counts (70k+) convergence by render-counting is fragile
+  // because cascading state updates (auto-clamp, atBottom recompute) burn
+  // through the attempt budget before the loop actually iterates. We drive
+  // the loop explicitly via requestAnimationFrame:
+  //  - Each frame, if target row is in DOM, measure its viewport position
+  //    and adjust virtualOffset by the pixel delta from viewport center.
+  //  - If not in DOM, ask react-virtual for the target's offset given
+  //    current per-row measurements; fall back to a proportional jump.
+  //  - Terminate when row is centered within 2px or after 30 frames cap.
   const selectedNonce = selectedScrollRequest?.nonce;
   const selectedIdx = selectedScrollRequest?.index;
-  const pendingScrollTargetRef = useRef<{ idx: number; attempts: number } | null>(null);
+  const scrollLoopRef = useRef<{ frame: number | null; cancelled: boolean }>({ frame: null, cancelled: false });
   useEffect(() => {
-    if (selectedIdx == null || selectedIdx < 0 || selectedIdx >= entries.length) return;
-    pendingScrollTargetRef.current = { idx: selectedIdx, attempts: 0 };
-    // Kick off an estimate-based scroll so rows around the target mount.
-    virtualizer.scrollToIndex(selectedIdx, { align: "center" });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedNonce]);
-  useLayoutEffect(() => {
-    const pending = pendingScrollTargetRef.current;
-    if (!pending) return;
-    if (pending.attempts >= 20) {
-      pendingScrollTargetRef.current = null;
+    if (selectedIdx == null || selectedIdx < 0 || selectedIdx >= entries.length) {
       return;
     }
-    pending.attempts += 1;
-    const scrollEl = scrollRef.current;
-    if (!scrollEl) return;
-    // If the target row is in the DOM, center it by measuring its real
-    // position relative to the scroll container.
-    const rowEl = scrollEl.querySelector<HTMLElement>(`[data-entry-idx="${pending.idx}"]`);
-    if (rowEl) {
-      const containerRect = scrollEl.getBoundingClientRect();
-      const rowRect = rowEl.getBoundingClientRect();
-      // The row is rendered at (rowRect.top - containerRect.top) within the
-      // viewport. To center it: shift the offset by that distance minus the
-      // desired center position.
-      const rowCenterInViewport = rowRect.top - containerRect.top + rowRect.height / 2;
-      const desiredCenter = scrollEl.clientHeight / 2;
-      const delta = rowCenterInViewport - desiredCenter;
-      if (Math.abs(delta) < 2) {
-        pendingScrollTargetRef.current = null;
+    // Cancel any in-flight loop.
+    if (scrollLoopRef.current.frame != null) cancelAnimationFrame(scrollLoopRef.current.frame);
+    scrollLoopRef.current.cancelled = true;
+    const state = { frame: null as number | null, cancelled: false };
+    scrollLoopRef.current = state;
+    scrollLoopActiveRef.current = true;
+    // Lock auto-tail off while we converge.
+    atBottomRef.current = false;
+    const targetIdx = selectedIdx;
+    let attempts = 0;
+    let stable = 0;
+    let lastOffset = -1;
+    const finish = () => {
+      scrollLoopActiveRef.current = false;
+    };
+    const step = () => {
+      if (state.cancelled) { finish(); return; }
+      if (attempts >= 30) { finish(); return; }
+      attempts += 1;
+      const scrollEl = scrollRef.current;
+      if (!scrollEl) {
+        state.frame = requestAnimationFrame(step);
         return;
       }
-      applyVirtualOffset(virtualOffsetRef.current + delta);
-      return;
-    }
-    // Row not yet in DOM. Compute a better estimate using react-virtual's
-    // index-aware offset calculation (it knows which rows are measured).
-    const got = virtualizer.getOffsetForIndex(pending.idx, "center");
-    if (got) {
-      const max = Math.max(0, totalSizeRef.current - viewportH);
-      const target = Math.min(max, Math.max(0, got[0]));
-      applyVirtualOffset(target);
-    }
-  });
+      const viewport = scrollEl.clientHeight;
+      const rowEl = scrollEl.querySelector<HTMLElement>(`[data-entry-idx="${targetIdx}"]`);
+      if (rowEl) {
+        const containerRect = scrollEl.getBoundingClientRect();
+        const rowRect = rowEl.getBoundingClientRect();
+        const rowCenter = rowRect.top - containerRect.top + rowRect.height / 2;
+        const delta = rowCenter - viewport / 2;
+        if (Math.abs(delta) < 2) { finish(); return; } // converged
+        applyVirtualOffset(virtualOffsetRef.current + delta);
+      } else {
+        // Row not in DOM yet. Jump proportionally so the virtualizer will
+        // measure the rows around the target on the next render; once the
+        // row exists in the DOM, the precise rowRect path above takes over.
+        //
+        // We do NOT trust `virtualizer.getOffsetForIndex(idx, "center")`
+        // here: with a custom scroll element it can return 0 for far-off
+        // unmeasured rows (observed in production with 5k+ entries), which
+        // would pin us at offset 0 forever.
+        const ratio = targetIdx / Math.max(1, entries.length - 1);
+        const max = Math.max(0, totalSizeRef.current - viewport);
+        const target = ratio * max;
+        const clamped = Math.min(max, Math.max(0, target));
+        // Bail if offset isn't changing — measurements aren't producing
+        // a better target and the row still isn't visible.
+        if (Math.abs(clamped - lastOffset) < 1) {
+          stable += 1;
+          if (stable > 4) { finish(); return; }
+        } else {
+          stable = 0;
+        }
+        lastOffset = clamped;
+        applyVirtualOffset(clamped);
+      }
+      state.frame = requestAnimationFrame(step);
+    };
+    state.frame = requestAnimationFrame(step);
+    return () => {
+      state.cancelled = true;
+      scrollLoopActiveRef.current = false;
+      if (state.frame != null) cancelAnimationFrame(state.frame);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedNonce]);
 
   const items = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
