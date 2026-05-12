@@ -790,7 +790,15 @@ function JsonLogView({
   const offsetCbRef = useRef<((offset: number, isScrolling: boolean) => void) | null>(null);
   const isScrollingTimeoutRef = useRef<number | null>(null);
   const applyVirtualOffset = useCallback((next: number) => {
-    const clamped = Math.max(0, next);
+    // Clamp into the valid range. Without an upper clamp, programmatic scrolls
+    // computed from stale row-size estimates (e.g. scrollToIndex on first
+    // mount when avgRowHeightRef is still the initial guess) can land at an
+    // offset far beyond totalSize, translating the row layer entirely
+    // offscreen — the target row then never mounts, never gets measured, and
+    // retries can't converge. Upper clamp keeps offset within actual content.
+    const total = totalSizeRef.current;
+    const max = Math.max(0, total - viewportH);
+    const clamped = total > 0 ? Math.min(max, Math.max(0, next)) : Math.max(0, next);
     virtualOffsetRef.current = clamped;
     setVirtualOffset(clamped);
     // Notify react-virtual of the new offset. Deferred via microtask because
@@ -802,7 +810,7 @@ function JsonLogView({
     isScrollingTimeoutRef.current = window.setTimeout(() => {
       offsetCbRef.current?.(virtualOffsetRef.current, false);
     }, 150);
-  }, []);
+  }, [viewportH]);
   // Per-index height cache + running average estimate. We sample each row's
   // height the first time it mounts, then lock both the per-row cache and
   // the estimate so subsequent renders cannot shift totalSize. This keeps
@@ -924,19 +932,77 @@ function JsonLogView({
   }, [activeEntryIdx, entries.length, virtualizer]);
 
   // Scroll to the selected entry on demand (initial click + view-mode switch).
+  //
+  // The flow is awkward because we run our own offset state outside react-virtual:
+  //  1. First scroll uses an estimate-based offset (rows around the target
+  //     mount; their real heights get measured).
+  //  2. Once the target row is rendered to the DOM, we adjust the offset
+  //     based on the row's actual position relative to the viewport — this
+  //     centers it precisely regardless of how off the initial estimate was.
+  //  3. We repeat until the row is within a couple of pixels of center.
   const selectedNonce = selectedScrollRequest?.nonce;
   const selectedIdx = selectedScrollRequest?.index;
+  const pendingScrollTargetRef = useRef<{ idx: number; attempts: number } | null>(null);
   useEffect(() => {
     if (selectedIdx == null || selectedIdx < 0 || selectedIdx >= entries.length) return;
+    pendingScrollTargetRef.current = { idx: selectedIdx, attempts: 0 };
+    // Kick off an estimate-based scroll so rows around the target mount.
     virtualizer.scrollToIndex(selectedIdx, { align: "center" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNonce]);
+  useLayoutEffect(() => {
+    const pending = pendingScrollTargetRef.current;
+    if (!pending) return;
+    if (pending.attempts >= 20) {
+      pendingScrollTargetRef.current = null;
+      return;
+    }
+    pending.attempts += 1;
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return;
+    // If the target row is in the DOM, center it by measuring its real
+    // position relative to the scroll container.
+    const rowEl = scrollEl.querySelector<HTMLElement>(`[data-entry-idx="${pending.idx}"]`);
+    if (rowEl) {
+      const containerRect = scrollEl.getBoundingClientRect();
+      const rowRect = rowEl.getBoundingClientRect();
+      // The row is rendered at (rowRect.top - containerRect.top) within the
+      // viewport. To center it: shift the offset by that distance minus the
+      // desired center position.
+      const rowCenterInViewport = rowRect.top - containerRect.top + rowRect.height / 2;
+      const desiredCenter = scrollEl.clientHeight / 2;
+      const delta = rowCenterInViewport - desiredCenter;
+      if (Math.abs(delta) < 2) {
+        pendingScrollTargetRef.current = null;
+        return;
+      }
+      applyVirtualOffset(virtualOffsetRef.current + delta);
+      return;
+    }
+    // Row not yet in DOM. Compute a better estimate using react-virtual's
+    // index-aware offset calculation (it knows which rows are measured).
+    const got = virtualizer.getOffsetForIndex(pending.idx, "center");
+    if (got) {
+      const max = Math.max(0, totalSizeRef.current - viewportH);
+      const target = Math.min(max, Math.max(0, got[0]));
+      applyVirtualOffset(target);
+    }
+  });
 
   const items = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
   totalSizeRef.current = totalSize;
-  // Re-check atBottom whenever offset, viewport or total changes.
-  useEffect(() => { updateAtBottom(); }, [virtualOffset, totalSize, viewportH, updateAtBottom]);
+  // Re-check atBottom whenever offset, viewport or total changes. Also
+  // re-clamp the virtual offset when totalSize shrinks (e.g. after initial
+  // row measurements come in much smaller than the estimate) so we can't
+  // get stuck past the end of the content.
+  useEffect(() => {
+    const max = Math.max(0, totalSize - viewportH);
+    if (virtualOffsetRef.current > max) {
+      applyVirtualOffset(max);
+    }
+    updateAtBottom();
+  }, [virtualOffset, totalSize, viewportH, updateAtBottom, applyVirtualOffset]);
 
   // Track scroll container size (clientHeight) — needed for thumb sizing,
   // wheel, page nav, and atBottom calculation. ResizeObserver keeps it live.
@@ -1276,7 +1342,11 @@ const TailTerminal = memo(function TailTerminal({
   // and re-measure.
   const wrapAvgRef = useRef(32);
   const wrapSumRef = useRef(0);
-  const wrapHeightCacheRef = useRef<Map<number, number>>(new Map());
+  // Sample average of measured rows for the estimate. We always trust the
+  // latest getBoundingClientRect for actual measurements (no per-row cache),
+  // so row content changes — line-clamp toggle, ring/border on click highlight
+  // — propagate immediately and the virtualizer reflows the rows below.
+  const wrapMeasuredSetRef = useRef<Set<number>>(new Set());
   const wrapVirtualizer = useVirtualizer({
     count: entries.length,
     getScrollElement: () => outerRef.current,
@@ -1284,16 +1354,15 @@ const TailTerminal = memo(function TailTerminal({
     measureElement: (el) => {
       const idxAttr = el.getAttribute("data-index");
       const idx = idxAttr != null ? Number(idxAttr) : NaN;
-      const cache = wrapHeightCacheRef.current;
-      if (Number.isFinite(idx) && cache.has(idx)) {
-        return cache.get(idx)!;
-      }
       const h = el.getBoundingClientRect().height;
       if (Number.isFinite(idx)) {
-        cache.set(idx, h);
-        wrapSumRef.current += h;
-        if (cache.size >= 5 && cache.size < 60) {
-          wrapAvgRef.current = wrapSumRef.current / cache.size;
+        const seen = wrapMeasuredSetRef.current;
+        if (!seen.has(idx)) {
+          seen.add(idx);
+          wrapSumRef.current += h;
+          if (seen.size >= 5 && seen.size < 60) {
+            wrapAvgRef.current = wrapSumRef.current / seen.size;
+          }
         }
       }
       return h;
@@ -1338,15 +1407,17 @@ const TailTerminal = memo(function TailTerminal({
     const delta = evictedCount - prevEvictedRef.current;
     prevEvictedRef.current = evictedCount;
     if (delta <= 0) return;
-    // Re-key the wrap-mode per-index height cache.
-    const cache = wrapHeightCacheRef.current;
-    if (cache.size > 0) {
-      const next = new Map<number, number>();
-      for (const [k, v] of cache) {
-        const shifted = k - delta;
-        if (shifted >= 0) next.set(shifted, v);
+    // Re-key the wrap-mode measured-index set so seen indices shift with
+    // evictions. (Heights aren't cached per-row anymore; we only track which
+    // indices have contributed to the average estimate.)
+    const seen = wrapMeasuredSetRef.current;
+    if (seen.size > 0) {
+      const next = new Set<number>();
+      for (const idx of seen) {
+        const shifted = idx - delta;
+        if (shifted >= 0) next.add(shifted);
       }
-      wrapHeightCacheRef.current = next;
+      wrapMeasuredSetRef.current = next;
     }
     if (autoScroll && atBottomRef.current) return; // following tail — separate effect handles scroll
     const el = outerRef.current;
