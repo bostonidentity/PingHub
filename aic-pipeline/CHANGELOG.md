@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6.5] - 2026-05-12
+
+### Fixed
+
+- **Logs → JSON view: scroll-to-selection no longer leaves the viewport pinned at the top.** Two related bugs prevented JSON view from scrolling to the row a user had clicked in terminal/table view when entry counts were large (5k+).
+  1. **Auto-tail race.** The JSON viewer's auto-tail effect was declared before the scroll-to-selection effect, and `atBottomRef` defaulted to `true` on mount. On view switch, auto-tail fired first and called `virtualizer.scrollToIndex(entries.length - 1, { align: "end" })`, immediately yanking the viewport to the end and overriding the scroll-to-selection convergence loop that ran next. Subsequent tail polls kept re-firing auto-tail, never letting selection win. Fix: initialise `atBottomRef` to `false` when a scroll-to-selection request is pending on mount, and gate auto-tail with a new `scrollLoopActiveRef` that the rAF convergence loop sets while in flight.
+  2. **`virtualizer.getOffsetForIndex` returning `0` for far-off unmeasured rows.** With our custom scroll element (we feed react-virtual our internal `virtualOffset` via `observeElementOffset` instead of `el.scrollTop`), `getOffsetForIndex(idx, "center")` returned `[0, ...]` for rows millions of pixels down, so `if (got) target = got[0]` pinned the convergence loop at offset 0 until it bailed on stable. Fix: drop the `getOffsetForIndex` call entirely in the convergence loop and always proportional-jump (`(idx / count) * max`) when the row is not yet in the DOM; the precise `rowRect`-based path takes over once measurements come in.
+- **Logs → JSON view: scrolling near the middle no longer blanks the viewport.** With 50k+ entries and totalSize > 30M px, the previous renderer translated the whole row container by `translateY(-virtualOffset)` and then positioned each row at `translateY(vi.start)`. Browser compositors use float32 for transform offsets and start clipping / blanking once values cross ~16M (2^24, the float32 integer-precision threshold). Fix: remove the parent translate entirely and position each item with `top: vi.start - virtualOffset`, which always stays within ±viewport regardless of scroll position. The large `totalSize` now lives only in JS (scrollbar math), never in the DOM.
+
 ## [0.2.6.4] - 2026-05-11
 
 ### Added

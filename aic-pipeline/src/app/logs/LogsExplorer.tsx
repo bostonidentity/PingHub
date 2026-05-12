@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useRef, Fragment, startTransition, useDeferredValue, useCallback, useMemo, memo, createContext, useContext } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, Fragment, startTransition, useDeferredValue, useCallback, useMemo, memo, createContext, useContext, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Environment } from "@/lib/fr-config-types";
 import { EnvironmentBadge } from "@/components/EnvironmentBadge";
@@ -8,6 +9,7 @@ import { useDialog } from "@/components/ConfirmDialog";
 import { cn } from "@/lib/utils";
 import { logEntryMatchKey } from "@/lib/log-match-navigation";
 import { parseQuery } from "@/lib/log-query";
+import { useBusyState } from "@/hooks/useBusyState";
 
 // ── Timezone ──────────────────────────────────────────────────────────────────
 
@@ -146,12 +148,16 @@ const TRANSACTION_SOURCES = [
 
 // ── Tab config (shared between parent controls and tab content) ──────────────
 
-type LogMode = "tail" | "search";
-type Preset = "15m" | "1h" | "6h" | "24h" | "3d" | "5d" | "7d" | "30d" | "custom";
+type LogMode = "tail" | "search" | "transaction";
+type Preset = "15m" | "1h" | "2h" | "3h" | "4h" | "5h" | "6h" | "24h" | "3d" | "5d" | "7d" | "30d" | "custom";
 
 const PRESETS: { label: string; value: Preset; ms: number }[] = [
   { label: "15 min", value: "15m", ms: 15 * 60 * 1000 },
   { label: "1 hour", value: "1h", ms: 60 * 60 * 1000 },
+  { label: "2 hours", value: "2h", ms: 2 * 60 * 60 * 1000 },
+  { label: "3 hours", value: "3h", ms: 3 * 60 * 60 * 1000 },
+  { label: "4 hours", value: "4h", ms: 4 * 60 * 60 * 1000 },
+  { label: "5 hours", value: "5h", ms: 5 * 60 * 60 * 1000 },
   { label: "6 hours", value: "6h", ms: 6 * 60 * 60 * 1000 },
   { label: "24 hours", value: "24h", ms: 24 * 60 * 60 * 1000 },
   { label: "3 days", value: "3d", ms: 3 * 24 * 60 * 60 * 1000 },
@@ -165,6 +171,22 @@ const LOG_SOURCES = ["am-everything", "idm-everything"] as const;
 
 const TERMINAL_ROW_H = 20;     // px — fixed height per row (nowrap lines)
 const TERMINAL_OVERSCAN = 15;    // extra rows rendered above/below viewport
+// Browsers enforce a minimum scrollbar thumb size (~16-20px). When content is
+// so tall that the natural thumb size (clientHeight^2 / scrollHeight) falls
+// below this minimum, the cursor-to-thumb mapping becomes non-linear: the
+// browser shrinks the thumb to the minimum, so dragging the cursor through
+// the full track no longer corresponds to traversing the full scroll range
+// proportionally — the thumb visibly drifts away from the cursor.
+//
+// To keep the mapping LINEAR (so the thumb tracks the cursor pixel-perfect),
+// we cap nowrap scrollHeight so the natural thumb size never falls below
+// this minimum. Above the cap we scale-map scrollTop -> virtual row position
+// and translate the rendered row group manually.
+const NOWRAP_MIN_THUMB_H = 40; // safe margin above browser minimum
+function computeNowrapScrollCap(clientH: number): number {
+  // thumb_h = clientH^2 / scrollH; require thumb_h >= NOWRAP_MIN_THUMB_H
+  return Math.max(clientH + 1, Math.floor((clientH * clientH) / NOWRAP_MIN_THUMB_H));
+}
 
 
 
@@ -209,6 +231,11 @@ export interface TabConfig {
   searchSeq: number;
   /** True while search is auto-paginating through server pages */
   searching: boolean;
+  // Transaction mode
+  /** Transaction ID input value (per-tab). */
+  txQuery?: string;
+  /** Incremented to trigger a transaction trace fetch. */
+  txSeq?: number;
   // View prefs (persisted per tab)
   viewMode?: "terminal" | "table" | "json";
   /** @deprecated — use viewMode. Retained so old persisted tabs still open on the right view. */
@@ -495,6 +522,131 @@ function findJsonStart(s: string): number {
   return -1;
 }
 
+/**
+ * ScrollbarOverlay — visually consistent custom vertical scrollbar that
+ * mirrors and drives a native scroll container's scrollTop. Renders via
+ * portal in fixed positioning so it doesn't fight parent stacking contexts
+ * or get clipped by the container's `overflow`. Pair with the
+ * `scrollbar-hidden` CSS class on the container to suppress the native bar.
+ */
+function ScrollbarOverlay({ containerRef }: { containerRef: RefObject<HTMLElement | null> }) {
+  const [layout, setLayout] = useState<{
+    top: number; height: number; left: number;
+    st: number; sh: number; ch: number;
+  } | null>(null);
+  const dragRef = useRef<{ startY: number; startTop: number; travel: number; scrollable: number } | null>(null);
+
+  const measure = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setLayout((prev) => {
+      const next = {
+        top: r.top, height: r.height, left: r.right,
+        st: el.scrollTop, sh: el.scrollHeight, ch: el.clientHeight,
+      };
+      if (
+        prev &&
+        prev.top === next.top && prev.height === next.height && prev.left === next.left &&
+        prev.st === next.st && prev.sh === next.sh && prev.ch === next.ch
+      ) return prev;
+      return next;
+    });
+  }, [containerRef]);
+
+  // Initial + listeners.
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    measure();
+    const onScroll = () => measure();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    window.addEventListener("resize", measure);
+    // Capture any ancestor scroll so our fixed position stays correct.
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [containerRef, measure]);
+
+  // Re-measure after every render of the parent (catches content height changes).
+  useLayoutEffect(() => { measure(); });
+
+  if (!layout) return null;
+  const scrollable = Math.max(0, layout.sh - layout.ch);
+  if (scrollable <= 0 || layout.height <= 0) return null;
+
+  const trackH = layout.ch;
+  const thumbH = Math.max(24, Math.min(trackH, (layout.ch / layout.sh) * trackH));
+  const thumbTravel = Math.max(1, trackH - thumbH);
+  const thumbTop = (layout.st / scrollable) * thumbTravel;
+
+  const onThumbPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const el = containerRef.current;
+    if (!el) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    const sc = Math.max(0, el.scrollHeight - el.clientHeight);
+    const travel = Math.max(1, el.clientHeight - thumbH);
+    dragRef.current = { startY: e.clientY, startTop: el.scrollTop, travel, scrollable: sc };
+  };
+  const onThumbPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const el = containerRef.current;
+    if (!el) return;
+    const next = d.startTop + (e.clientY - d.startY) * (d.scrollable / d.travel);
+    el.scrollTop = Math.min(d.scrollable, Math.max(0, next));
+  };
+  const onThumbPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    dragRef.current = null;
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+  };
+  const onTrackPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return; // ignore clicks on the thumb
+    const el = containerRef.current;
+    if (!el) return;
+    const trackTop = (e.currentTarget as HTMLElement).getBoundingClientRect().top;
+    const clickY = e.clientY - trackTop;
+    const page = el.clientHeight * 0.9;
+    const sc = Math.max(0, el.scrollHeight - el.clientHeight);
+    el.scrollTop = Math.min(sc, Math.max(0, el.scrollTop + (clickY < thumbTop ? -page : page)));
+  };
+
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      onPointerDown={onTrackPointerDown}
+      className="bg-slate-100/40 hover:bg-slate-100/70 transition-colors"
+      style={{
+        position: "fixed",
+        top: layout.top, height: layout.height,
+        left: layout.left,
+        width: 12,
+        zIndex: 50,
+        touchAction: "none",
+        pointerEvents: "auto",
+      }}
+    >
+      <div
+        onPointerDown={onThumbPointerDown}
+        onPointerMove={onThumbPointerMove}
+        onPointerUp={onThumbPointerUp}
+        onPointerCancel={onThumbPointerUp}
+        className="absolute left-0.5 right-0.5 rounded bg-slate-400/70 hover:bg-slate-500/80 active:bg-slate-600 cursor-grab active:cursor-grabbing"
+        style={{ top: thumbTop, height: thumbH, touchAction: "none" }}
+      />
+    </div>,
+    document.body,
+  );
+}
+
 function JsonLogView({
   entries,
   wrapLines = false,
@@ -505,7 +657,12 @@ function JsonLogView({
   matchCase = false,
   wholeWord = false,
   onEntryDoubleClick,
+  onEntryClick,
   contextAnchorIdx = -1,
+  selectedEntryIdx = null,
+  selectedScrollRequest = null,
+  autoScroll = true,
+  evictedCount = 0,
 }: {
   entries: LogEntry[];
   wrapLines?: boolean;
@@ -516,7 +673,17 @@ function JsonLogView({
   matchCase?: boolean;
   wholeWord?: boolean;
   onEntryDoubleClick?: (idx: number) => void;
+  onEntryClick?: (idx: number) => void;
   contextAnchorIdx?: number;
+  /** Entry index currently selected by user click (sky highlight, distinct from match-amber). */
+  selectedEntryIdx?: number | null;
+  /** Bumped to (re)scroll to selectedEntryIdx — e.g. on view-mode switch. */
+  selectedScrollRequest?: { index: number; nonce: number } | null;
+  /** When true and the user is pinned to the bottom, follow new entries on tail. */
+  autoScroll?: boolean;
+  /** Cumulative count of entries evicted from the front of the parent buffer. Used
+   *  to keep the viewport visually stable when autoScroll is off. */
+  evictedCount?: number;
 }) {
   // Per-entry pretty-printed JSON, cached by entry reference so we never
   // re-stringify the same entry twice (scrolling, re-renders, tail appends).
@@ -606,17 +773,169 @@ function JsonLogView({
   // Variable-height virtualizer over the full entry list. Only rows in the
   // viewport (+ overscan) are mounted, so cost is O(visible) regardless of
   // total entry count.
+  //
+  // Scroll model: CUSTOM. We hide the native scrollbar (overflow: hidden) and
+  // drive react-virtual via an internal `virtualOffset` state. A custom thumb
+  // widget on the right edge handles pointer drag, the wheel handler adds
+  // deltaY directly to the offset, and keyboard nav (PgUp/PgDn/Home/End)
+  // pages through the offset. This avoids browser scrollbar pathologies at
+  // very large `scrollHeight` (sub-pixel thumb, non-linear drag, scrollTop
+  // precision loss) — everything is in our coordinate space.
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [virtualOffset, setVirtualOffset] = useState(0);
+  const virtualOffsetRef = useRef(0);
+  const [viewportH, setViewportH] = useState(600);
+  // React-virtual's offset observer callback. We hold a ref so we can push
+  // updates whenever our internal offset changes.
+  const offsetCbRef = useRef<((offset: number, isScrolling: boolean) => void) | null>(null);
+  const isScrollingTimeoutRef = useRef<number | null>(null);
+  const applyVirtualOffset = useCallback((next: number) => {
+    // Clamp into the valid range. Without an upper clamp, programmatic scrolls
+    // computed from stale row-size estimates (e.g. scrollToIndex on first
+    // mount when avgRowHeightRef is still the initial guess) can land at an
+    // offset far beyond totalSize, translating the row layer entirely
+    // offscreen — the target row then never mounts, never gets measured, and
+    // retries can't converge. Upper clamp keeps offset within actual content.
+    const total = totalSizeRef.current;
+    const max = Math.max(0, total - viewportH);
+    const clamped = total > 0 ? Math.min(max, Math.max(0, next)) : Math.max(0, next);
+    virtualOffsetRef.current = clamped;
+    setVirtualOffset(clamped);
+    // Notify react-virtual of the new offset. Deferred via microtask because
+    // react-virtual calls flushSync internally; calling synchronously from
+    // here can land during a render commit phase (e.g. when scrollToFn is
+    // invoked from an effect cascading off a render), which React forbids.
+    queueMicrotask(() => { offsetCbRef.current?.(clamped, true); });
+    if (isScrollingTimeoutRef.current) window.clearTimeout(isScrollingTimeoutRef.current);
+    isScrollingTimeoutRef.current = window.setTimeout(() => {
+      offsetCbRef.current?.(virtualOffsetRef.current, false);
+    }, 150);
+  }, [viewportH]);
+  // Per-index height cache + running average estimate. We sample each row's
+  // height the first time it mounts, then lock both the per-row cache and
+  // the estimate so subsequent renders cannot shift totalSize. This keeps
+  // the scrollbar thumb glued to the cursor through long drags.
+  //
+  // Without this, react-virtual will:
+  //   1. estimate every unmeasured row at a guess (e.g. 240px),
+  //   2. update size as each row mounts (delta = real - estimate),
+  //   3. update size *again* when row content changes (highlight rings
+  //      add 1-2px to height), which keeps shifting totalSize even when
+  //      the user has stopped tailing.
+  // The combined drift makes the scrollbar lag behind the cursor.
+  const ESTIMATE_LOCK_AFTER = 40;
+  const avgRowHeightRef = useRef(JSON_VIEW_ROW_ESTIMATE);
+  const measuredSumRef = useRef(0);
+  const estimateLockedRef = useRef(false);
+  // Per-index cached height; once an entry is measured once we keep that
+  // height forever (until wrap mode flips), even if the rendered row's
+  // actual height jitters by a few pixels due to highlight rings.
+  const heightCacheRef = useRef<Map<number, number>>(new Map());
   const virtualizer = useVirtualizer({
     count: entries.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => JSON_VIEW_ROW_ESTIMATE,
-    measureElement: (el) => el.getBoundingClientRect().height,
+    estimateSize: () => avgRowHeightRef.current,
+    measureElement: (el) => {
+      const idxAttr = el.getAttribute("data-index");
+      const idx = idxAttr != null ? Number(idxAttr) : NaN;
+      const cache = heightCacheRef.current;
+      if (Number.isFinite(idx) && cache.has(idx)) {
+        // Stable: never let row content changes (rings, highlights) re-measure.
+        return cache.get(idx)!;
+      }
+      const h = el.getBoundingClientRect().height;
+      if (Number.isFinite(idx)) cache.set(idx, h);
+      if (!estimateLockedRef.current) {
+        measuredSumRef.current += h;
+        const n = cache.size;
+        if (n >= 5) {
+          avgRowHeightRef.current = measuredSumRef.current / n;
+        }
+        if (n >= ESTIMATE_LOCK_AFTER) {
+          estimateLockedRef.current = true;
+        }
+      }
+      return h;
+    },
     overscan: JSON_VIEW_OVERSCAN,
+    // Feed react-virtual our internal offset instead of el.scrollTop.
+    observeElementOffset: (_inst, cb) => {
+      offsetCbRef.current = cb;
+      // Defer the initial push outside the virtualizer's commit phase
+      // (flushSync forbidden there).
+      queueMicrotask(() => { cb(virtualOffsetRef.current, false); });
+      return () => { offsetCbRef.current = null; };
+    },
+    // Programmatic scrolls (scrollToIndex) deliver a target offset; apply it
+    // to our state instead of el.scrollTop.
+    scrollToFn: (offset) => {
+      applyVirtualOffset(offset);
+    },
   });
 
-  // Reset measured sizes when wrap mode changes (heights will differ).
-  useEffect(() => { virtualizer.measure(); }, [wrapLines, virtualizer]);
+  // Reset measurement samples + average when wrap mode changes (heights differ).
+  useEffect(() => {
+    heightCacheRef.current = new Map();
+    measuredSumRef.current = 0;
+    estimateLockedRef.current = false;
+    avgRowHeightRef.current = JSON_VIEW_ROW_ESTIMATE;
+    virtualizer.measure();
+  }, [wrapLines, virtualizer]);
+
+  // Track whether the user is pinned to the bottom of the JSON view. Auto-tail
+  // and eviction compensation behave differently depending on this.
+  //
+  // On initial mount, when there's a pending scroll-to-selection request
+  // (e.g. user clicked a row in another view then switched to JSON), start
+  // NOT at bottom — otherwise the auto-tail effect (which fires before our
+  // scroll-to-selection effect because it's declared first) would
+  // immediately yank the viewport to the end, fighting our convergence loop.
+  const atBottomRef = useRef(selectedScrollRequest == null);
+  // Total content size — refreshed each render via virtualizer.getTotalSize()
+  // below in JSX. We snapshot into a ref so handlers can read it.
+  const totalSizeRef = useRef(0);
+  // Forward-declared flag set by the scroll-to-selection rAF loop (below).
+  // The auto-tail effect reads this to skip while a convergence loop is in
+  // flight so the two animations don't compete.
+  const scrollLoopActiveRef = useRef(false);
+  const updateAtBottom = useCallback(() => {
+    const total = totalSizeRef.current;
+    const max = Math.max(0, total - viewportH);
+    atBottomRef.current = max - virtualOffsetRef.current < 60;
+  }, [viewportH]);
+
+  // Auto-tail: when pinned to bottom and autoScroll is on, follow new entries.
+  // Skipped while a scroll-to-selection loop is in flight so the two
+  // animations don't compete.
+  useEffect(() => {
+    if (!autoScroll || !atBottomRef.current) return;
+    if (entries.length === 0) return;
+    if (scrollLoopActiveRef.current) return;
+    virtualizer.scrollToIndex(entries.length - 1, { align: "end" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries.length, autoScroll]);
+
+  // Stabilize viewport when buffer evicts from the front. Without this, every
+  // eviction shifts every row's index, so the same offset now reveals
+  // different content ("jiggle"). Compensate by subtracting the approximate
+  // height of evicted rows from the offset so the user's anchor stays put.
+  const prevEvictedRef = useRef(evictedCount);
+  useEffect(() => {
+    const delta = evictedCount - prevEvictedRef.current;
+    prevEvictedRef.current = evictedCount;
+    if (delta <= 0) return;
+    const cache = heightCacheRef.current;
+    if (cache.size > 0) {
+      const next = new Map<number, number>();
+      for (const [k, v] of cache) {
+        const shifted = k - delta;
+        if (shifted >= 0) next.set(shifted, v);
+      }
+      heightCacheRef.current = next;
+    }
+    if (autoScroll && atBottomRef.current) return; // following tail
+    applyVirtualOffset(virtualOffsetRef.current - delta * avgRowHeightRef.current);
+  }, [evictedCount, autoScroll, entries.length, applyVirtualOffset]);
 
   // Scroll to the active match when it changes.
   useEffect(() => {
@@ -625,8 +944,201 @@ function JsonLogView({
     }
   }, [activeEntryIdx, entries.length, virtualizer]);
 
+  // Scroll to the selected entry on demand (initial click + view-mode switch).
+  //
+  // With huge entry counts (70k+) convergence by render-counting is fragile
+  // because cascading state updates (auto-clamp, atBottom recompute) burn
+  // through the attempt budget before the loop actually iterates. We drive
+  // the loop explicitly via requestAnimationFrame:
+  //  - Each frame, if target row is in DOM, measure its viewport position
+  //    and adjust virtualOffset by the pixel delta from viewport center.
+  //  - If not in DOM, ask react-virtual for the target's offset given
+  //    current per-row measurements; fall back to a proportional jump.
+  //  - Terminate when row is centered within 2px or after 30 frames cap.
+  const selectedNonce = selectedScrollRequest?.nonce;
+  const selectedIdx = selectedScrollRequest?.index;
+  const scrollLoopRef = useRef<{ frame: number | null; cancelled: boolean }>({ frame: null, cancelled: false });
+  useEffect(() => {
+    if (selectedIdx == null || selectedIdx < 0 || selectedIdx >= entries.length) {
+      return;
+    }
+    // Cancel any in-flight loop.
+    if (scrollLoopRef.current.frame != null) cancelAnimationFrame(scrollLoopRef.current.frame);
+    scrollLoopRef.current.cancelled = true;
+    const state = { frame: null as number | null, cancelled: false };
+    scrollLoopRef.current = state;
+    scrollLoopActiveRef.current = true;
+    // Lock auto-tail off while we converge.
+    atBottomRef.current = false;
+    const targetIdx = selectedIdx;
+    let attempts = 0;
+    let stable = 0;
+    let lastOffset = -1;
+    const finish = () => {
+      scrollLoopActiveRef.current = false;
+    };
+    const step = () => {
+      if (state.cancelled) { finish(); return; }
+      if (attempts >= 30) { finish(); return; }
+      attempts += 1;
+      const scrollEl = scrollRef.current;
+      if (!scrollEl) {
+        state.frame = requestAnimationFrame(step);
+        return;
+      }
+      const viewport = scrollEl.clientHeight;
+      const rowEl = scrollEl.querySelector<HTMLElement>(`[data-entry-idx="${targetIdx}"]`);
+      if (rowEl) {
+        const containerRect = scrollEl.getBoundingClientRect();
+        const rowRect = rowEl.getBoundingClientRect();
+        const rowCenter = rowRect.top - containerRect.top + rowRect.height / 2;
+        const delta = rowCenter - viewport / 2;
+        if (Math.abs(delta) < 2) { finish(); return; } // converged
+        applyVirtualOffset(virtualOffsetRef.current + delta);
+      } else {
+        // Row not in DOM yet. Jump proportionally so the virtualizer will
+        // measure the rows around the target on the next render; once the
+        // row exists in the DOM, the precise rowRect path above takes over.
+        //
+        // We do NOT trust `virtualizer.getOffsetForIndex(idx, "center")`
+        // here: with a custom scroll element it can return 0 for far-off
+        // unmeasured rows (observed in production with 5k+ entries), which
+        // would pin us at offset 0 forever.
+        const ratio = targetIdx / Math.max(1, entries.length - 1);
+        const max = Math.max(0, totalSizeRef.current - viewport);
+        const target = ratio * max;
+        const clamped = Math.min(max, Math.max(0, target));
+        // Bail if offset isn't changing — measurements aren't producing
+        // a better target and the row still isn't visible.
+        if (Math.abs(clamped - lastOffset) < 1) {
+          stable += 1;
+          if (stable > 4) { finish(); return; }
+        } else {
+          stable = 0;
+        }
+        lastOffset = clamped;
+        applyVirtualOffset(clamped);
+      }
+      state.frame = requestAnimationFrame(step);
+    };
+    state.frame = requestAnimationFrame(step);
+    return () => {
+      state.cancelled = true;
+      scrollLoopActiveRef.current = false;
+      if (state.frame != null) cancelAnimationFrame(state.frame);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedNonce]);
+
   const items = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
+  totalSizeRef.current = totalSize;
+  // Re-check atBottom whenever offset, viewport or total changes. Also
+  // re-clamp the virtual offset when totalSize shrinks (e.g. after initial
+  // row measurements come in much smaller than the estimate) so we can't
+  // get stuck past the end of the content.
+  useEffect(() => {
+    const max = Math.max(0, totalSize - viewportH);
+    if (virtualOffsetRef.current > max) {
+      applyVirtualOffset(max);
+    }
+    updateAtBottom();
+  }, [virtualOffset, totalSize, viewportH, updateAtBottom, applyVirtualOffset]);
+
+  // Track scroll container size (clientHeight) — needed for thumb sizing,
+  // wheel, page nav, and atBottom calculation. ResizeObserver keeps it live.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setViewportH(el.clientHeight);
+    const ro = new ResizeObserver(() => {
+      const h = el.clientHeight;
+      if (h > 0) setViewportH(h);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // ── Custom scrollbar geometry ──
+  const SCROLLBAR_MIN_THUMB = 24;
+  const scrollable = Math.max(0, totalSize - viewportH);
+  const trackH = viewportH;
+  const thumbH = scrollable > 0
+    ? Math.max(SCROLLBAR_MIN_THUMB, Math.min(trackH, (viewportH / totalSize) * trackH))
+    : 0;
+  const thumbTravel = Math.max(1, trackH - thumbH);
+  const thumbTop = scrollable > 0 ? (virtualOffset / scrollable) * thumbTravel : 0;
+
+  // ── Input handlers ──
+  // Wheel: add deltaY directly to virtual offset.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      let dy = e.deltaY;
+      if (e.deltaMode === 1) dy *= avgRowHeightRef.current;
+      else if (e.deltaMode === 2) dy *= viewportH;
+      const max = Math.max(0, totalSizeRef.current - viewportH);
+      applyVirtualOffset(Math.min(max, virtualOffsetRef.current + dy));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [viewportH, applyVirtualOffset]);
+
+  // Keyboard nav when focused.
+  const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    const max = Math.max(0, totalSizeRef.current - viewportH);
+    const page = viewportH * 0.9;
+    const row = avgRowHeightRef.current;
+    let next = virtualOffsetRef.current;
+    switch (e.key) {
+      case "PageDown": next += page; break;
+      case "PageUp": next -= page; break;
+      case "Home": next = 0; break;
+      case "End": next = max; break;
+      case "ArrowDown": next += row; break;
+      case "ArrowUp": next -= row; break;
+      default: return;
+    }
+    e.preventDefault();
+    applyVirtualOffset(Math.min(max, Math.max(0, next)));
+  }, [viewportH, applyVirtualOffset]);
+
+  // Thumb pointer drag.
+  const dragStateRef = useRef<{ startY: number; startOffset: number } | null>(null);
+  const onThumbPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    dragStateRef.current = { startY: e.clientY, startOffset: virtualOffsetRef.current };
+  }, []);
+  const onThumbPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragStateRef.current;
+    if (!drag) return;
+    const dy = e.clientY - drag.startY;
+    const scrollableNow = Math.max(0, totalSizeRef.current - viewportH);
+    const travel = Math.max(1, trackH - thumbH);
+    const next = drag.startOffset + (dy / travel) * scrollableNow;
+    applyVirtualOffset(Math.min(scrollableNow, Math.max(0, next)));
+  }, [trackH, thumbH, viewportH, applyVirtualOffset]);
+  const onThumbPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    dragStateRef.current = null;
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+  }, []);
+
+  // Click on the track (outside the thumb) — page up/down.
+  const onTrackPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return; // ignore clicks on the thumb
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clickY = e.clientY - rect.top;
+    const max = Math.max(0, totalSizeRef.current - viewportH);
+    const page = viewportH * 0.9;
+    const next = clickY < thumbTop
+      ? virtualOffsetRef.current - page
+      : virtualOffsetRef.current + page;
+    applyVirtualOffset(Math.min(max, Math.max(0, next)));
+  }, [thumbTop, viewportH, applyVirtualOffset]);
+
   const copyLabel =
     copyState.phase === "building" ? `Copying… ${copyState.pct}%` :
       copyState.phase === "done" ? "Copied" : "Copy JSON";
@@ -644,46 +1156,80 @@ function JsonLogView({
       </button>
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto overflow-x-auto"
+        tabIndex={0}
+        onKeyDown={onKeyDown}
+        className="flex-1 overflow-hidden relative outline-none"
       >
         <div
           className={cn(
-            "p-4 pt-2 font-mono text-[12px] leading-5 text-slate-700 relative",
+            "p-4 pt-2 font-mono text-[12px] leading-5 text-slate-700 absolute inset-0",
             wrapLines ? "whitespace-pre-wrap break-all" : "whitespace-pre",
+            "overflow-x-auto overflow-y-hidden",
           )}
-          style={{ height: totalSize, width: "100%" }}
+          style={{ willChange: "transform" }}
         >
-          {items.map((vi) => {
-            const i = vi.index;
-            const entry = entries[i];
-            if (!entry) return null;
-            const etxt = getEntryText(entry);
-            const isMatch = matchSet.has(i);
-            const isActive = i === activeEntryIdx;
-            const isCtxAnchor = i === contextAnchorIdx;
-            const isLast = i === entries.length - 1;
-            return (
-              <div
-                key={vi.key}
-                ref={virtualizer.measureElement}
-                data-index={i}
-                data-entry-idx={i}
-                onDoubleClick={() => onEntryDoubleClick?.(i)}
-                className={cn(
-                  "absolute left-0 right-0 px-4",
-                  isActive && "bg-amber-50 ring-1 ring-inset ring-amber-300 rounded",
-                  isMatch && !isActive && "bg-yellow-50/60",
-                  isCtxAnchor && !isActive && "bg-violet-50 ring-1 ring-inset ring-violet-300 rounded",
-                )}
-                style={{ transform: `translateY(${vi.start}px)` }}
-              >
-                {i === 0 ? "[\n" : null}
-                {isMatch ? highlightText(etxt, isActive) : etxt}
-                {isLast ? "\n]" : ","}
-              </div>
-            );
-          })}
+          <div style={{ position: "relative", height: "100%" }}>
+            {items.map((vi) => {
+              const i = vi.index;
+              const entry = entries[i];
+              if (!entry) return null;
+              const etxt = getEntryText(entry);
+              const isMatch = matchSet.has(i);
+              const isActive = i === activeEntryIdx;
+              const isSelected = i === selectedEntryIdx;
+              const isCtxAnchor = i === contextAnchorIdx;
+              const isLast = i === entries.length - 1;
+              // Position each item directly at `vi.start - virtualOffset`
+              // (always a small number near the viewport) instead of
+              // translating a giant parent by `-virtualOffset`. At
+              // 50k+ entries the totalSize can exceed 30M px; browser
+              // compositors use float32 for transforms and start
+              // clipping / blanking once offsets cross ~16M (2^24).
+              // Per-item `top` values stay within ±viewport regardless
+              // of scroll position, so we never hit that limit.
+              const top = vi.start - virtualOffset;
+              return (
+                <div
+                  key={vi.key}
+                  ref={virtualizer.measureElement}
+                  data-index={i}
+                  data-entry-idx={i}
+                  onClick={() => onEntryClick?.(i)}
+                  onDoubleClick={() => onEntryDoubleClick?.(i)}
+                  className={cn(
+                    "absolute left-0 right-3 px-4 cursor-pointer",
+                    isActive && "bg-amber-50 ring-1 ring-inset ring-amber-300 rounded",
+                    !isActive && isSelected && "bg-sky-50 ring-1 ring-inset ring-sky-400 rounded",
+                    isMatch && !isActive && !isSelected && "bg-yellow-50/60",
+                    isCtxAnchor && !isActive && !isSelected && "bg-violet-50 ring-1 ring-inset ring-violet-300 rounded",
+                  )}
+                  style={{ top }}
+                >
+                  {i === 0 ? "[\n" : null}
+                  {isMatch ? highlightText(etxt, isActive) : etxt}
+                  {isLast ? "\n]" : ","}
+                </div>
+              );
+            })}
+          </div>
         </div>
+        {/* Custom scrollbar overlay */}
+        {scrollable > 0 && (
+          <div
+            onPointerDown={onTrackPointerDown}
+            className="absolute top-0 right-0 bottom-0 w-3 bg-slate-100/40 hover:bg-slate-100/70 transition-colors"
+            style={{ touchAction: "none" }}
+          >
+            <div
+              onPointerDown={onThumbPointerDown}
+              onPointerMove={onThumbPointerMove}
+              onPointerUp={onThumbPointerUp}
+              onPointerCancel={onThumbPointerUp}
+              className="absolute left-0.5 right-0.5 rounded bg-slate-400/70 hover:bg-slate-500/80 active:bg-slate-600 cursor-grab active:cursor-grabbing"
+              style={{ top: thumbTop, height: thumbH, touchAction: "none" }}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -726,8 +1272,9 @@ function terminalMsgClass(level: string): string {
 const TailTerminal = memo(function TailTerminal({
   entries, defaultSource, searchTerm, keywords, wrapLines = false,
   scrollRequest = null, activeMatchIndex = null, matchCase = false, wholeWord = false,
-  dupeCounts, autoScroll = true, onEntryDoubleClick, contextAnchorIdx = null,
-  expandCommand = null, matchIndices = null, filterActive = false,
+  dupeCounts, autoScroll = true, onEntryDoubleClick, onEntryClick, contextAnchorIdx = null,
+  expandCommand = null, matchIndices = null, filterActive = false, selectedEntryIdx = null,
+  evictedCount = 0,
 }: {
   entries: LogEntry[];
   defaultSource: string;
@@ -741,6 +1288,7 @@ const TailTerminal = memo(function TailTerminal({
   wholeWord?: boolean;
   autoScroll?: boolean;
   onEntryDoubleClick?: (idx: number) => void;
+  onEntryClick?: (idx: number) => void;
   contextAnchorIdx?: number | null;
   /** Bulk expand/collapse signal from parent. Bumped via nonce to retrigger. */
   expandCommand?: { kind: "all" | "none"; nonce: number } | null;
@@ -748,6 +1296,12 @@ const TailTerminal = memo(function TailTerminal({
   matchIndices?: number[] | null;
   /** Whether the parent Filter is active. When true, every visible row matches → expand all. */
   filterActive?: boolean;
+  /** Entry index currently selected by user click (sky highlight, distinct from match-amber). */
+  selectedEntryIdx?: number | null;
+  /** Cumulative count of entries evicted from the front of the parent buffer. Used
+   *  to keep the viewport visually stable when autoScroll is off and the circular
+   *  buffer trims the oldest entries during tailing. */
+  evictedCount?: number;
 }) {
   const outerRef = useRef<HTMLDivElement>(null);
   const [viewH, setViewH] = useState(400);
@@ -757,6 +1311,10 @@ const TailTerminal = memo(function TailTerminal({
   // on every scroll pixel.  Raw scrollTop is kept in a ref.
   const scrollTopRef = useRef(0);
   const [startIdx, setStartIdx] = useState(0);
+  // Ref to the absolutely-positioned row group inside the nowrap container.
+  // We translate it via DOM (no re-render) so the rendered rows stay glued to
+  // the viewport even when the scroll surface is scaled to cap scrollHeight.
+  const nowrapGroupRef = useRef<HTMLDivElement>(null);
   // Timestamp of the most recent programmatic scroll (auto-tail, match-nav).
   // handleScroll skips its at-bottom flip for ~400ms after that so the
   // programmatic scroll's cascade of scroll events doesn't flip auto-tail
@@ -828,15 +1386,53 @@ const TailTerminal = memo(function TailTerminal({
     return () => ro.disconnect();
   }, []);
 
-  // Variable-height virtualizer for wrap mode
+  // Variable-height virtualizer for wrap mode. Running-average estimateSize +
+  // per-index height freeze keeps scrollHeight stable so the scrollbar thumb
+  // tracks the cursor while dragging instead of falling behind as rows mount
+  // and re-measure.
+  const wrapAvgRef = useRef(32);
+  const wrapSumRef = useRef(0);
+  // Sample average of measured rows for the estimate. We always trust the
+  // latest getBoundingClientRect for actual measurements (no per-row cache),
+  // so row content changes — line-clamp toggle, ring/border on click highlight
+  // — propagate immediately and the virtualizer reflows the rows below.
+  const wrapMeasuredSetRef = useRef<Set<number>>(new Set());
   const wrapVirtualizer = useVirtualizer({
     count: entries.length,
     getScrollElement: () => outerRef.current,
-    estimateSize: () => 32, // rough estimate; actual heights measured by measureElement
-    measureElement: (el) => el.getBoundingClientRect().height,
+    estimateSize: () => wrapAvgRef.current,
+    measureElement: (el) => {
+      const idxAttr = el.getAttribute("data-index");
+      const idx = idxAttr != null ? Number(idxAttr) : NaN;
+      const h = el.getBoundingClientRect().height;
+      if (Number.isFinite(idx)) {
+        const seen = wrapMeasuredSetRef.current;
+        if (!seen.has(idx)) {
+          seen.add(idx);
+          wrapSumRef.current += h;
+          if (seen.size >= 5 && seen.size < 60) {
+            wrapAvgRef.current = wrapSumRef.current / seen.size;
+          }
+        }
+      }
+      return h;
+    },
     overscan: TERMINAL_OVERSCAN,
     enabled: wrapLines,
   });
+
+  // Helper: convert virtual scroll position (in row-pixel space) to actual
+  // scrollTop pixels accounting for nowrap scrollHeight capping.
+  const virtualToActualScrollTop = useCallback((virtual: number) => {
+    const el = outerRef.current;
+    if (!el) return virtual;
+    const intrinsicH = entries.length * TERMINAL_ROW_H;
+    const cap = computeNowrapScrollCap(el.clientHeight);
+    if (intrinsicH <= cap) return virtual;
+    const intrinsicScroll = Math.max(1, intrinsicH - el.clientHeight);
+    const actualScroll = Math.max(1, cap - el.clientHeight);
+    return Math.max(0, (virtual / intrinsicScroll) * actualScroll);
+  }, [entries.length]);
 
   // Auto-scroll to bottom when new entries arrive
   useEffect(() => {
@@ -850,6 +1446,45 @@ const TailTerminal = memo(function TailTerminal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries.length, wrapLines, autoScroll]);
 
+  // Stabilize viewport when buffer evicts from the front. When autoScroll is
+  // off (or the user has scrolled away from bottom), every front-eviction
+  // shifts every row up by N indices. Without compensation the same scrollTop
+  // now reveals different content — that's the "jiggle". We subtract the
+  // dropped row height from scrollTop so the rows the user is looking at stay
+  // anchored on screen.
+  const prevEvictedRef = useRef(evictedCount);
+  useEffect(() => {
+    const delta = evictedCount - prevEvictedRef.current;
+    prevEvictedRef.current = evictedCount;
+    if (delta <= 0) return;
+    // Re-key the wrap-mode measured-index set so seen indices shift with
+    // evictions. (Heights aren't cached per-row anymore; we only track which
+    // indices have contributed to the average estimate.)
+    const seen = wrapMeasuredSetRef.current;
+    if (seen.size > 0) {
+      const next = new Set<number>();
+      for (const idx of seen) {
+        const shifted = idx - delta;
+        if (shifted >= 0) next.add(shifted);
+      }
+      wrapMeasuredSetRef.current = next;
+    }
+    if (autoScroll && atBottomRef.current) return; // following tail — separate effect handles scroll
+    const el = outerRef.current;
+    if (!el) return;
+    lastProgrammaticScrollRef.current = Date.now();
+    if (wrapLines) {
+      el.scrollTop = Math.max(0, el.scrollTop - delta * wrapAvgRef.current);
+    } else {
+      // Translate the equivalent virtual delta (delta * ROW_H) into actual
+      // scroll px, respecting the nowrap scrollHeight cap.
+      const intrinsicH = entries.length * TERMINAL_ROW_H;
+      const cap = computeNowrapScrollCap(el.clientHeight);
+      const scale = intrinsicH > cap ? cap / intrinsicH : 1;
+      el.scrollTop = Math.max(0, el.scrollTop - delta * TERMINAL_ROW_H * scale);
+    }
+  }, [evictedCount, autoScroll, wrapLines, entries.length, wrapVirtualizer]);
+
   // Scroll to match index
   const scrollRequestIndex = scrollRequest?.index;
   const scrollRequestNonce = scrollRequest?.nonce;
@@ -859,7 +1494,9 @@ const TailTerminal = memo(function TailTerminal({
     if (wrapLines) {
       wrapVirtualizer.scrollToIndex(scrollRequestIndex, { align: "center" });
     } else if (outerRef.current) {
-      outerRef.current.scrollTop = scrollRequestIndex * TERMINAL_ROW_H - outerRef.current.clientHeight / 2 + TERMINAL_ROW_H / 2;
+      const virtualCenter = scrollRequestIndex * TERMINAL_ROW_H
+        - outerRef.current.clientHeight / 2 + TERMINAL_ROW_H / 2;
+      outerRef.current.scrollTop = virtualToActualScrollTop(virtualCenter);
     }
     atBottomRef.current = false;
     setAtBottom(false);
@@ -871,8 +1508,18 @@ const TailTerminal = memo(function TailTerminal({
     scrollTopRef.current = el.scrollTop;
     // Only re-render when the visible row window actually shifts
     if (!wrapLines) {
-      const newStart = Math.max(0, Math.floor(el.scrollTop / TERMINAL_ROW_H) - TERMINAL_OVERSCAN);
+      const intrinsicH = entries.length * TERMINAL_ROW_H;
+      const cap = computeNowrapScrollCap(el.clientHeight);
+      const denom = Math.max(1, Math.min(intrinsicH, cap) - el.clientHeight);
+      const intrinsicScroll = Math.max(1, intrinsicH - el.clientHeight);
+      const virtualScrollTop = intrinsicH > cap
+        ? (el.scrollTop / denom) * intrinsicScroll
+        : el.scrollTop;
+      const newStart = Math.max(0, Math.floor(virtualScrollTop / TERMINAL_ROW_H) - TERMINAL_OVERSCAN);
       setStartIdx((prev) => (prev === newStart ? prev : newStart));
+      // Update the imperative transform now so the rendered rows track the
+      // scroll position immediately during drag (before React reconciles).
+      syncNowrapTransformRef.current?.(newStart);
     }
     // Within ~400ms of a programmatic scroll, skip the at-bottom flip so
     // the cascade of scroll events from that programmatic scroll can't
@@ -885,8 +1532,69 @@ const TailTerminal = memo(function TailTerminal({
     }
   }
 
+  // Wheel handler. When the nowrap cap is engaged, the browser's native wheel
+  // behaviour adds deltaY to el.scrollTop, which is in *capped* coordinates.
+  // Our virtual mapping then multiplies that by (intrinsic/cap) — so 100 px of
+  // wheel = many rows. Instead, treat deltaY as a *virtual* delta directly so
+  // wheel feels the same as it would without the cap (smooth, row-friendly).
+  // Must be a native non-passive listener so preventDefault works (React's
+  // synthetic onWheel is passive by default).
+  useEffect(() => {
+    if (wrapLines) return;
+    const el = outerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      const intrinsicH = entries.length * TERMINAL_ROW_H;
+      const cap = computeNowrapScrollCap(el.clientHeight);
+      if (intrinsicH <= cap) return; // not capped — native wheel is fine
+      e.preventDefault();
+      let dy = e.deltaY;
+      if (e.deltaMode === 1) dy *= TERMINAL_ROW_H;
+      else if (e.deltaMode === 2) dy *= el.clientHeight;
+      const intrinsicScroll = Math.max(1, intrinsicH - el.clientHeight);
+      const actualScroll = Math.max(1, cap - el.clientHeight);
+      const virtualScrollTop = (el.scrollTop / actualScroll) * intrinsicScroll;
+      const newVirtual = Math.max(0, Math.min(intrinsicScroll, virtualScrollTop + dy));
+      el.scrollTop = (newVirtual / intrinsicScroll) * actualScroll;
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [wrapLines, entries.length]);
+
+  // Imperatively compute and apply the nowrap row-group transform. Called from
+  // both onScroll (so drag tracks the cursor) and a useLayoutEffect (so React
+  // re-renders don't clobber it). Stored in a ref so handleScroll can call
+  // the latest closure without re-binding on every render.
+  const syncNowrapTransformRef = useRef<((nextStart?: number) => void) | null>(null);
+  syncNowrapTransformRef.current = (nextStart?: number) => {
+    if (wrapLines) return;
+    const group = nowrapGroupRef.current;
+    const el = outerRef.current;
+    if (!group || !el) return;
+    const intrinsicH = entries.length * TERMINAL_ROW_H;
+    const cap = computeNowrapScrollCap(el.clientHeight);
+    const denom = Math.max(1, Math.min(intrinsicH, cap) - el.clientHeight);
+    const intrinsicScroll = Math.max(1, intrinsicH - el.clientHeight);
+    const virtualScrollTop = intrinsicH > cap
+      ? (el.scrollTop / denom) * intrinsicScroll
+      : el.scrollTop;
+    const s = nextStart ?? startIdx;
+    const groupTop = el.scrollTop + (s * TERMINAL_ROW_H - virtualScrollTop);
+    group.style.transform = `translateY(${groupTop}px)`;
+  };
+  // After every render, re-sync the transform so changes to entries / startIdx
+  // / selection state don't leave the row group at a stale offset (which is
+  // what caused the visible row overlap).
+  useLayoutEffect(() => {
+    syncNowrapTransformRef.current?.();
+  });
+
   // Virtual list window — startIdx is now state-driven (only updates when visible range shifts)
-  const totalH = entries.length * TERMINAL_ROW_H;
+  // Cap nowrap scrollHeight so the scrollbar thumb stays at the browser's
+  // minimum size and the cursor-to-thumb mapping stays linear during drag.
+  const intrinsicNowrapH = entries.length * TERMINAL_ROW_H;
+  const nowrapCap = computeNowrapScrollCap(viewH);
+  const totalH = Math.min(intrinsicNowrapH, nowrapCap);
   const endIdx = Math.min(entries.length - 1, startIdx + Math.ceil(viewH / TERMINAL_ROW_H) + TERMINAL_OVERSCAN * 2);
 
   // Flash key: increments each time we navigate to a match, re-triggers the CSS animation
@@ -960,7 +1668,7 @@ const TailTerminal = memo(function TailTerminal({
       <div
         ref={outerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto overflow-x-auto"
+        className="flex-1 overflow-y-auto overflow-x-auto scrollbar-hidden mr-3"
       >
         {entries.length === 0 ? (
           <div className="flex items-center justify-center h-full min-h-[120px]">
@@ -986,13 +1694,14 @@ const TailTerminal = memo(function TailTerminal({
                   {/* Inner div: re-keyed on flashKey so CSS animation re-fires on each navigation */}
                   <div
                     key={isActive ? flashKey : undefined}
-                    onClick={() => toggleRow(vRow.index)}
+                    onClick={() => { onEntryClick?.(vRow.index); toggleRow(vRow.index); }}
                     onDoubleClick={() => onEntryDoubleClick?.(vRow.index)}
                     className={cn(
                       "px-3 py-px font-mono text-[11px] select-text leading-snug border-b border-slate-200 cursor-pointer",
                       vRow.index % 2 === 0 && "bg-slate-100/60",
                       isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
-                      isCtxAnchor && !isActive && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
+                      !isActive && selectedEntryIdx === vRow.index && "border-l-[3px] border-sky-400 pl-2.5 bg-sky-50 ring-1 ring-inset ring-sky-400/40",
+                      isCtxAnchor && !isActive && selectedEntryIdx !== vRow.index && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
                     )}
                   >
                     <span className={cn(
@@ -1014,7 +1723,21 @@ const TailTerminal = memo(function TailTerminal({
         ) : (
           /* Nowrap mode: fixed row height — virtual list for performance */
           <div style={{ height: totalH, position: "relative" }}>
-            <div style={{ position: "absolute", top: startIdx * TERMINAL_ROW_H, left: 0, right: 0 }}>
+            <div
+              ref={nowrapGroupRef}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                right: 0,
+                // transform is set imperatively by syncNowrapTransformRef which
+                // runs in a useLayoutEffect after every render AND from onScroll.
+                // We avoid setting it in JSX so React re-renders don't reset it
+                // to a value based on stale scrollTopRef (which would cause the
+                // rows to visually overlap each other).
+                willChange: "transform",
+              }}
+            >
               {entries.slice(startIdx, endIdx + 1).map((entry, i) => {
                 const absIdx = startIdx + i;
                 const count = dupeCounts?.get(absIdx) ?? 1;
@@ -1023,13 +1746,15 @@ const TailTerminal = memo(function TailTerminal({
                 return (
                   <div
                     key={isActive ? `flash-${flashKey}` : absIdx}
+                    onClick={() => onEntryClick?.(absIdx)}
                     onDoubleClick={() => onEntryDoubleClick?.(absIdx)}
                     style={{ height: TERMINAL_ROW_H, lineHeight: `${TERMINAL_ROW_H}px` }}
                     className={cn(
-                      "px-3 font-mono text-[11px] whitespace-nowrap select-text border-b border-slate-200",
+                      "px-3 font-mono text-[11px] whitespace-nowrap select-text border-b border-slate-200 cursor-pointer",
                       absIdx % 2 === 0 && "bg-slate-100/60",
                       isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
-                      isCtxAnchor && !isActive && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
+                      !isActive && selectedEntryIdx === absIdx && "border-l-[3px] border-sky-400 pl-2.5 bg-sky-50 ring-1 ring-inset ring-sky-400/40",
+                      isCtxAnchor && !isActive && selectedEntryIdx !== absIdx && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
                     )}
                   >
                     {renderStructuredLine(entry, isActive)}
@@ -1057,6 +1782,7 @@ const TailTerminal = memo(function TailTerminal({
           ↓ Jump to bottom
         </button>
       )}
+      <ScrollbarOverlay containerRef={outerRef} />
     </div>
   );
 });
@@ -1418,7 +2144,6 @@ export function LogsExplorer({
   onTabSwitch,
   fullscreen = false,
   onFullscreenChange,
-  txSearchId,
   onOpenContextTab,
   onOpenEntryContextTab,
   anchorTimestamp,
@@ -1433,7 +2158,6 @@ export function LogsExplorer({
   onTabSwitch?: (id: number) => void;
   fullscreen?: boolean;
   onFullscreenChange?: (v: boolean) => void;
-  txSearchId?: { id: string; seq: number };
   onOpenContextTab?: (timestamp: string, source: string) => void;
   onOpenEntryContextTab?: (anchorTimestamp: string, beginTimestamp: string, endTimestamp: string) => void;
   anchorTimestamp?: string;
@@ -1466,7 +2190,18 @@ export function LogsExplorer({
   const [matchCursor, setMatchCursor] = useState(-1); // index into matchRows; -1 = none selected
   const [activeMatchKey, setActiveMatchKey] = useState<string | null>(null);
   const [matchScrollNonce, setMatchScrollNonce] = useState(0);
-  const [highlightedTableIdx, setHighlightedTableIdx] = useState<number | null>(null); // filtered idx to highlight in table view
+  // Unified "selected entry" — driven by single-click in any view (terminal,
+  // table, JSON). Persists across view switches. Click only updates the index
+  // (no scroll — viewport stays put). selectedScrollNonce is bumped only when
+  // the view mode changes (or when explicitly jumping from match-nav), so a
+  // view switch auto-scrolls the new view to the previously selected entry.
+  const [selectedEntryIdx, setSelectedEntryIdx] = useState<number | null>(null); // index into `filtered`
+  const [selectedScrollNonce, setSelectedScrollNonce] = useState(0);
+  const handleEntrySelect = useCallback((displayIdx: number) => {
+    setSelectedEntryIdx(displayIdx);
+    // Intentionally do NOT bump selectedScrollNonce — clicking should not move
+    // the viewport. Scroll-to-selection only fires on view-mode switch.
+  }, []);
   const [highlightMatchCase, setHighlightMatchCase] = useState(false);
   const [highlightWholeWord, setHighlightWholeWord] = useState(false);
   // Per-field case/word toggles. Each field's predicate honours its own pair;
@@ -1589,12 +2324,18 @@ export function LogsExplorer({
   // ── Transaction drill-down (from clicking inline txId in table) ──
   const [drilldown, setDrilldown] = useState<{ txId: string } | null>(null);
 
-  // ── Transaction search from control section → load into main table ──
+  // ── Transaction search from per-tab Transaction mode → load into main table ──
+  // Triggered by bumping `config.txSeq` (the Trace button or Enter in the
+  // transaction-mode input). Uses `config.txQuery` as the ID. Replaces the
+  // earlier global top-bar search — each tab now owns its own input.
   const prevTxSeq = useRef(0);
   useEffect(() => {
-    if (!txSearchId || !env) return;
-    if (txSearchId.seq <= prevTxSeq.current) return;
-    prevTxSeq.current = txSearchId.seq;
+    const seq = config.txSeq ?? 0;
+    const txId = (config.txQuery ?? "").trim();
+    if (mode !== "transaction") return;
+    if (!txId || !env) return;
+    if (seq === 0 || seq <= prevTxSeq.current) return;
+    prevTxSeq.current = seq;
 
     // Stop any active tail
     onConfigChange({ tailing: false });
@@ -1606,7 +2347,7 @@ export function LogsExplorer({
     setFetched(false);
     setExpandedTableRows(new Set());
 
-    // Query all selected sources (or both if none selected)
+    // Query all selected sources (or both broad sources if none selected)
     const querySources = selectedSources.length > 0 ? selectedSources : [...LOG_SOURCES];
 
     Promise.all(
@@ -1614,7 +2355,7 @@ export function LogsExplorer({
         fetch("/api/logs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ env, source: src, transactionId: txSearchId.id, pageSize: 1000 }),
+          body: JSON.stringify({ env, source: src, transactionId: txId, pageSize: 1000 }),
         })
           .then((r) => r.json())
           .then((data): LogEntry[] => {
@@ -1632,7 +2373,7 @@ export function LogsExplorer({
       onConfigChange({ loading: false });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [txSearchId]);
+  }, [config.txSeq, mode]);
 
   const deferredIsActive = useDeferredValue(isActive);
 
@@ -1860,14 +2601,20 @@ export function LogsExplorer({
       : entries.filter((e) => levelPassesFilter(getLevel(e), levelFilter)),
     [entries, levelFilter]);
 
-  // Pre-compute searchable strings once per levelFiltered change
-  const defaultSourceForNav = selectedSources[0] ?? "";
-  const entryStrings = useMemo(() =>
-    levelFiltered.map((e) => ({
-      json: JSON.stringify(e),
-      line: formatTerminalLine(e, defaultSourceForNav),
-    })),
-    [levelFiltered, defaultSourceForNav]);
+  // Lazy per-entry JSON cache. JSON.stringify is the hottest op (used by
+  // filterQuery/searchKeywordsParsed/highlightQuery .test calls). At 200k
+  // entries an eager parallel array re-stringifies the whole buffer on every
+  // tail tick — hundreds of MB churned per second. WeakMap keyed on the entry
+  // object survives across re-renders; entries dropped from the circular
+  // buffer are GC'd automatically. We also only stringify on demand: if no
+  // filter / search / highlight is active, no entry is stringified at all.
+  const entryJsonCacheRef = useRef<WeakMap<LogEntry, string>>(new WeakMap());
+  const getEntryJson = useCallback((e: LogEntry): string => {
+    const cache = entryJsonCacheRef.current;
+    let s = cache.get(e);
+    if (s === undefined) { s = JSON.stringify(e); cache.set(e, s); }
+    return s;
+  }, []);
 
   // Parse the Filter box as a boolean query supporting && / || / ( ) and quoted phrases.
   // Comma is also accepted as `||` for backwards compatibility with older usage.
@@ -1920,16 +2667,21 @@ export function LogsExplorer({
     // contain && / () precedence) client-side. The Filter box query is always applied.
     const applySearch =
       mode === "search" && !searchKeywordsParsed.empty && !searchKeywordsParsed.error;
-    if (filterQuery.empty && !applySearch) return levelFiltered.map((e, i) => ({ e, i }));
+    // Fast path: no filter active, no search-mode client-side gate — return a
+    // single shared identity-mapped array. Avoids allocating 200k wrapper
+    // objects on every tail tick when the user isn't filtering.
+    if (filterQuery.empty && !applySearch) {
+      return levelFiltered.map((e, i) => ({ e, i }));
+    }
     if (filterQuery.error) return [] as { e: LogEntry; i: number }[];
     return levelFiltered.reduce<{ e: LogEntry; i: number }[]>((acc, e, i) => {
-      const json = entryStrings[i].json;
+      const json = getEntryJson(e);
       if (!filterQuery.test(json)) return acc;
       if (applySearch && !searchKeywordsParsed.test(json)) return acc;
       acc.push({ e, i });
       return acc;
     }, []);
-  }, [levelFiltered, entryStrings, filterQuery, mode, searchKeywordsParsed]);
+  }, [levelFiltered, filterQuery, mode, searchKeywordsParsed, getEntryJson]);
 
   // Dedupe pass — collapses exact-match duplicates to the first occurrence and tracks counts.
   // Key: source + level + message text. When off, dupeCounts is empty and everything passes through.
@@ -1966,7 +2718,52 @@ export function LogsExplorer({
     return bestIdx;
   }, [anchorTimestamp, filteredWithIdx]);
 
-  const filtered = useMemo(() => filteredWithIdx.map(({ e }) => e), [filteredWithIdx]);
+  // Fast path: when no filter / search / dedupe altered the data, reuse the
+  // levelFiltered array reference directly instead of allocating a new O(n)
+  // unwrapped copy on every tail tick.
+  const filtered = useMemo(() => {
+    if (
+      filteredWithIdx.length === levelFiltered.length &&
+      filteredWithIdx.length > 0 &&
+      filteredWithIdx[0].e === levelFiltered[0] &&
+      filteredWithIdx[filteredWithIdx.length - 1].e === levelFiltered[levelFiltered.length - 1]
+    ) {
+      return levelFiltered;
+    }
+    return filteredWithIdx.map(({ e }) => e);
+  }, [filteredWithIdx, levelFiltered]);
+
+  // Track cumulative count of entries evicted from the front of `filtered`.
+  // Passed to viewers so they can compensate scrollTop and keep the viewport
+  // stable while the circular buffer trims the oldest entries during tail.
+  // Algorithm: between renders, locate the previous tail's last entry in the
+  // new array. If it shifted toward index 0, that's the eviction count.
+  const filteredEvictedRef = useRef(0);
+  const prevFilteredRef = useRef<LogEntry[] | null>(null);
+  const [filteredEvictedCount, setFilteredEvictedCount] = useState(0);
+  useEffect(() => {
+    const prev = prevFilteredRef.current;
+    prevFilteredRef.current = filtered;
+    if (!prev || prev === filtered || prev.length === 0) return;
+    // Use the last entry of prev as anchor — it's almost certainly still
+    // present (eviction happens at the head, not the tail).
+    const anchor = prev[prev.length - 1];
+    // The anchor (prev's last entry) sits near the end of `filtered` since
+    // tail only appends to the back. Scan backward from the end with a
+    // bounded window so this stays O(batch) instead of O(buffer).
+    let newPos = -1;
+    const SCAN_LIMIT = 5000;
+    const lo = Math.max(0, filtered.length - SCAN_LIMIT);
+    for (let k = filtered.length - 1; k >= lo; k--) {
+      if (filtered[k] === anchor) { newPos = k; break; }
+    }
+    if (newPos < 0) return; // anchor not found in window — skip this round
+    const evicted = (prev.length - 1) - newPos;
+    if (evicted > 0) {
+      filteredEvictedRef.current += evicted;
+      setFilteredEvictedCount(filteredEvictedRef.current);
+    }
+  }, [filtered]);
 
   // Compute indices into `filtered` where the highlight query matches the
   // entry's full JSON — so a match in a payload field that's not in the
@@ -1976,12 +2773,12 @@ export function LogsExplorer({
     const out: { key: string; index: number }[] = [];
     for (let idx = 0; idx < filteredWithIdx.length; idx++) {
       const { e, i } = filteredWithIdx[idx];
-      if (highlightQuery.test(entryStrings[i].json)) {
+      if (highlightQuery.test(getEntryJson(e))) {
         out.push({ key: logEntryMatchKey(e, i), index: idx });
       }
     }
     return out;
-  }, [filteredWithIdx, entryStrings, highlightQuery]);
+  }, [filteredWithIdx, highlightQuery, getEntryJson]);
   const matchIndices = useMemo(() => matchRows.map((m) => m.index), [matchRows]);
 
   // Auto-expand rows in table view when Filter or Highlight is active.
@@ -2049,7 +2846,7 @@ export function LogsExplorer({
     if (viewMode === "table") {
       const targetPage = Math.floor(row.index / pageSize) + 1;
       setPage(targetPage);
-      setHighlightedTableIdx(row.index);
+      setSelectedEntryIdx(row.index);
       setExpandedTableRows(new Set());
       // Scroll into view after React re-renders the page
       requestAnimationFrame(() => {
@@ -2105,31 +2902,89 @@ export function LogsExplorer({
   // Reset jump flag whenever the filter terms change so we jump fresh on the next match
   useEffect(() => { firstMatchJumpedRef.current = false; }, [search, levelFilter]);
 
+  // Reset expanded rows only when the *filter context* changes (user changed
+  // search/level filter, or initial load). New tail entries must NOT collapse
+  // the rows the user has manually expanded for inspection.
   useEffect(() => {
     setExpandedTableRows(new Set());
+  }, [search, levelFilter]);
+
+  // Page tracking on tail / filter changes (separate from expanded-row reset
+  // so streaming entries don't keep collapsing inspected rows).
+  useEffect(() => {
     if (search && filtered.length > 0 && !firstMatchJumpedRef.current) {
       // First matching entry found — jump to page 1 (oldest = first match) and stay there
       firstMatchJumpedRef.current = true;
       setPage(1);
-    } else if (!search) {
-      // No filter active — follow the latest page as results stream in
+    } else if (!search && autoScroll) {
+      // No filter active and auto-scroll on — follow the latest page as results stream in.
+      // When auto-scroll is off, leave the page alone so the user can inspect a stable view.
       setPage(Math.max(1, Math.ceil(filtered.length / pageSize)));
     }
     // search active + already jumped: leave page alone so user can browse
-  }, [search, levelFilter, filtered.length, pageSize]);
+  }, [search, levelFilter, filtered.length, pageSize, autoScroll]);
 
-  // Scroll highlighted row into view after switching to table view
+  // When the buffer evicts from the front, the global indices that
+  // expandedTableRows is keyed on shift down by the eviction delta. Remap
+  // the Set so the same logical entries stay expanded, and drop any indices
+  // that fell off the front of the buffer.
+  const prevEvictedForExpandRef = useRef(filteredEvictedCount);
   useEffect(() => {
-    if (viewMode !== "table" || highlightedTableIdx === null) return;
-    const el = scrollContainerRef.current?.querySelector(`[data-row-idx="${highlightedTableIdx}"]`);
-    if (el) {
-      lastProgrammaticScrollAtRef.current = Date.now();
-      el.scrollIntoView({ block: "center" });
-      // Landing on a match means we're no longer tailing from the bottom —
-      // suppress the next round of auto-scroll so the user stays on the match.
-      scrollAtBottomRef.current = false;
-    }
-  }, [viewMode, highlightedTableIdx]);
+    const delta = filteredEvictedCount - prevEvictedForExpandRef.current;
+    prevEvictedForExpandRef.current = filteredEvictedCount;
+    if (delta <= 0) return;
+    setExpandedTableRows((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Set<number>();
+      for (const i of prev) {
+        const shifted = i - delta;
+        if (shifted >= 0) next.add(shifted);
+      }
+      return next;
+    });
+  }, [filteredEvictedCount]);
+
+  // Stabilize table view when buffer evicts from the front. Each evicted
+  // entry shifts every entry's index, so the same `page` would now show
+  // different rows. When autoScroll is off, decrement the page index to
+  // keep the user's content in view (best-effort, integer-page granularity).
+  const prevEvictedForPageRef = useRef(filteredEvictedCount);
+  useEffect(() => {
+    const delta = filteredEvictedCount - prevEvictedForPageRef.current;
+    prevEvictedForPageRef.current = filteredEvictedCount;
+    if (delta <= 0) return;
+    if (autoScroll) return; // auto-tail effect already handles page tracking
+    const pagesShift = Math.floor(delta / pageSize);
+    if (pagesShift > 0) setPage((p) => Math.max(1, p - pagesShift));
+  }, [filteredEvictedCount, autoScroll, pageSize]);
+
+  // Bump scroll nonce whenever the view mode changes (with a selection set),
+  // so each viewer's scroll-to-selection effect re-fires in the new view.
+  // Click-driven selection deliberately does not bump this; only view switches.
+  useEffect(() => {
+    if (selectedEntryIdx === null) return;
+    setSelectedScrollNonce((n) => n + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode]);
+
+  // Scroll selected entry into view after switching view modes (table only;
+  // JSON / terminal viewers handle their own scroll via selectedScrollRequest).
+  useEffect(() => {
+    if (selectedEntryIdx === null) return;
+    if (viewMode !== "table") return; // table is the only one parent-scrolled
+    // Make sure the right page is loaded so the row exists in the DOM.
+    const targetPage = Math.floor(selectedEntryIdx / pageSize) + 1;
+    if (targetPage !== page) setPage(targetPage);
+    requestAnimationFrame(() => {
+      const el = scrollContainerRef.current?.querySelector(`[data-row-idx="${selectedEntryIdx}"]`);
+      if (el) {
+        lastProgrammaticScrollAtRef.current = Date.now();
+        el.scrollIntoView({ block: "center" });
+        scrollAtBottomRef.current = false;
+      }
+    });
+    // viewMode is intentionally a dep so a switch to table re-fires the scroll.
+  }, [viewMode, selectedScrollNonce, selectedEntryIdx, pageSize, page]);
 
   return (
     <div className="space-y-4">
@@ -2195,7 +3050,7 @@ export function LogsExplorer({
           <div className="flex items-center gap-2 px-4 py-2">
             {/* Mode toggle */}
             <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
-              {(["tail", "search"] as LogMode[]).map((m) => (
+              {(["tail", "search", "transaction"] as LogMode[]).map((m) => (
                 <button
                   key={m}
                   type="button"
@@ -2211,7 +3066,7 @@ export function LogsExplorer({
                       : "bg-white text-slate-500 hover:bg-slate-50"
                   )}
                 >
-                  {m === "tail" ? "Tail" : "Search"}
+                  {m === "tail" ? "Tail" : m === "search" ? "Search" : "Transaction"}
                 </button>
               ))}
             </div>
@@ -2360,6 +3215,62 @@ export function LogsExplorer({
                       )}
                     >[W]</button>
                   </div>
+                </div>
+              );
+            })()}
+
+            {/* Transaction mode controls */}
+            {mode === "transaction" && (() => {
+              const txQuery = config.txQuery ?? "";
+              const txTrim = txQuery.trim();
+              const submit = () => {
+                if (!txTrim || !env || loading) return;
+                onConfigChange({ txSeq: (config.txSeq ?? 0) + 1 });
+              };
+              return (
+                <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                  <input
+                    type="text"
+                    value={txQuery}
+                    onChange={(e) => onConfigChange({ txQuery: e.target.value })}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
+                    placeholder="Paste a transaction ID to trace…"
+                    disabled={loading}
+                    className="flex-1 min-w-0 text-xs rounded border border-slate-300 px-2.5 py-1 font-mono focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500 disabled:opacity-50"
+                  />
+                  <button
+                    type="button"
+                    onClick={submit}
+                    disabled={!txTrim || !env || loading}
+                    className="px-3 py-1 text-xs font-medium bg-sky-600 text-white rounded hover:bg-sky-700 disabled:opacity-50 transition-colors flex items-center gap-1 shrink-0"
+                  >
+                    {loading ? (
+                      <>
+                        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Tracing…
+                      </>
+                    ) : (
+                      "Trace"
+                    )}
+                  </button>
+                  {txQuery && (
+                    <button
+                      type="button"
+                      onClick={() => onConfigChange({ txQuery: "" })}
+                      className="text-xs text-slate-400 hover:text-slate-600 shrink-0"
+                    >
+                      Clear
+                    </button>
+                  )}
+                  <span
+                    className="text-[10px] text-slate-400 ml-1 whitespace-nowrap"
+                    title="Transaction-ID search is indexed by AIC and scans the full retention window — time range is ignored."
+                  >
+                    full retention
+                  </span>
                 </div>
               );
             })()}
@@ -2530,7 +3441,8 @@ export function LogsExplorer({
                 onClick={() => {
                   setViewMode("table");
                   if (activeMatchIndex !== null) {
-                    setHighlightedTableIdx(activeMatchIndex);
+                    setSelectedEntryIdx(activeMatchIndex);
+                    setSelectedScrollNonce((n) => n + 1);
                     setPage(Math.floor(activeMatchIndex / pageSize) + 1);
                     setExpandedTableRows(new Set());
                   }
@@ -2780,7 +3692,7 @@ export function LogsExplorer({
             if (h >= 200) { setTableHeight(h); saveHeight(h); }
           }}
           className={cn(
-            terminalView || viewMode === "json" ? "overflow-hidden" : "overflow-y-auto overflow-x-auto",
+            terminalView || viewMode === "json" ? "overflow-hidden" : "overflow-y-auto overflow-x-auto scrollbar-hidden mr-3",
             fullscreen ? "flex-1" : "resize-y min-h-[200px]"
           )}
           style={fullscreen ? undefined : { height: tableHeight }}
@@ -2806,16 +3718,26 @@ export function LogsExplorer({
                 keywords={keywords}
                 wrapLines={wrapLines}
                 dupeCounts={dupeCounts}
-                scrollRequest={matchScrollRequest}
+                scrollRequest={
+                  // Match-nav scrolls take precedence over selection scrolls;
+                  // when no active match, fall back to selection-driven scroll
+                  // so view-mode switches and clicks both reveal the row.
+                  matchScrollRequest ?? (selectedEntryIdx !== null && selectedScrollNonce > 0
+                    ? { index: selectedEntryIdx, nonce: selectedScrollNonce + 1_000_000 }
+                    : null)
+                }
                 activeMatchIndex={activeMatchIndex}
                 matchCase={highlightMatchCase}
                 wholeWord={highlightWholeWord}
                 autoScroll={autoScroll}
+                onEntryClick={handleEntrySelect}
                 onEntryDoubleClick={handleContextEntry}
                 contextAnchorIdx={contextAnchorDisplay}
                 expandCommand={expandCmd}
                 matchIndices={matchIndices}
                 filterActive={!!search}
+                selectedEntryIdx={selectedEntryIdx}
+                evictedCount={filteredEvictedCount}
               />
             )
           ) : viewMode === "json" ? (
@@ -2837,8 +3759,17 @@ export function LogsExplorer({
                 matchIndices={matchIndices}
                 matchCase={highlightMatchCase}
                 wholeWord={highlightWholeWord}
+                onEntryClick={handleEntrySelect}
                 onEntryDoubleClick={handleContextEntry}
                 contextAnchorIdx={contextAnchorDisplay ?? -1}
+                selectedEntryIdx={selectedEntryIdx}
+                selectedScrollRequest={
+                  selectedEntryIdx !== null && selectedScrollNonce > 0
+                    ? { index: selectedEntryIdx, nonce: selectedScrollNonce }
+                    : null
+                }
+                autoScroll={autoScroll}
+                evictedCount={filteredEvictedCount}
               />
             )
           ) : !fetched ? (
@@ -2870,7 +3801,7 @@ export function LogsExplorer({
                       entry={entry}
                       source={tailSource}
                       expanded={expandedTableRows.has(globalIdx)}
-                      onToggle={() => toggleTableRow(globalIdx)}
+                      onToggle={() => { toggleTableRow(globalIdx); handleEntrySelect(globalIdx); }}
                       searchTerm={search}
                       keywords={keywords}
                       onTransactionClick={(txId) => setDrilldown({ txId })}
@@ -2878,7 +3809,7 @@ export function LogsExplorer({
                       onContextClick={() => handleContextEntry(globalIdx)}
                       fullscreen={fullscreen}
                       showFullMessage={showFullMessage}
-                      highlighted={highlightedTableIdx === globalIdx || activeMatchIndex === globalIdx}
+                      highlighted={selectedEntryIdx === globalIdx || activeMatchIndex === globalIdx}
                       isContextAnchor={contextAnchorDisplay === globalIdx}
                       rowIdx={globalIdx}
                       matchCase={highlightMatchCase}
@@ -2891,6 +3822,7 @@ export function LogsExplorer({
             </table>
           )}
         </div>
+        {viewMode === "table" && <ScrollbarOverlay containerRef={scrollContainerRef} />}
 
         {/* Pagination controls — table view only */}
         {viewMode === "table" && fetched && filtered.length > 0 && (
@@ -3133,6 +4065,9 @@ function sanitizeConfigForPersist(cfg: TabConfig): TabConfig {
     searching: false,
     sourcesError: "",
     searchSeq: 0,
+    // Don't re-fire a transaction trace on reload; keep the input value
+    // (txQuery) so the user can re-submit.
+    txSeq: 0,
   };
 }
 
@@ -3204,19 +4139,28 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
     return () => document.removeEventListener("keydown", handler);
   }, [fullscreen]);
 
+  // Warn on tab/page navigation while any tab is actively tailing. NavBar
+  // observes `busy` from BusyContext and prompts before route changes.
+  const { setBusy } = useBusyState();
+  const anyTailing = tabs.some((t) => t.config.tailing);
+  useEffect(() => {
+    setBusy(anyTailing);
+    return () => { if (anyTailing) setBusy(false); };
+  }, [anyTailing, setBusy]);
+  // Browser-level guard: warn on full-page leave (refresh/close/external nav)
+  // while tailing is active. NavBar only intercepts in-app links.
+  useEffect(() => {
+    if (!anyTailing) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [anyTailing]);
+
   const activeTab = tabs.find((t) => t.id === activeId) ?? tabs[0];
   const cfg = activeTab?.config;
-
-  const [txInput, setTxInput] = useState("");
-  // txSearch is stamped with the originating tabId so the search only loads
-  // into that tab. Without `tabId`, switching back to a previously-active
-  // tab would re-deliver the latest search and clobber its results.
-  const [txSearch, setTxSearch] = useState<{ id: string; seq: number; tabId: number } | undefined>(undefined);
-
-  function submitTxSearch() {
-    const id = txInput.trim();
-    if (id && activeId != null) setTxSearch((prev) => ({ id, seq: (prev?.seq ?? 0) + 1, tabId: activeId }));
-  }
 
   const updateActiveConfig = useCallback((updates: Partial<TabConfig>) => {
     setTabs((prev) =>
@@ -3431,42 +4375,6 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
                   </div>
                 )}
               </div>
-
-              {/* Row 2: transaction ID search */}
-              <div className="flex items-center gap-2">
-                <label className="label-xs shrink-0">Transaction ID</label>
-                <input
-                  type="text"
-                  value={txInput}
-                  onChange={(e) => setTxInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") submitTxSearch(); }}
-                  placeholder="Paste a transaction ID to trace…"
-                  className="px-3 py-2.5 rounded-lg border border-slate-200 text-[13px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 font-mono w-96"
-                />
-                <button
-                  type="button"
-                  onClick={submitTxSearch}
-                  disabled={!txInput.trim() || !cfg?.env || cfg?.loading}
-                  className="btn-primary disabled:opacity-40 flex items-center gap-1.5"
-                >
-                  {cfg?.loading && txSearch ? (
-                    <>
-                      <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                      Tracing…
-                    </>
-                  ) : (
-                    "Trace"
-                  )}
-                </button>
-                {txInput && (
-                  <button type="button" onClick={() => { setTxInput(""); setTxSearch(undefined); }} className="text-xs text-slate-400 hover:text-slate-600 transition-colors">
-                    Clear
-                  </button>
-                )}
-              </div>
             </div>
           )}
 
@@ -3522,7 +4430,6 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
                   onTabSwitch={setActiveId}
                   fullscreen={fullscreen}
                   onFullscreenChange={setFullscreen}
-                  txSearchId={txSearch && txSearch.tabId === tab.id ? { id: txSearch.id, seq: txSearch.seq } : undefined}
                   onOpenContextTab={openContextTab}
                   onOpenEntryContextTab={openEntryContextTab}
                   anchorTimestamp={tab.anchorTimestamp}
