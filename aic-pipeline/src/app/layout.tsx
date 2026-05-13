@@ -5,6 +5,7 @@ import { BusyProvider } from "@/hooks/useBusyState";
 import { NavBar } from "@/components/NavBar";
 import { DialogProvider } from "@/components/ConfirmDialog";
 import { GlobalJobBanner } from "@/components/GlobalJobBanner";
+import { MonitorWarningBanner } from "@/components/MonitorWarningBanner";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -36,19 +37,20 @@ export default function RootLayout({
       <body className="min-h-full bg-slate-50 text-slate-900 antialiased flex flex-col">
         <BusyProvider>
           <DialogProvider>
-          <NavBar />
-          <GlobalJobBanner />
-          <main className="flex-1 px-6 sm:px-10 lg:px-16 py-10 w-full max-w-[1600px] mx-auto">
-            {children}
-          </main>
-          <footer className="mt-auto border-t border-slate-200/60 bg-white">
-            <div className="max-w-[1600px] mx-auto px-6 sm:px-10 lg:px-16 py-4 text-xs text-slate-500 flex items-center justify-between">
-              <span>
-                &copy; {new Date().getFullYear()} <span className="font-semibold text-slate-700">Boston Identity</span>
-              </span>
-              <span className="text-slate-400">AIC Config Pipeline</span>
-            </div>
-          </footer>
+            <NavBar />
+            <GlobalJobBanner />
+            <MonitorWarningBanner />
+            <main className="flex-1 px-6 sm:px-10 lg:px-16 py-10 w-full max-w-[1600px] mx-auto">
+              {children}
+            </main>
+            <footer className="mt-auto border-t border-slate-200/60 bg-white">
+              <div className="max-w-[1600px] mx-auto px-6 sm:px-10 lg:px-16 py-4 text-xs text-slate-500 flex items-center justify-between">
+                <span>
+                  &copy; {new Date().getFullYear()} <span className="font-semibold text-slate-700">Boston Identity</span>
+                </span>
+                <span className="text-slate-400">AIC Config Pipeline</span>
+              </div>
+            </footer>
           </DialogProvider>
         </BusyProvider>
       </body>

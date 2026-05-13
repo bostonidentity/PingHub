@@ -6,7 +6,7 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: path.resolve(__dirname),
   },
-  serverExternalPackages: ["axios"],
+  serverExternalPackages: ["axios", "better-sqlite3"],
 };
 
 export default nextConfig;

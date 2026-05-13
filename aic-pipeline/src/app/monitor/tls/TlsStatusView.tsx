@@ -1,10 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
 import { REFRESH_INTERVAL_OPTIONS } from "@/lib/monitors/refresh-intervals";
-import type { TlsCheckResult, TlsMonitorsFile, TlsStatus, TlsTarget } from "@/lib/monitors/tls-types";
+import type {
+    TlsCheckResult,
+    TlsGroup,
+    TlsMonitorsFile,
+    TlsStatus,
+    TlsTarget,
+} from "@/lib/monitors/tls-types";
 import { usePersistentState } from "@/hooks/usePersistentState";
 
 import { TlsConfigEditor } from "./TlsConfigEditor";
@@ -106,6 +112,29 @@ export function TlsStatusView() {
         },
         [],
     );
+
+    const grouped = useMemo(() => {
+        if (!config) return [];
+        const byGroup = new Map<string, TlsTarget[]>();
+        for (const t of config.targets) {
+            const key = t.groupId ?? "";
+            const arr = byGroup.get(key) ?? [];
+            arr.push(t);
+            byGroup.set(key, arr);
+        }
+        return [...config.groups]
+            .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
+            .map((g) => ({
+                group: g,
+                targets: (byGroup.get(g.id) ?? []).slice().sort((a, b) => a.label.localeCompare(b.label)),
+            }));
+    }, [config]);
+
+    const ungrouped = useMemo(() => {
+        if (!config) return [];
+        const groupIds = new Set(config.groups.map((g) => g.id));
+        return config.targets.filter((t) => !t.groupId || !groupIds.has(t.groupId));
+    }, [config]);
 
     if (!config) {
         return (
@@ -266,103 +295,30 @@ export function TlsStatusView() {
                 </div>
             )}
 
-            {config.targets.length > 0 && (
-                <div className="border border-slate-200 rounded-lg overflow-hidden bg-white">
-                    <table className="w-full text-sm">
-                        <thead className="bg-slate-50 text-slate-600 text-xs uppercase tracking-wide">
-                            <tr>
-                                <th className="px-3 py-2 text-left w-6"></th>
-                                <th className="px-3 py-2 text-left">Target</th>
-                                <th className="px-3 py-2 text-left">Host</th>
-                                <th className="px-3 py-2 text-left">Expires</th>
-                                <th className="px-3 py-2 text-left">Days left</th>
-                                <th className="px-3 py-2 text-left">Issuer</th>
-                                <th className="px-3 py-2 text-left">Checked</th>
-                                <th className="px-3 py-2"></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {config.targets.map((t) => {
-                                const r = results[t.id];
-                                const status: TlsStatus = t.enabled === false ? "unknown" : r?.status ?? "unknown";
-                                const isRunning = running.has(t.id);
-                                return (
-                                    <tr
-                                        key={t.id}
-                                        className={cn(
-                                            "border-t border-slate-200",
-                                            t.enabled === false && "opacity-50",
-                                        )}
-                                    >
-                                        <td className="px-3 py-2">
-                                            <TlsStatusDot status={status} pulse={isRunning} />
-                                        </td>
-                                        <td className="px-3 py-2">
-                                            <div className="font-medium text-slate-800">{t.label}</div>
-                                            <div className="text-xs text-slate-500 font-mono break-all">{t.url}</div>
-                                        </td>
-                                        <td className="px-3 py-2 text-xs text-slate-600 font-mono">
-                                            {r ? `${r.host}:${r.port}` : "—"}
-                                        </td>
-                                        <td className="px-3 py-2 text-xs text-slate-600">
-                                            {r?.validTo ? new Date(r.validTo).toLocaleDateString() : "—"}
-                                        </td>
-                                        <td className="px-3 py-2 text-xs">
-                                            {r?.daysRemaining === undefined ? (
-                                                "—"
-                                            ) : r.daysRemaining < 0 ? (
-                                                <span className="text-rose-700 font-semibold">
-                                                    expired {Math.abs(r.daysRemaining)}d ago
-                                                </span>
-                                            ) : (
-                                                <span
-                                                    className={cn(
-                                                        status === "expired" && "text-rose-700 font-semibold",
-                                                        status === "warning" && "text-amber-700 font-semibold",
-                                                        status === "ok" && "text-emerald-700",
-                                                    )}
-                                                >
-                                                    {r.daysRemaining}d
-                                                </span>
-                                            )}
-                                        </td>
-                                        <td className="px-3 py-2 text-xs text-slate-600 truncate max-w-[180px]" title={r?.issuer}>
-                                            {r?.issuer ?? "—"}
-                                        </td>
-                                        <td className="px-3 py-2 text-xs text-slate-500">
-                                            {r ? (
-                                                <span title={new Date(r.checkedAt).toLocaleString()}>
-                                                    {formatAgo(r.checkedAt)}
-                                                </span>
-                                            ) : (
-                                                "—"
-                                            )}
-                                        </td>
-                                        <td className="px-3 py-2 text-right whitespace-nowrap">
-                                            <button
-                                                type="button"
-                                                onClick={() => runChecks(t.id)}
-                                                disabled={isRunning || t.enabled === false}
-                                                className="text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-100 disabled:opacity-50 mr-1"
-                                            >
-                                                {isRunning ? "…" : "Check"}
-                                            </button>
-                                            <button
-                                                type="button"
-                                                onClick={() => setSelected(t.id)}
-                                                disabled={!r}
-                                                className="text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-100 disabled:opacity-50"
-                                            >
-                                                Details
-                                            </button>
-                                        </td>
-                                    </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
-                </div>
-            )}
+            <div className="space-y-6">
+                {grouped.map(({ group, targets }) => (
+                    <TlsGroupBlock
+                        key={group.id}
+                        title={group.name}
+                        targets={targets}
+                        results={results}
+                        running={running}
+                        onSelect={setSelected}
+                        onRunOne={(id) => runChecks(id)}
+                    />
+                ))}
+                {ungrouped.length > 0 && (
+                    <TlsGroupBlock
+                        title="Ungrouped"
+                        targets={ungrouped}
+                        results={results}
+                        running={running}
+                        onSelect={setSelected}
+                        onRunOne={(id) => runChecks(id)}
+                    />
+                )}
+            </div>
+
 
             {warnings.length > 0 && (
                 <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
@@ -384,6 +340,121 @@ export function TlsStatusView() {
 function labelFor(status: TlsStatus): string {
     if (status === "expired") return "expired / critical";
     return status;
+}
+
+interface TlsGroupBlockProps {
+    title: string;
+    targets: TlsTarget[];
+    results: Record<string, TlsCheckResult>;
+    running: Set<string>;
+    onSelect: (id: string) => void;
+    onRunOne: (id: string) => void;
+}
+
+function TlsGroupBlock({ title, targets, results, running, onSelect, onRunOne }: TlsGroupBlockProps) {
+    if (targets.length === 0) return null;
+    return (
+        <section>
+            <h2 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-2 px-1">
+                {title}
+            </h2>
+            <div className="border border-slate-200 rounded-lg overflow-hidden bg-white">
+                <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-slate-600 text-xs uppercase tracking-wide">
+                        <tr>
+                            <th className="px-3 py-2 text-left w-6"></th>
+                            <th className="px-3 py-2 text-left">Target</th>
+                            <th className="px-3 py-2 text-left">Host</th>
+                            <th className="px-3 py-2 text-left">Expires</th>
+                            <th className="px-3 py-2 text-left">Days left</th>
+                            <th className="px-3 py-2 text-left">Issuer</th>
+                            <th className="px-3 py-2 text-left">Checked</th>
+                            <th className="px-3 py-2"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {targets.map((t) => {
+                            const r = results[t.id];
+                            const status: TlsStatus = t.enabled === false ? "unknown" : r?.status ?? "unknown";
+                            const isRunning = running.has(t.id);
+                            return (
+                                <tr
+                                    key={t.id}
+                                    className={cn(
+                                        "border-t border-slate-200",
+                                        t.enabled === false && "opacity-50",
+                                    )}
+                                >
+                                    <td className="px-3 py-2">
+                                        <TlsStatusDot status={status} pulse={isRunning} />
+                                    </td>
+                                    <td className="px-3 py-2">
+                                        <div className="font-medium text-slate-800">{t.label}</div>
+                                        <div className="text-xs text-slate-500 font-mono break-all">{t.url}</div>
+                                    </td>
+                                    <td className="px-3 py-2 text-xs text-slate-600 font-mono">
+                                        {r ? `${r.host}:${r.port}` : "—"}
+                                    </td>
+                                    <td className="px-3 py-2 text-xs text-slate-600">
+                                        {r?.validTo ? new Date(r.validTo).toLocaleDateString() : "—"}
+                                    </td>
+                                    <td className="px-3 py-2 text-xs">
+                                        {r?.daysRemaining === undefined ? (
+                                            "—"
+                                        ) : r.daysRemaining < 0 ? (
+                                            <span className="text-rose-700 font-semibold">
+                                                expired {Math.abs(r.daysRemaining)}d ago
+                                            </span>
+                                        ) : (
+                                            <span
+                                                className={cn(
+                                                    status === "expired" && "text-rose-700 font-semibold",
+                                                    status === "warning" && "text-amber-700 font-semibold",
+                                                    status === "ok" && "text-emerald-700",
+                                                )}
+                                            >
+                                                {r.daysRemaining}d
+                                            </span>
+                                        )}
+                                    </td>
+                                    <td className="px-3 py-2 text-xs text-slate-600 truncate max-w-[180px]" title={r?.issuer}>
+                                        {r?.issuer ?? "—"}
+                                    </td>
+                                    <td className="px-3 py-2 text-xs text-slate-500">
+                                        {r ? (
+                                            <span title={new Date(r.checkedAt).toLocaleString()}>
+                                                {formatAgo(r.checkedAt)}
+                                            </span>
+                                        ) : (
+                                            "—"
+                                        )}
+                                    </td>
+                                    <td className="px-3 py-2 text-right whitespace-nowrap">
+                                        <button
+                                            type="button"
+                                            onClick={() => onRunOne(t.id)}
+                                            disabled={isRunning || t.enabled === false}
+                                            className="text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-100 disabled:opacity-50 mr-1"
+                                        >
+                                            {isRunning ? "…" : "Check"}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => onSelect(t.id)}
+                                            disabled={!r}
+                                            className="text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-100 disabled:opacity-50"
+                                        >
+                                            Details
+                                        </button>
+                                    </td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    );
 }
 
 function TlsStatusDot({

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { runMonitorCheck } from "@/lib/monitors/check";
+import { recordServerResults } from "@/lib/monitors/history-db";
 import { readMonitors } from "@/lib/monitors/persistence";
 import type { MonitorCheckResult } from "@/lib/monitors/types";
 
@@ -30,5 +31,10 @@ export async function POST(req: Request) {
     const results: MonitorCheckResult[] = await Promise.all(
         targets.map((t) => runMonitorCheck(t)),
     );
+    try {
+        recordServerResults(results);
+    } catch (err) {
+        console.error("[monitor-history] failed to record server results:", err);
+    }
     return NextResponse.json({ results });
 }

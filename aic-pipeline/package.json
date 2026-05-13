@@ -34,7 +34,7 @@
     "@types/js-beautify": "^1.14.3",
     "@xyflow/react": "^12.10.2",
     "axios": "^1.15.0",
-    "better-sqlite3": "^12.9.0",
+    "better-sqlite3": "^12.10.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "elkjs": "^0.11.1",
@@ -45,6 +45,7 @@
     "prettier": "^3.8.3",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "recharts": "^3.8.1",
     "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {

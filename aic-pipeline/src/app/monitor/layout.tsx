@@ -14,6 +14,7 @@ export default function MonitorLayout({ children }: { children: React.ReactNode 
                     { href: "/monitor/server-status", label: "Server Status" },
                     { href: "/monitor/tls", label: "TLS Expiration" },
                     { href: "/monitor/rcs-status", label: "RCS Status" },
+                    { href: "/monitor/history", label: "History" },
                 ]}
             />
             {children}

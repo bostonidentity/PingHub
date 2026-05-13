@@ -1,7 +1,15 @@
 export type TlsStatus = "ok" | "warning" | "expired" | "error" | "unknown";
 
+export interface TlsGroup {
+    id: string;
+    name: string;
+    order: number;
+}
+
 export interface TlsTarget {
     id: string;
+    /** Optional group membership; targets with an unknown groupId render as "Ungrouped". */
+    groupId?: string;
     label: string;
     url: string;
     /** Override SNI servername (defaults to hostname from url). */
@@ -14,6 +22,7 @@ export interface TlsTarget {
 }
 
 export interface TlsMonitorsFile {
+    groups: TlsGroup[];
     targets: TlsTarget[];
 }
 

@@ -10,14 +10,17 @@ function filePath(): string {
     return path.join(ENVIRONMENTS_DIR, FILENAME);
 }
 
-const EMPTY: TlsMonitorsFile = { targets: [] };
+const EMPTY: TlsMonitorsFile = { groups: [], targets: [] };
 
 export function readTlsMonitors(): TlsMonitorsFile {
     const file = filePath();
     if (!fs.existsSync(file)) return structuredClone(EMPTY);
     try {
         const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<TlsMonitorsFile>;
-        return { targets: Array.isArray(parsed.targets) ? parsed.targets : [] };
+        return {
+            groups: Array.isArray(parsed.groups) ? parsed.groups : [],
+            targets: Array.isArray(parsed.targets) ? parsed.targets : [],
+        };
     } catch {
         return structuredClone(EMPTY);
     }

@@ -99,6 +99,16 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
   const [pushLines, setPushLines] = useState<ProgressLine[]>([]);
   const pushAbortRef = useRef<AbortController | null>(null);
 
+  // ---------- Live commit progress (mirrors push) ----------
+  const [commitRunning, setCommitRunning] = useState(false);
+  const [commitSteps, setCommitSteps] = useState<ProgressStep[]>([]);
+  const [commitLines, setCommitLines] = useState<ProgressLine[]>([]);
+  const commitAbortRef = useRef<AbortController | null>(null);
+  const commitStepsRef = useRef<ProgressStep[]>([]);
+  useEffect(() => {
+    commitStepsRef.current = commitSteps;
+  }, [commitSteps]);
+
   const dirty = JSON.stringify(settings) !== JSON.stringify(savedSettings);
 
   const update = <K extends keyof GitSettings>(key: K, value: GitSettings[K]) =>
@@ -168,6 +178,7 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
   }
 
   async function handleCommit() {
+    if (commitRunning) return;
     const message = await prompt({
       title: "Commit changes",
       message: "Enter a commit message:",
@@ -175,23 +186,116 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
       confirmLabel: "Commit",
     });
     if (message === null) return;
+    setCommitRunning(true);
+    setCommitSteps([]);
+    setCommitLines([]);
     setBusy("commit");
+    setToast(null);
     try {
-      const res = await fetch("/api/git/commit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message }),
-      });
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.error ?? "Commit failed");
-      flash("ok", `Committed ${data.hash ?? ""}`.trim());
+      const result = await streamCommit(message);
+      if (result.cancelled) {
+        flash("err", "Commit cancelled.");
+      } else if (!result.ok) {
+        flash(
+          "err",
+          result.error ?? "Commit failed.",
+          commitStepsRef.current.map((s) => ({
+            cmd: s.cmd,
+            ok: s.ok === true,
+            out: s.out,
+          })),
+        );
+      } else {
+        flash("ok", `Committed ${result.hash ?? ""}`.trim());
+      }
       await refreshStatus();
       await loadCommits(0, true);
     } catch (e) {
       flash("err", (e as Error).message);
     } finally {
+      commitAbortRef.current = null;
+      setCommitRunning(false);
       setBusy(null);
     }
+  }
+
+  async function streamCommit(message: string): Promise<{
+    ok: boolean;
+    cancelled: boolean;
+    error?: string;
+    hash?: string | null;
+  }> {
+    const controller = new AbortController();
+    commitAbortRef.current = controller;
+    const res = await fetch("/api/git/commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify({ message }),
+      signal: controller.signal,
+    });
+
+    const ctype = res.headers.get("content-type") ?? "";
+    if (!ctype.includes("text/event-stream")) {
+      const data = await res.json().catch(() => ({}));
+      const err = data?.error ?? `Commit failed (HTTP ${res.status})`;
+      return { ok: false, cancelled: false, error: err };
+    }
+
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let final: {
+      ok: boolean;
+      cancelled: boolean;
+      error?: string;
+      hash?: string | null;
+    } = {
+      ok: false,
+      cancelled: false,
+      error: "Stream ended unexpectedly",
+    };
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const messages = buf.split(/\r?\n\r?\n/);
+      buf = messages.pop() ?? "";
+      for (const msg of messages) {
+        if (!msg.trim()) continue;
+        let event = "message";
+        let dataLine = "";
+        for (const line of msg.split(/\r?\n/)) {
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          else if (line.startsWith("data:")) dataLine += line.slice(5).trim();
+        }
+        let payload: unknown = null;
+        try {
+          payload = JSON.parse(dataLine);
+        } catch {
+          /* ignore */
+        }
+        handleSseEvent(
+          event,
+          payload,
+          setCommitSteps,
+          setCommitLines,
+          (f) => {
+            final = f;
+          },
+        );
+      }
+    }
+    return final;
+  }
+
+  async function cancelCommit() {
+    if (!commitRunning) return;
+    try {
+      await fetch("/api/git/commit", { method: "DELETE" });
+    } catch {
+      /* server may already be done */
+    }
+    commitAbortRef.current?.abort();
   }
 
   async function handleAction(action: "init" | "push" | "pull") {
@@ -325,10 +429,6 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
   const isPushAll =
     selectedScopes.size === 0 || selectedScopes.size === totalScopeCount;
 
-  /**
-   * Streaming push: parses Server-Sent Events from POST /api/git/push.
-   * Events: `step` (one-shot), `step-start`, `progress`, `step-end`, `done`.
-   */
   async function streamPush(confirmFlag: boolean, forceFlag?: boolean): Promise<{
     ok: boolean;
     cancelled: boolean;
@@ -392,9 +492,15 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
         } catch {
           /* ignore */
         }
-        handleSseEvent(event, payload, (f) => {
-          final = f;
-        });
+        handleSseEvent(
+          event,
+          payload,
+          setPushSteps,
+          setPushLines,
+          (f) => {
+            final = f;
+          },
+        );
       }
     }
     return final;
@@ -403,24 +509,31 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
   function handleSseEvent(
     event: string,
     payload: unknown,
-    setFinal: (f: { ok: boolean; cancelled: boolean; error?: string }) => void,
+    setSteps: React.Dispatch<React.SetStateAction<ProgressStep[]>>,
+    setLines: React.Dispatch<React.SetStateAction<ProgressLine[]>>,
+    setFinal: (f: {
+      ok: boolean;
+      cancelled: boolean;
+      error?: string;
+      hash?: string | null;
+    }) => void,
   ) {
     if (event === "step") {
       const s = payload as ProgressStep;
-      setPushSteps((prev) => [...prev, s]);
+      setSteps((prev) => [...prev, s]);
     } else if (event === "step-start") {
       const { cmd } = payload as { cmd: string };
-      setPushSteps((prev) => [...prev, { cmd, ok: null, out: "" }]);
+      setSteps((prev) => [...prev, { cmd, ok: null, out: "" }]);
     } else if (event === "progress") {
       const p = payload as ProgressLine;
-      setPushLines((prev) => {
+      setLines((prev) => {
         const next = [...prev, p];
         // cap memory: keep last 500 lines
         return next.length > 500 ? next.slice(next.length - 500) : next;
       });
     } else if (event === "step-end") {
       const s = payload as ProgressStep;
-      setPushSteps((prev) => {
+      setSteps((prev) => {
         // Replace the last in-progress step with the final result.
         for (let i = prev.length - 1; i >= 0; i--) {
           if (prev[i].cmd === s.cmd && prev[i].ok === null) {
@@ -432,11 +545,17 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
         return [...prev, s];
       });
     } else if (event === "done") {
-      const d = payload as { ok: boolean; cancelled?: boolean; error?: string };
+      const d = payload as {
+        ok: boolean;
+        cancelled?: boolean;
+        error?: string;
+        hash?: string | null;
+      };
       setFinal({
         ok: Boolean(d.ok),
         cancelled: Boolean(d.cancelled),
         error: d.error,
+        hash: d.hash ?? null,
       });
     }
   }
@@ -681,14 +800,24 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
               >
                 {busy === "pull" ? "Pulling…" : "Pull"}
               </button>
-              <button
-                type="button"
-                onClick={handleCommit}
-                disabled={busy !== null || (status?.dirtyCount ?? 0) === 0}
-                className={btnSecondary}
-              >
-                {busy === "commit" ? "Committing…" : "Commit all"}
-              </button>
+              {commitRunning ? (
+                <button
+                  type="button"
+                  onClick={cancelCommit}
+                  className="btn-secondary border-red-300 text-red-700 hover:bg-red-50"
+                >
+                  Cancel commit
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleCommit}
+                  disabled={busy !== null || (status?.dirtyCount ?? 0) === 0}
+                  className={btnSecondary}
+                >
+                  Commit all
+                </button>
+              )}
               {pushRunning ? (
                 <button
                   type="button"
@@ -912,6 +1041,87 @@ export function SettingsForm({ initialSettings, targetDirAbsolute, initialHasGit
             </div>
           )}
         </section>
+
+        {/* Live commit progress */}
+        {hasGit && (commitRunning || commitSteps.length > 0) && (
+          <section className="card-padded space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold text-slate-900">
+                {commitRunning ? "Commit in progress…" : "Commit log"}
+              </h2>
+              <div className="flex items-center gap-2">
+                {commitRunning && (
+                  <button
+                    type="button"
+                    onClick={cancelCommit}
+                    className="text-xs text-red-600 hover:underline"
+                  >
+                    Cancel
+                  </button>
+                )}
+                {!commitRunning && commitSteps.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCommitSteps([]);
+                      setCommitLines([]);
+                    }}
+                    className="text-xs text-slate-500 hover:underline"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <ol className="space-y-1 text-xs font-mono">
+              {commitSteps.map((s, i) => (
+                <li
+                  key={i}
+                  className={cn(
+                    "rounded border px-2 py-1.5 flex items-center gap-2",
+                    s.ok === null
+                      ? "border-indigo-200 bg-indigo-50/40 text-indigo-900"
+                      : s.ok
+                        ? "border-green-100 bg-green-50/40 text-green-800"
+                        : "border-red-200 bg-red-50/40 text-red-800",
+                  )}
+                >
+                  <span className="shrink-0">
+                    {s.ok === null ? (
+                      <span className="inline-block w-3 h-3 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin" />
+                    ) : s.ok ? (
+                      "✓"
+                    ) : (
+                      "✗"
+                    )}
+                  </span>
+                  <span className="break-all">{s.cmd}</span>
+                </li>
+              ))}
+            </ol>
+
+            {commitLines.length > 0 && (
+              <details open>
+                <summary className="text-xs text-slate-600 cursor-pointer select-none">
+                  Live output ({commitLines.length} line{commitLines.length === 1 ? "" : "s"})
+                </summary>
+                <pre className="mt-2 max-h-64 overflow-auto rounded border border-slate-100 bg-slate-50 p-2 text-[11px] font-mono whitespace-pre-wrap break-words">
+                  {commitLines.map((l, i) => (
+                    <div
+                      key={i}
+                      className={
+                        l.kind === "stderr" ? "text-amber-700" : "text-slate-700"
+                      }
+                    >
+                      {l.line}
+                    </div>
+                  ))}
+                </pre>
+              </details>
+            )}
+          </section>
+        )}
 
         {/* Live push progress */}
         {hasGit && (pushRunning || pushSteps.length > 0) && (

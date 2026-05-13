@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { recordTlsResults } from "@/lib/monitors/history-db";
 import { runTlsCheck } from "@/lib/monitors/tls-check";
 import { readTlsMonitors } from "@/lib/monitors/tls-persistence";
 import type { TlsCheckResult } from "@/lib/monitors/tls-types";
@@ -28,5 +29,10 @@ export async function POST(req: Request) {
     }
 
     const results: TlsCheckResult[] = await Promise.all(targets.map((t) => runTlsCheck(t)));
+    try {
+        recordTlsResults(results);
+    } catch (err) {
+        console.error("[monitor-history] failed to record TLS results:", err);
+    }
     return NextResponse.json({ results });
 }
