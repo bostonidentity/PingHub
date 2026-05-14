@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6.8] - 2026-05-14
+
+### Added
+
+- **Tenant health probe** drives the environment status pill on both the Dashboard and Environments tabs. A new background probe hits each tenant's `/monitoring/health` endpoint (no auth required, ~150ms), caches the result at `environments/<env>/health.json`, and surfaces it as a `healthy` / `checking…` / `unhealthy` pill with hover tooltip showing latency, last-checked time, and failure reason. The pill is now backed by a real reachability check instead of being derived from the last sync-pull status, so a clean tenant with a failed pull is reported as healthy-with-pull-warning rather than unhealthy.
+- **Configurable probe interval per environment** via a new **Health probe (min)** field in the Env editor (1–1440 minutes, default 15). Persisted to `environments.json` as `healthIntervalMinutes` and enforced server-side.
+- **Last-check timestamp** rendered under the health pill on every env tile (Dashboard + Environments tab), so freshness is visible at a glance without hovering.
+- New shared `HealthBadge` component (`src/components/ui/HealthBadge.tsx`) used by both views; new `StatusPill` `title` prop for tooltip support.
+- New API: `GET /api/health` returns the cache and kicks a background refresh for any env older than its interval; `POST /api/health/refresh` force-probes one env.
+- New unit tests for `probeHealth`, `isStale`, and `clampInterval` (9 tests).
+
+### Fixed
+
+- **Import bundle now persists every environment**, not just the last one. `applyBundle` was rebuilding `environments.json` from a stale snapshot on every iteration, so importing a 7-env bundle showed up as 1 env in the registry (the `.env` folders were created for all 7, but the UI only saw the last). Now mutates a working list in place and saves after each entry. Regression test added.
+- **Dashboard and Environments pages now force-dynamic** so the env list is read from disk on every request instead of being served from a stale RSC cache after an import or edit.
+- **Lowered the export passphrase minimum from 12 to 6 characters** across the encrypt path, the `/api/environments/export` validator, the EnvExport modal client check, and the placeholder text.
+- **Release fetch errors that are really shape/parse warnings** (server reachable, payload didn't match) now render in amber as `release warning:` instead of red `release fetch failed:` on both the Dashboard `EnvCard` and the Environments tab `ReleaseStrip`. Adds an inline **Retry** chip and treats any cached `release.json` error as stale so the auto-refresh doesn't get stuck red until the next UTC day.
+- **Environments toolbar polish**: Export/Import/Backups buttons now use the shared `.btn-secondary` theme; Import = `ArrowDownToLine`, Export = `ArrowUpFromLine` icons.
+
 ## [0.2.6.7] - 2026-05-12
 
 ### Added
