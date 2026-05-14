@@ -95,12 +95,12 @@ export function EnvBackupsModal({ open, onOpenChange, onChanged }: Props) {
     return (
         <Dialog.Root open={open} onOpenChange={onOpenChange}>
             <Dialog.Portal>
-                <Dialog.Overlay className="fixed inset-0 bg-slate-900/40 z-40" />
-                <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[min(720px,95vw)] max-h-[90vh] overflow-auto bg-white rounded-lg shadow-xl">
-                    <div className="flex items-center justify-between px-5 py-3 border-b">
-                        <Dialog.Title className="text-base font-semibold">Environment backups</Dialog.Title>
+                <Dialog.Overlay className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 data-[state=open]:animate-in data-[state=open]:fade-in" />
+                <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[min(720px,calc(100vw-32px))] max-h-[calc(100vh-48px)] overflow-y-auto bg-white rounded-2xl shadow-2xl">
+                    <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+                        <Dialog.Title className="text-base font-semibold text-slate-900">Environment backups</Dialog.Title>
                         <Dialog.Close asChild>
-                            <button aria-label="Close" className="text-slate-400 hover:text-slate-600 p-1">
+                            <button aria-label="Close" className="text-slate-400 hover:text-slate-600 p-1 rounded">
                                 <X size={18} />
                             </button>
                         </Dialog.Close>
@@ -115,14 +115,15 @@ export function EnvBackupsModal({ open, onOpenChange, onChanged }: Props) {
                             <div className="flex gap-2">
                                 <button
                                     onClick={load}
-                                    className="text-xs px-2 py-1 border rounded hover:bg-slate-50"
+                                    className="btn-secondary text-xs px-3 py-1.5"
                                     disabled={loading}
                                 >
-                                    {loading ? <Loader2 size={11} className="animate-spin inline" /> : "Refresh"}
+                                    {loading ? <Loader2 size={11} className="animate-spin" /> : null}
+                                    Refresh
                                 </button>
                                 <button
                                     onClick={handlePrune}
-                                    className="text-xs px-2 py-1 border rounded text-rose-600 hover:bg-rose-50"
+                                    className="btn-danger-outline text-xs px-3 py-1.5 disabled:opacity-50"
                                     disabled={loading || backups.length === 0}
                                 >
                                     Prune old

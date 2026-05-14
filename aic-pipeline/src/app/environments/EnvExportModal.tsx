@@ -89,12 +89,12 @@ export function EnvExportModal({ open, onOpenChange, environments }: Props) {
     return (
         <Dialog.Root open={open} onOpenChange={handleOpenChange}>
             <Dialog.Portal>
-                <Dialog.Overlay className="fixed inset-0 bg-slate-900/40 z-40" />
-                <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[min(560px,95vw)] max-h-[90vh] overflow-auto bg-white rounded-lg shadow-xl">
-                    <div className="flex items-center justify-between px-5 py-3 border-b">
-                        <Dialog.Title className="text-base font-semibold">Export environments</Dialog.Title>
+                <Dialog.Overlay className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 data-[state=open]:animate-in data-[state=open]:fade-in" />
+                <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[min(560px,calc(100vw-32px))] max-h-[calc(100vh-48px)] overflow-y-auto bg-white rounded-2xl shadow-2xl">
+                    <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+                        <Dialog.Title className="text-base font-semibold text-slate-900">Export environments</Dialog.Title>
                         <Dialog.Close asChild>
-                            <button aria-label="Close" className="text-slate-400 hover:text-slate-600 p-1">
+                            <button aria-label="Close" className="text-slate-400 hover:text-slate-600 p-1 rounded">
                                 <X size={18} />
                             </button>
                         </Dialog.Close>
@@ -181,14 +181,14 @@ export function EnvExportModal({ open, onOpenChange, environments }: Props) {
                         {err && <div className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded px-3 py-2">{err}</div>}
                     </div>
 
-                    <div className="flex items-center justify-end gap-2 px-5 py-3 border-t bg-slate-50">
+                    <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-slate-100 bg-slate-50/50 rounded-b-2xl">
                         <Dialog.Close asChild>
-                            <button className="px-3 py-1.5 text-sm border rounded">Cancel</button>
+                            <button className="btn-secondary">Cancel</button>
                         </Dialog.Close>
                         <button
                             onClick={doExport}
                             disabled={busy || selected.size === 0}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
+                            className="btn-primary"
                         >
                             {busy ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
                             Download bundle

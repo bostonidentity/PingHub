@@ -52,7 +52,11 @@ export function triggerStaleRefreshAsync(): void {
   const envs = getEnvironments();
   for (const e of envs) {
     const cached = readReleaseInfo(e.name);
-    if (!isStaleToday(cached?.fetchedAt)) continue;
+    // Cached errors are always retried on the next page load — otherwise a
+    // single failed probe (e.g. invalid scope) would stick in the UI until
+    // the next UTC day even after the user fixed the underlying problem.
+    const hasError = !!cached?.error;
+    if (!hasError && !isStaleToday(cached?.fetchedAt)) continue;
     if (!markRefreshing(e.name)) continue;
     refreshOne(e.name)
       .catch(() => {

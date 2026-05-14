@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef, useCallback } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { X, Download, Upload, Archive } from "lucide-react";
+import { X, ArrowDownToLine, ArrowUpFromLine, Archive } from "lucide-react";
 import { Environment, EnvironmentType } from "@/lib/fr-config-types";
 import { EnvironmentBadge } from "@/components/EnvironmentBadge";
 import { EnvEditor, type EnvEditorHandle, type EnvSaveState, type EnvMeta } from "./EnvEditor";
@@ -272,21 +272,21 @@ export function EnvironmentsManager({
         <button
           type="button"
           onClick={() => setShowImport(true)}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded hover:bg-slate-50"
+          className="btn-secondary text-xs px-3 py-1.5"
         >
-          <Upload size={14} /> Import…
+          <ArrowDownToLine size={14} /> Import…
         </button>
         <button
           type="button"
           onClick={() => setShowExport(true)}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded hover:bg-slate-50"
+          className="btn-secondary text-xs px-3 py-1.5"
         >
-          <Download size={14} /> Export…
+          <ArrowUpFromLine size={14} /> Export…
         </button>
         <button
           type="button"
           onClick={() => setShowBackups(true)}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded hover:bg-slate-50"
+          className="btn-secondary text-xs px-3 py-1.5"
           title="Manage automatic backups"
         >
           <Archive size={14} /> Backups
@@ -358,7 +358,26 @@ export function EnvironmentsManager({
                 </span>
               )}
             </div>
-            <ReleaseStrip release={releases[env.name]} />
+            <ReleaseStrip
+              release={releases[env.name]}
+              onRetry={async () => {
+                setReleases((prev) => ({ ...prev, [env.name]: null }));
+                try {
+                  const res = await fetch("/api/release/refresh", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ env: env.name }),
+                  });
+                  const entry = (await res.json()) as ReleaseCacheEntry;
+                  setReleases((prev) => ({ ...prev, [env.name]: entry }));
+                } catch (e) {
+                  setReleases((prev) => ({
+                    ...prev,
+                    [env.name]: { fetchedAt: new Date().toISOString(), error: e instanceof Error ? e.message : String(e) },
+                  }));
+                }
+              }}
+            />
           </div>
         ))}
 
@@ -748,7 +767,13 @@ export function EnvironmentsManager({
   );
 }
 
-function ReleaseStrip({ release }: { release: ReleaseCacheEntry | null | undefined }) {
+function ReleaseStrip({
+  release,
+  onRetry,
+}: {
+  release: ReleaseCacheEntry | null | undefined;
+  onRetry?: () => void | Promise<void>;
+}) {
   if (!release) {
     return (
       <div className="border-t border-slate-100 pt-2.5 mt-3 text-[11px] text-slate-400">
@@ -757,12 +782,35 @@ function ReleaseStrip({ release }: { release: ReleaseCacheEntry | null | undefin
     );
   }
   if (release.error || !release.info) {
+    const msg = release.error ?? "unknown error";
+    // Shape/parse warnings (server reachable but payload didn't match) are
+    // shown in amber rather than red — the tenant is up, just unexpected.
+    const isWarning = /unexpected release shape|missing\/invalid|invalid release/i.test(msg);
+    const tone = isWarning
+      ? { text: "text-amber-700", ring: "ring-amber-200", hover: "hover:bg-amber-50", label: "release warning" }
+      : { text: "text-rose-600", ring: "ring-rose-200", hover: "hover:bg-rose-50", label: "fetch failed" };
     return (
-      <div
-        className="border-t border-slate-100 pt-2.5 mt-3 text-[11px] text-rose-600 truncate"
-        title={release.error ?? "unknown error"}
-      >
-        fetch failed: {release.error ?? "unknown error"}
+      <div className={cn("border-t border-slate-100 pt-2.5 mt-3 text-[11px] flex items-center gap-2 min-w-0", tone.text)}>
+        <span className="truncate" title={msg}>
+          {tone.label}: {msg}
+        </span>
+        {onRetry && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              void onRetry();
+            }}
+            className={cn(
+              "ml-auto shrink-0 text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded ring-1",
+              tone.ring,
+              tone.text,
+              tone.hover,
+            )}
+          >
+            Retry
+          </button>
+        )}
       </div>
     );
   }
