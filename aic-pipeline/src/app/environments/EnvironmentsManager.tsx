@@ -12,6 +12,8 @@ import { EnvBackupsModal } from "./EnvBackupsModal";
 import { cn } from "@/lib/utils";
 import { ServiceAccountScopeSelector } from "@/components/ServiceAccountScopeSelector";
 import { StatusPill } from "@/components/ui/StatusPill";
+import { HealthBadge, type EnvHealthState } from "@/components/ui/HealthBadge";
+import type { HealthCacheEntry } from "@/lib/health/types";
 import { useDialog } from "@/components/ConfirmDialog";
 import type { ReleaseCacheEntry } from "@/lib/release/types";
 import { classifyUpgrade, daysUntil } from "@/lib/release/urgency";
@@ -101,6 +103,12 @@ const STEP_LABELS: Record<AddStep, string> = {
 
 const STEPS: AddStep[] = ["meta", "connection", "repo"];
 
+function deriveEnvHealthState(info: HealthCacheEntry | null | undefined): EnvHealthState {
+  if (!info) return "stale";
+  if (info.status === "healthy") return "healthy";
+  return "error";
+}
+
 export function EnvironmentsManager({
   initialEnvironments,
 }: {
@@ -122,6 +130,7 @@ export function EnvironmentsManager({
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
 
   const [releases, setReleases] = useState<Record<string, ReleaseCacheEntry | null>>({});
+  const [healths, setHealths] = useState<Record<string, HealthCacheEntry | null>>({});
 
   // Export / import / backups dialogs
   const [showExport, setShowExport] = useState(false);
@@ -147,6 +156,14 @@ export function EnvironmentsManager({
         const next: Record<string, ReleaseCacheEntry | null> = {};
         for (const e of data.envs) next[e.env] = e.info;
         setReleases(next);
+      })
+      .catch(() => { });
+    fetch("/api/health", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { envs: [] }))
+      .then((data: { envs: Array<{ env: string; info: HealthCacheEntry | null }> }) => {
+        const next: Record<string, HealthCacheEntry | null> = {};
+        for (const e of data.envs) next[e.env] = e.info;
+        setHealths(next);
       })
       .catch(() => { });
   }, []);
@@ -333,13 +350,16 @@ export function EnvironmentsManager({
                   <div className="text-[11px] text-slate-500 font-mono truncate">{env.name}</div>
                 </div>
               </div>
-              <span
-                className="text-slate-300 group-hover:text-slate-400 text-base cursor-grab select-none shrink-0"
-                title="Drag to reorder"
-                onClick={(e) => e.stopPropagation()}
-              >
-                ⋮⋮
-              </span>
+              <div className="flex items-start gap-2 shrink-0">
+                <HealthBadge state={deriveEnvHealthState(healths[env.name])} info={healths[env.name]} />
+                <span
+                  className="text-slate-300 group-hover:text-slate-400 text-base cursor-grab select-none"
+                  title="Drag to reorder"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  ⋮⋮
+                </span>
+              </div>
             </div>
             <div className="flex items-center gap-1.5 mt-3">
               <span

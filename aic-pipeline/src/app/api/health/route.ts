@@ -5,12 +5,12 @@ import { readHealthInfo } from "@/lib/health/persistence";
 import type { HealthCacheEntry } from "@/lib/health/types";
 
 export async function GET() {
-  triggerStaleHealthRefreshAsync();
-  const envs = getEnvironments();
-  const payload = envs.map((e) => ({
-    env: e.name,
-    intervalMinutes: e.healthIntervalMinutes,
-    info: readHealthInfo(e.name) as HealthCacheEntry | null,
-  }));
-  return NextResponse.json({ envs: payload });
+    triggerStaleHealthRefreshAsync();
+    const envs = getEnvironments();
+    const payload = envs.map((e) => ({
+        env: e.name,
+        intervalMinutes: e.healthIntervalMinutes,
+        info: readHealthInfo(e.name) as HealthCacheEntry | null,
+    }));
+    return NextResponse.json({ envs: payload });
 }

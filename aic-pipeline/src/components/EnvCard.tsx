@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
-import { StatusPill } from "@/components/ui/StatusPill";
 import { ScopesBadge } from "@/components/LastPullModal";
+import { HealthBadge } from "@/components/ui/HealthBadge";
 import type { Environment } from "@/lib/fr-config";
 import type { ReleaseCacheEntry } from "@/lib/release/types";
 import type { HealthCacheEntry } from "@/lib/health/types";
@@ -39,13 +39,6 @@ function timeAgo(iso: string): string {
 }
 
 export function EnvCard({ env, health, healthInfo, lastPull, lastPush, release, onClick }: EnvCardProps) {
-  const tooltip = healthTooltip(healthInfo);
-  const pill =
-    health === "healthy" ? <StatusPill tone="success" title={tooltip}>healthy</StatusPill>
-      : health === "stale" ? <StatusPill tone="warning" title={tooltip || "tenant not yet probed"}>checking…</StatusPill>
-        : health === "locked" ? <StatusPill tone="danger" title={tooltip}>locked</StatusPill>
-          : <StatusPill tone="danger" title={tooltip || "unhealthy"}>unhealthy</StatusPill>;
-
   return (
     <div
       role={onClick ? "button" : undefined}
@@ -63,7 +56,7 @@ export function EnvCard({ env, health, healthInfo, lastPull, lastPush, release, 
           <span className={cn("w-2 h-2 rounded-full shrink-0", DOT[env.color] ?? DOT.slate)} />
           <span className="font-semibold text-[14px] text-slate-900">{env.label}</span>
         </div>
-        {pill}
+        <HealthBadge state={health} info={healthInfo} />
       </div>
       {env.baseUrl && (
         <div className="text-[11px] text-slate-500 font-mono truncate mb-3">{env.baseUrl}</div>
@@ -179,11 +172,4 @@ function formatPlannedDate(iso: string): string {
   });
 }
 
-function healthTooltip(info: HealthCacheEntry | null | undefined): string {
-  if (!info) return "";
-  const when = timeAgo(info.checkedAt);
-  const lat = typeof info.latencyMs === "number" ? ` (${info.latencyMs}ms)` : "";
-  if (info.status === "healthy") return `tenant /monitoring/health OK${lat} \u2014 checked ${when}`;
-  const reason = info.error ?? `HTTP ${info.httpStatus ?? "?"}`;
-  return `tenant unhealthy: ${reason}${lat} \u2014 checked ${when}`;
-}
+

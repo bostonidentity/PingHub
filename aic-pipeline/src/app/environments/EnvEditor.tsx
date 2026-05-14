@@ -341,7 +341,7 @@ function TestLogApiButton({
   const statusDot = running
     ? "bg-yellow-400 animate-pulse"
     : exitCode === null ? "bg-slate-400"
-    : exitCode === 0 ? "bg-green-400" : "bg-red-400";
+      : exitCode === 0 ? "bg-green-400" : "bg-red-400";
 
   return (
     <div className="space-y-2 w-full">
@@ -383,8 +383,8 @@ function TestLogApiButton({
               {running
                 ? "Connecting to Log API..."
                 : exitCode === 0 ? "Log API credentials valid"
-                : exitCode !== null ? "Log API test failed"
-                : ""}
+                  : exitCode !== null ? "Log API test failed"
+                    : ""}
             </span>
           </div>
           <div className="bg-slate-900 p-3 font-mono text-xs max-h-48 overflow-y-auto">
@@ -530,8 +530,8 @@ function FrConfigControls({
             } else {
               const tone: LineTone =
                 entry.type === "stderr" ? "stderr"
-                : entry.type === "error" ? "error"
-                : "stdout";
+                  : entry.type === "error" ? "error"
+                    : "stdout";
               appendLine("test", { text: entry.data ?? "", tone });
             }
           } catch { /* ignore malformed */ }
@@ -629,8 +629,8 @@ function FrConfigControls({
     if (!loggedReady) appendLine("poll", { text: stamp("Polling stopped.") });
     setPolling(false);
     setStopping(false);
-  // callRestart/callDccState are stable inline closures over environmentName.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // callRestart/callDccState are stable inline closures over environmentName.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [environmentName, appendLine]);
 
   const handleStop = () => {
@@ -693,15 +693,15 @@ function FrConfigControls({
 
   const headerColor =
     terminal?.headerTone === "success" ? "text-green-400"
-    : terminal?.headerTone === "error" ? "text-red-400"
-    : terminal?.headerTone === "running" ? "text-yellow-400"
-    : "text-slate-400";
+      : terminal?.headerTone === "error" ? "text-red-400"
+        : terminal?.headerTone === "running" ? "text-yellow-400"
+          : "text-slate-400";
 
   const headerDot =
     terminal?.headerTone === "success" ? "bg-green-400"
-    : terminal?.headerTone === "error" ? "bg-red-400"
-    : terminal?.headerTone === "running" ? "bg-yellow-400 animate-pulse"
-    : "bg-slate-400";
+      : terminal?.headerTone === "error" ? "bg-red-400"
+        : terminal?.headerTone === "running" ? "bg-yellow-400 animate-pulse"
+          : "bg-slate-400";
 
   const isBusy = polling || testRunning;
 
