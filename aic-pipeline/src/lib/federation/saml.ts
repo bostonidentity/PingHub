@@ -13,11 +13,20 @@ export type SamlCertStatus = "ok" | "warning" | "expired" | "unknown";
 export interface SamlMetadataCert {
   subject: string;
   issuer: string;
+  serialNumber: string;
   validFrom: string;
   validTo: string;
   daysRemaining: number;
   status: Exclude<SamlCertStatus, "unknown">;
+  fingerprint: string;
   fingerprint256: string;
+  fingerprint512: string;
+  subjectAltName?: string;
+  infoAccess?: string;
+  keyUsage?: string[];
+  publicKeyType?: string;
+  publicKeyDetails?: Record<string, string | number | boolean | null>;
+  ca?: boolean;
 }
 
 export interface SamlProviderSummary {
@@ -77,6 +86,17 @@ function certTextToPem(raw: string): string {
   return `-----BEGIN CERTIFICATE-----\n${lines}\n-----END CERTIFICATE-----`;
 }
 
+function serializableKeyDetails(details: object | undefined): Record<string, string | number | boolean | null> | undefined {
+  if (!details) return undefined;
+  return Object.fromEntries(Object.entries(details).map(([key, value]) => {
+    if (typeof value === "bigint") return [key, value.toString()];
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean" || value === null) {
+      return [key, value];
+    }
+    return [key, String(value)];
+  }));
+}
+
 export function extractMetadataCerts(metadata: string | null | undefined): SamlMetadataCert[] {
   if (!metadata) return [];
   const matches = metadata.matchAll(/<[^>]*X509Certificate[^>]*>([\s\S]*?)<\/[^>]*X509Certificate>/gi);
@@ -89,11 +109,20 @@ export function extractMetadataCerts(metadata: string | null | undefined): SamlM
       certs.push({
         subject: cert.subject,
         issuer: cert.issuer,
+        serialNumber: cert.serialNumber,
         validFrom: new Date(cert.validFrom).toISOString(),
         validTo: new Date(cert.validTo).toISOString(),
         daysRemaining,
         status: certStatus(daysRemaining),
+        fingerprint: cert.fingerprint,
         fingerprint256: cert.fingerprint256,
+        fingerprint512: cert.fingerprint512,
+        subjectAltName: cert.subjectAltName,
+        infoAccess: cert.infoAccess,
+        keyUsage: cert.keyUsage,
+        publicKeyType: cert.publicKey.asymmetricKeyType,
+        publicKeyDetails: serializableKeyDetails(cert.publicKey.asymmetricKeyDetails),
+        ca: cert.ca,
       });
     } catch {
       // Ignore malformed cert blocks so a bad metadata document doesn't hide

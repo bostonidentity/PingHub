@@ -69,6 +69,20 @@ function tabLabel(tab: DetailTab): string {
   return tab[0].toUpperCase() + tab.slice(1);
 }
 
+function certNamePart(name: string, key: string): string {
+  const match = name.split(/\r?\n/).find((part) => part.trim().startsWith(`${key}=`));
+  return match?.slice(key.length + 1).trim() ?? "n/a";
+}
+
+function publicKeySummary(cert: SamlProviderDetail["metadataCerts"][number]): string {
+  const type = cert.publicKeyType?.toUpperCase() ?? "n/a";
+  const details = cert.publicKeyDetails;
+  if (!details) return type;
+  if (typeof details.modulusLength === "number") return `${type} ${details.modulusLength} bits`;
+  if (typeof details.namedCurve === "string") return `${type} ${details.namedCurve}`;
+  return type;
+}
+
 async function copyText(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text);
@@ -480,6 +494,10 @@ function CertPanel({ detail }: { detail: SamlProviderDetail | null }) {
       </div>
     );
   }
+
+  const cert = certs[0];
+  const altNames = cert.subjectAltName?.split(/,\s*/).filter(Boolean) ?? [];
+
   return (
     <div className="space-y-4">
       <div className="rounded-md border border-slate-200 bg-white p-3">
@@ -493,33 +511,40 @@ function CertPanel({ detail }: { detail: SamlProviderDetail | null }) {
                 </StatusPill>
               ),
             },
-            { label: "Certificates", value: `${certs.length}` },
+            { label: "Decoded cert", value: certs.length > 1 ? "Showing first metadata certificate" : "Metadata certificate" },
+            { label: "Expires", value: `${fmtDate(cert.validTo)} (${cert.daysRemaining} days remaining)` },
           ]}
         />
       </div>
 
-      {certs.map((cert, index) => (
-        <div key={cert.fingerprint256} className="overflow-hidden rounded-md border border-slate-200 bg-white">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2">
-            <div className="text-sm font-medium text-slate-800">Certificate {index + 1}</div>
-            <div className="flex items-center gap-2">
-              <StatusPill tone={STATUS_TONE[cert.status]}>{certStatusLabel(cert.status)}</StatusPill>
-              <span className="text-xs text-slate-500">{cert.daysRemaining} days remaining</span>
-            </div>
-          </div>
-          <div className="p-3">
-            <FieldRows
-              rows={[
-                { label: "Subject", value: <span className="break-all">{cert.subject}</span> },
-                { label: "Issuer", value: <span className="break-all">{cert.issuer}</span> },
-                { label: "Valid from", value: fmtDate(cert.validFrom) },
-                { label: "Valid to", value: fmtDate(cert.validTo) },
-                { label: "SHA-256", value: <span className="code-mono break-all text-xs">{cert.fingerprint256}</span> },
-              ]}
-            />
-          </div>
+      <div className="overflow-hidden rounded-md border border-slate-200 bg-white">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2">
+          <div className="text-sm font-medium text-slate-800">Decoded certificate</div>
+          <StatusPill tone={STATUS_TONE[cert.status]}>{certStatusLabel(cert.status)}</StatusPill>
         </div>
-      ))}
+        <div className="p-3">
+          <FieldRows
+            rows={[
+              { label: "Common name", value: <span className="break-all">{certNamePart(cert.subject, "CN")}</span> },
+              { label: "Organization", value: <span className="break-all">{certNamePart(cert.subject, "O")}</span> },
+              { label: "Issuer CN", value: <span className="break-all">{certNamePart(cert.issuer, "CN")}</span> },
+              { label: "Issuer org", value: <span className="break-all">{certNamePart(cert.issuer, "O")}</span> },
+              { label: "Serial", value: <span className="code-mono break-all text-xs">{cert.serialNumber}</span> },
+              { label: "Valid from", value: fmtDate(cert.validFrom) },
+              { label: "Valid to", value: fmtDate(cert.validTo) },
+              { label: "Public key", value: publicKeySummary(cert) },
+              { label: "CA", value: cert.ca ? "Yes" : "No" },
+              {
+                label: "Alt names",
+                value: altNames.length ? <span className="break-all">{altNames.join(", ")}</span> : "n/a",
+              },
+              { label: "SHA-1", value: <span className="code-mono break-all text-xs">{cert.fingerprint}</span> },
+              { label: "SHA-256", value: <span className="code-mono break-all text-xs">{cert.fingerprint256}</span> },
+              { label: "SHA-512", value: <span className="code-mono break-all text-xs">{cert.fingerprint512}</span> },
+            ]}
+          />
+        </div>
+      </div>
     </div>
   );
 }
