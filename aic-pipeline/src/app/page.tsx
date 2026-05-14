@@ -3,7 +3,6 @@ import { getEnvironments } from "@/lib/fr-config";
 import { readHistoryMerged } from "@/lib/op-history";
 import type { HistoryRecord } from "@/lib/op-history";
 import { EnvCard, type EnvHealth } from "@/components/EnvCard";
-import { ActivityRow } from "@/components/ActivityRow";
 import { readReleaseInfo } from "@/lib/release/persistence";
 import { classifyUpgrade, daysUntil } from "@/lib/release/urgency";
 import type { ReleaseCacheEntry } from "@/lib/release/types";
@@ -49,8 +48,6 @@ export default function DashboardPage() {
     return [{ env, release, urgency, days: daysUntil(nextUpgrade) }];
   });
 
-  const recent = history.slice(0, 8);
-
   return (
     <div className="space-y-10">
       <header>
@@ -86,20 +83,6 @@ export default function DashboardPage() {
             ))}
           </div>
         )}
-      </section>
-
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="section-title">Recent activity</h2>
-          <Link href="/history" className="text-sm text-indigo-600 hover:text-indigo-700">View all →</Link>
-        </div>
-        <div className="card divide-y divide-slate-100">
-          {recent.length === 0 ? (
-            <p className="px-4 py-10 text-center text-sm text-slate-400">No activity yet.</p>
-          ) : (
-            recent.map((r) => <ActivityRow key={r.id} record={r} />)
-          )}
-        </div>
       </section>
     </div>
   );
