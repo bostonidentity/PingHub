@@ -11,6 +11,11 @@ import { triggerStaleHealthRefreshAsync } from "@/lib/health/auto-refresh";
 import { readHealthInfo } from "@/lib/health/persistence";
 import type { HealthCacheEntry } from "@/lib/health/types";
 
+// Always render fresh on each request — the env list / health / release caches
+// can change underneath us (import, refresh, manual edits) and Next must not
+// serve a stale RSC payload.
+export const dynamic = "force-dynamic";
+
 const DASHBOARD_BANNER_SOON_DAYS = 7;
 
 function deriveHealth(

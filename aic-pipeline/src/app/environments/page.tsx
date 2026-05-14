@@ -2,6 +2,9 @@ import { getEnvironments } from "@/lib/fr-config";
 import { triggerStaleRefreshAsync } from "@/lib/release/auto-refresh";
 import { EnvironmentsManager } from "./EnvironmentsManager";
 
+// Never serve a cached env list — imports/edits change it on disk.
+export const dynamic = "force-dynamic";
+
 export default function EnvironmentsPage() {
   triggerStaleRefreshAsync();
   const environments = getEnvironments();
