@@ -7,34 +7,40 @@ import { readReleaseInfo } from "@/lib/release/persistence";
 import { classifyUpgrade, daysUntil } from "@/lib/release/urgency";
 import type { ReleaseCacheEntry } from "@/lib/release/types";
 import { triggerStaleRefreshAsync } from "@/lib/release/auto-refresh";
+import { triggerStaleHealthRefreshAsync } from "@/lib/health/auto-refresh";
+import { readHealthInfo } from "@/lib/health/persistence";
+import type { HealthCacheEntry } from "@/lib/health/types";
 
 const DASHBOARD_BANNER_SOON_DAYS = 7;
 
 function deriveHealth(
+  health: HealthCacheEntry | null,
   lastPull: HistoryRecord | null,
   lastPush: HistoryRecord | null,
 ): EnvHealth {
-  const latest = [lastPull, lastPush].filter(Boolean) as HistoryRecord[];
-  if (latest.some((r) => r.status === "failed")) return "error";
-  const mostRecent = latest.sort((a, b) => +new Date(b.completedAt) - +new Date(a.completedAt))[0];
-  if (!mostRecent) return "stale";
-  const age = Date.now() - +new Date(mostRecent.completedAt);
-  const DAY = 86_400_000;
-  if (age > 7 * DAY) return "stale";
+  // Tenant reachability is the primary signal.
+  if (health?.status === "unhealthy") return "error";
+  if (!health) return "stale";
+  // When the tenant is healthy, surface a sync-status warning if the most
+  // recent operation failed — distinct from tenant being down.
+  if (lastPull?.status === "failed" || lastPush?.status === "failed") return "error";
   return "healthy";
 }
 
 export default function DashboardPage() {
   triggerStaleRefreshAsync();
+  triggerStaleHealthRefreshAsync();
   const environments = getEnvironments();
   const history = readHistoryMerged({ limit: 500 }).filter((r) => r.type !== "log-search");
 
   const envCards = environments.map((env) => {
     const lastPull = history.find((r) => r.type === "pull" && r.environment === env.name) ?? null;
     const lastPush = history.find((r) => r.type === "push" && r.environment === env.name) ?? null;
+    const health = readHealthInfo(env.name);
     return {
       env,
-      health: deriveHealth(lastPull, lastPush),
+      health: deriveHealth(health, lastPull, lastPush),
+      healthInfo: health,
       lastPull: lastPull && { at: lastPull.completedAt, status: lastPull.status, scopes: lastPull.scopes },
       lastPush: lastPush && { at: lastPush.completedAt, status: lastPush.status, scopes: lastPush.scopes },
       release: readReleaseInfo(env.name),
@@ -71,11 +77,12 @@ export default function DashboardPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {envCards.map(({ env, health, lastPull, lastPush, release }) => (
+            {envCards.map(({ env, health, healthInfo, lastPull, lastPush, release }) => (
               <EnvCard
                 key={env.name}
                 env={env}
                 health={health}
+                healthInfo={healthInfo}
                 lastPull={lastPull ?? null}
                 lastPush={lastPush ?? null}
                 release={release as ReleaseCacheEntry | null}

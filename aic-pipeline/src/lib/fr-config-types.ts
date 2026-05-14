@@ -51,6 +51,8 @@ export interface Environment {
   devEnvironment?: boolean;
   /** Per-env override for the AIC pagination page size used by managed-data pulls. Defaults to 50000 when unset. */
   pageSize?: number;
+  /** Tenant /monitoring/health probe cadence (minutes). Defaults to 15. */
+  healthIntervalMinutes?: number;
 }
 
 /** Scopes supporting file-level filtering via filenameFilter env var (comma-separated filenames) */

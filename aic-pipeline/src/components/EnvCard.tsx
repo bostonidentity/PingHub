@@ -3,6 +3,7 @@ import { StatusPill } from "@/components/ui/StatusPill";
 import { ScopesBadge } from "@/components/LastPullModal";
 import type { Environment } from "@/lib/fr-config";
 import type { ReleaseCacheEntry } from "@/lib/release/types";
+import type { HealthCacheEntry } from "@/lib/health/types";
 import { classifyUpgrade, daysUntil } from "@/lib/release/urgency";
 
 export type EnvHealth = "healthy" | "stale" | "locked" | "error";
@@ -10,6 +11,8 @@ export type EnvHealth = "healthy" | "stale" | "locked" | "error";
 export interface EnvCardProps {
   env: Environment & { baseUrl?: string };
   health: EnvHealth;
+  /** Raw tenant-health probe result for tooltip / latency display. */
+  healthInfo?: HealthCacheEntry | null;
   lastPull: { at: string; status: "success" | "failed"; scopes?: string[] } | null;
   lastPush: { at: string; status: "success" | "failed"; scopes?: string[] } | null;
   release?: ReleaseCacheEntry | null;
@@ -35,12 +38,13 @@ function timeAgo(iso: string): string {
   return `${d}d ago`;
 }
 
-export function EnvCard({ env, health, lastPull, lastPush, release, onClick }: EnvCardProps) {
+export function EnvCard({ env, health, healthInfo, lastPull, lastPush, release, onClick }: EnvCardProps) {
+  const tooltip = healthTooltip(healthInfo);
   const pill =
-    health === "healthy" ? <StatusPill tone="success">healthy</StatusPill>
-      : health === "stale" ? <StatusPill tone="warning">stale</StatusPill>
-        : health === "locked" ? <StatusPill tone="danger">locked</StatusPill>
-          : <StatusPill tone="danger">error</StatusPill>;
+    health === "healthy" ? <StatusPill tone="success" title={tooltip}>healthy</StatusPill>
+      : health === "stale" ? <StatusPill tone="warning" title={tooltip || "tenant not yet probed"}>checking…</StatusPill>
+        : health === "locked" ? <StatusPill tone="danger" title={tooltip}>locked</StatusPill>
+          : <StatusPill tone="danger" title={tooltip || "unhealthy"}>unhealthy</StatusPill>;
 
   return (
     <div
@@ -105,12 +109,19 @@ function ReleaseStrip({ release }: { release: ReleaseCacheEntry | null }) {
     );
   }
   if (release.error || !release.info) {
+    const msg = release.error ?? "unknown error";
+    // Shape/parse warnings (server reachable but payload didn't match)
+    // are amber, not red — the tenant is up, just unexpected.
+    const isWarning = /unexpected release shape|missing\/invalid|invalid release/i.test(msg);
     return (
       <div
-        className="border-t border-slate-100 pt-2.5 mt-2.5 text-[11px] text-rose-600 truncate"
-        title={release.error ?? "unknown error"}
+        className={cn(
+          "border-t border-slate-100 pt-2.5 mt-2.5 text-[11px] truncate",
+          isWarning ? "text-amber-700" : "text-rose-600",
+        )}
+        title={msg}
       >
-        release fetch failed: {release.error ?? "unknown error"}
+        release {isWarning ? "warning" : "fetch failed"}: {msg}
       </div>
     );
   }
@@ -166,4 +177,13 @@ function formatPlannedDate(iso: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function healthTooltip(info: HealthCacheEntry | null | undefined): string {
+  if (!info) return "";
+  const when = timeAgo(info.checkedAt);
+  const lat = typeof info.latencyMs === "number" ? ` (${info.latencyMs}ms)` : "";
+  if (info.status === "healthy") return `tenant /monitoring/health OK${lat} \u2014 checked ${when}`;
+  const reason = info.error ?? `HTTP ${info.httpStatus ?? "?"}`;
+  return `tenant unhealthy: ${reason}${lat} \u2014 checked ${when}`;
 }

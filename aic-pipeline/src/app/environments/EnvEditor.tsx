@@ -832,6 +832,7 @@ export interface EnvMeta {
   label: string;
   color: Environment["color"];
   pageSize?: number;
+  healthIntervalMinutes?: number;
 }
 
 export interface EnvEditorProps {
@@ -856,6 +857,7 @@ export const EnvEditor = forwardRef<EnvEditorHandle, EnvEditorProps>(function En
   const [envType, setEnvType] = useState<EnvironmentType>(env.type ?? "sandbox");
   const [devEnvironment, setDevEnvironment] = useState(env.devEnvironment ?? false);
   const [pageSize, setPageSize] = useState<number | "">(env.pageSize ?? "");
+  const [healthIntervalMinutes, setHealthIntervalMinutes] = useState<number | "">(env.healthIntervalMinutes ?? "");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -877,6 +879,7 @@ export const EnvEditor = forwardRef<EnvEditorHandle, EnvEditorProps>(function En
     setEnvType(env.type ?? "sandbox");
     setDevEnvironment(env.devEnvironment ?? false);
     setPageSize(env.pageSize ?? "");
+    setHealthIntervalMinutes(env.healthIntervalMinutes ?? "");
     fetch(`/api/environments/${env.name}`)
       .then((r) => r.json())
       .then((data) => {
@@ -919,6 +922,7 @@ export const EnvEditor = forwardRef<EnvEditorHandle, EnvEditorProps>(function En
       devEnvironment: envType === "controlled" ? devEnvironment : undefined,
       envContent: currentRaw,
       pageSize: pageSize === "" ? null : pageSize,
+      healthIntervalMinutes: healthIntervalMinutes === "" ? null : healthIntervalMinutes,
     };
     if (logApiKey || logApiSecret) {
       body.logApi = { apiKey: logApiKey, apiSecret: logApiSecret };
@@ -937,7 +941,7 @@ export const EnvEditor = forwardRef<EnvEditorHandle, EnvEditorProps>(function En
       setError("Save failed.");
     }
     setSaving(false);
-  }, [label, color, envType, devEnvironment, currentRaw, logApiKey, logApiSecret, pageSize, env.name, onUpdate]);
+  }, [label, color, envType, devEnvironment, currentRaw, logApiKey, logApiSecret, pageSize, healthIntervalMinutes, env.name, onUpdate]);
 
   useImperativeHandle(ref, () => ({ save: handleSave }), [handleSave]);
 
@@ -947,8 +951,13 @@ export const EnvEditor = forwardRef<EnvEditorHandle, EnvEditorProps>(function En
   }, [saving, saved, loading, error, onSaveStateChange]);
 
   useEffect(() => {
-    onMetaChange?.({ label, color, pageSize: pageSize === "" ? undefined : pageSize });
-  }, [label, color, pageSize, onMetaChange]);
+    onMetaChange?.({
+      label,
+      color,
+      pageSize: pageSize === "" ? undefined : pageSize,
+      healthIntervalMinutes: healthIntervalMinutes === "" ? undefined : healthIntervalMinutes,
+    });
+  }, [label, color, pageSize, healthIntervalMinutes, onMetaChange]);
 
   const missing = getMissingRequired(values);
 
@@ -998,6 +1007,21 @@ export const EnvEditor = forwardRef<EnvEditorHandle, EnvEditorProps>(function En
                 onChange={(e) => {
                   const v = e.target.value;
                   setPageSize(v === "" ? "" : parseInt(v, 10) || "");
+                }}
+                className="block rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 w-24"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-slate-600" title="How often to probe /monitoring/health on the tenant">Health probe (min)</label>
+              <input
+                type="number"
+                min={1}
+                max={1440}
+                value={healthIntervalMinutes}
+                placeholder="15"
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setHealthIntervalMinutes(v === "" ? "" : parseInt(v, 10) || "");
                 }}
                 className="block rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 w-24"
               />

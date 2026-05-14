@@ -14,6 +14,7 @@ export function StatusPill({
   tone,
   children,
   className,
-}: { tone: Tone; children: React.ReactNode; className?: string }) {
-  return <span className={cn(CLASSES[tone], className)}>{children}</span>;
+  title,
+}: { tone: Tone; children: React.ReactNode; className?: string; title?: string }) {
+  return <span className={cn(CLASSES[tone], className)} title={title}>{children}</span>;
 }

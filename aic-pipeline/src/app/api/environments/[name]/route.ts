@@ -53,6 +53,18 @@ export async function PUT(
       }
     }
   }
+  if (body.healthIntervalMinutes !== undefined) {
+    if (body.healthIntervalMinutes === null || body.healthIntervalMinutes === "") {
+      delete envs[idx].healthIntervalMinutes;
+    } else {
+      const n = typeof body.healthIntervalMinutes === "number"
+        ? body.healthIntervalMinutes
+        : parseInt(String(body.healthIntervalMinutes), 10);
+      if (Number.isFinite(n) && n >= 1 && n <= 1440) {
+        envs[idx].healthIntervalMinutes = n;
+      }
+    }
+  }
   saveEnvironments(envs);
 
   if (body.envContent !== undefined) {
