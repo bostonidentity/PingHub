@@ -2,10 +2,13 @@
 
 import { useEffect, useState, useRef, useCallback } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { X } from "lucide-react";
+import { X, Download, Upload, Archive } from "lucide-react";
 import { Environment, EnvironmentType } from "@/lib/fr-config-types";
 import { EnvironmentBadge } from "@/components/EnvironmentBadge";
 import { EnvEditor, type EnvEditorHandle, type EnvSaveState, type EnvMeta } from "./EnvEditor";
+import { EnvExportModal } from "./EnvExportModal";
+import { EnvImportModal } from "./EnvImportModal";
+import { EnvBackupsModal } from "./EnvBackupsModal";
 import { cn } from "@/lib/utils";
 import { ServiceAccountScopeSelector } from "@/components/ServiceAccountScopeSelector";
 import { StatusPill } from "@/components/ui/StatusPill";
@@ -119,6 +122,20 @@ export function EnvironmentsManager({
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
 
   const [releases, setReleases] = useState<Record<string, ReleaseCacheEntry | null>>({});
+
+  // Export / import / backups dialogs
+  const [showExport, setShowExport] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [showBackups, setShowBackups] = useState(false);
+
+  const refetchEnvironments = useCallback(async () => {
+    try {
+      const res = await fetch("/api/environments", { cache: "no-store" });
+      if (res.ok) setEnvironments((await res.json()) as Environment[]);
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   useEffect(() => {
     // Pulls the current cache and kicks the server-side auto-refresh for any
@@ -250,6 +267,48 @@ export function EnvironmentsManager({
 
   return (
     <div className="space-y-6">
+      {/* Toolbar */}
+      <div className="flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onClick={() => setShowImport(true)}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded hover:bg-slate-50"
+        >
+          <Upload size={14} /> Import…
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowExport(true)}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded hover:bg-slate-50"
+        >
+          <Download size={14} /> Export…
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowBackups(true)}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded hover:bg-slate-50"
+          title="Manage automatic backups"
+        >
+          <Archive size={14} /> Backups
+        </button>
+      </div>
+
+      <EnvExportModal
+        open={showExport}
+        onOpenChange={setShowExport}
+        environments={environments}
+      />
+      <EnvImportModal
+        open={showImport}
+        onOpenChange={setShowImport}
+        liveEnvironments={environments}
+        onImported={refetchEnvironments}
+      />
+      <EnvBackupsModal
+        open={showBackups}
+        onOpenChange={setShowBackups}
+      />
+
       {/* Card grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {environments.map((env, idx) => (

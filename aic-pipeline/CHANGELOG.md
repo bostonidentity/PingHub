@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6.7] - 2026-05-12
+
+### Added
+
+- **Environment export & import** on the Environments tab. A new toolbar exposes three actions:
+  - **Export…** — choose any subset of environments and one of three secret-handling modes: redact (recommended for sharing — `SERVICE_ACCOUNT_KEY`, `RCS_PRIVATE_KEY`, `*_TOKEN`, `*_PASSWORD`, etc. are replaced with `<REDACTED>`), include plaintext (treats the bundle as sensitive), or **AES-256-GCM passphrase encryption** (PBKDF2-SHA256 / 200,000 iterations / shared salt across the bundle so a single passphrase derivation decrypts every env). The download is a single JSON bundle following schema `pinghub-environments/v1` and includes the per-env `environments.json` metadata, `.env`, `log-api.json`, `rcs-status.json`, and `release.json`. Filenames are stamped `pinghub-envs-<host>-<ts>[-secrets|-encrypted].json` and the response carries an `X-PingHub-Bundle-Sha256` integrity header.
+  - **Import…** — drop in a bundle and pick per-env actions (Skip / Replace / Rename). Replace shows a warning that the live env will be auto-backed up first. When the bundle has redacted secrets, a per-row **Keep live secrets where bundle is redacted** toggle (default ON) merges live secrets back in so importing a redacted bundle never loses real credentials. Encrypted bundles prompt for the passphrase. Writes are atomic on Windows: each env stages to `.{env}.import.tmp/`, the existing folder is renamed aside, the staged folder is promoted, and a rename failure rolls back the side-lined original.
+  - **Backups** — every overwrite first writes a full plaintext-secret snapshot to `environments/.backups/<env>-<YYYYMMDD-HHMMSS>.json`. The backups dialog lists snapshots grouped by env, with download / delete actions, and a **Prune old** button that keeps the 10 newest per env and discards anything beyond 7 days. The `.backups/` folder is git-ignored, as are exported `pinghub-envs-*.json` files at the repo root.
+  - All three actions emit op-history entries (`env-export`, `env-import`, `env-backup`).
 ## [0.2.6.6] - 2026-05-12
 
 ### Added

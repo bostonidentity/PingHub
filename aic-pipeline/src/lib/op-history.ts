@@ -12,7 +12,17 @@ const OP_LOG_PATH = path.join(ENVIRONMENTS_DIR, ".op-log.jsonl");
 const OP_LOG_MAX = 500;
 const REPORTS_DIR = path.join(ENVIRONMENTS_DIR, "promotion-reports");
 
-export type OpType = "pull" | "push" | "compare" | "dry-run" | "promote" | "log-search" | "analyze";
+export type OpType =
+  | "pull"
+  | "push"
+  | "compare"
+  | "dry-run"
+  | "promote"
+  | "log-search"
+  | "analyze"
+  | "env-export"
+  | "env-import"
+  | "env-backup";
 export type OpStatus = "success" | "failed";
 
 // ── Types ────────────────────────────────────────────────────────────────────

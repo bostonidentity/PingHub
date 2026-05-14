@@ -63,6 +63,17 @@ The environments wizard in the UI will create/edit these files for you — the a
 
 > `.env*` and `environments/` are gitignored. Keep service-account keys out of any public fork.
 
+### Export, import, and backups
+
+The Environments tab toolbar exposes **Export…**, **Import…**, and **Backups** for migrating tenant configurations between machines without manually copying folders.
+
+- **Export** writes a single `pinghub-envs-<host>-<ts>.json` bundle (schema `pinghub-environments/v1`) containing the chosen envs' metadata, `.env`, `log-api.json`, `rcs-status.json`, and `release.json`. Three secret-handling modes:
+  - **Redact** (default) — `SERVICE_ACCOUNT_KEY`, `RCS_PRIVATE_KEY`, `*_TOKEN`, `*_PASSWORD` and similar are replaced with `<REDACTED>`. Safe to share.
+  - **Plaintext** — bundle contains real secret values. Treat as sensitive.
+  - **Encrypted** — secrets are AES-256-GCM-encrypted with a passphrase (PBKDF2-SHA256, 200 000 iterations). The same passphrase is required at import. **There is no recovery if the passphrase is lost.**
+- **Import** lets you choose Skip / Replace / Rename per env. Replacing always creates an automatic backup first. When importing a redacted bundle over an existing env, **Keep live secrets where bundle is redacted** (default ON) preserves the local credentials.
+- **Backups** are written to `environments/.backups/<env>-<YYYYMMDD-HHMMSS>.json` (gitignored). The Backups dialog can download, delete, or **Prune old** snapshots — pruning keeps the 10 newest per env and discards anything older than 7 days.
+
 ## Run
 
 ```bash

@@ -34,3 +34,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+
+# Manually downloaded env export bundles (may contain secrets)
+pinghub-envs-*.json
+*-secrets.json
