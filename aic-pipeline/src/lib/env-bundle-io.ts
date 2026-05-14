@@ -185,8 +185,12 @@ export interface ApplyBundleOptions {
 export function applyBundle(opts: ApplyBundleOptions): ApplyEntryResult[] {
     validateBundle(opts.bundle);
     const decisionsByName = new Map(opts.decisions.map((d) => [d.name, d]));
-    const live = getEnvironments();
-    const liveByName = new Map(live.map((e) => [e.name, e]));
+    // `workingList` is the in-memory mirror of environments.json that we mutate
+    // and persist after every applied entry. Without this, each iteration that
+    // appended a new env was based on the original snapshot, so the final write
+    // would only contain the LAST appended env (BUG: a 7-env import surfaced as 1).
+    let workingList: Environment[] = [...getEnvironments()];
+    const liveByName = new Map(workingList.map((e) => [e.name, e]));
     const results: ApplyEntryResult[] = [];
 
     for (const entry of opts.bundle.environments) {
@@ -221,13 +225,13 @@ export function applyBundle(opts: ApplyBundleOptions): ApplyEntryResult[] {
             // Write atomically via a sibling tmp dir then rename
             writeEnvAtomically(finalName, importedVars, entry);
 
-            // Update environments.json
+            // Update environments.json — mutate the working list so subsequent
+            // iterations build on top of all previously-saved entries.
             const updatedMeta: Environment = { ...entry.meta, name: finalName };
-            const newList = exists
-                ? live.map((e) => (e.name === finalName ? updatedMeta : e))
-                : [...live, updatedMeta];
-            saveEnvironments(newList);
-            // Refresh local cache so subsequent iterations see the new state
+            workingList = exists
+                ? workingList.map((e) => (e.name === finalName ? updatedMeta : e))
+                : [...workingList, updatedMeta];
+            saveEnvironments(workingList);
             liveByName.set(finalName, updatedMeta);
 
             results.push({

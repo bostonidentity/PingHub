@@ -177,6 +177,43 @@ describe("POST /api/environments/import", () => {
         expect(liveAfter).not.toContain("<REDACTED>");
     });
 
+    it("imports many new envs and persists all of them in environments.json (regression)", async () => {
+        const { POST: importPost } = await import("@/app/api/environments/import/route");
+
+        // Build a synthetic bundle with 5 brand-new envs (no overlap with seed).
+        const bundle = {
+            $schema: "pinghub-environments/v1",
+            exportedAt: new Date().toISOString(),
+            secretsIncluded: false,
+            secretsEncryption: "none" as const,
+            environments: ["alpha", "bravo", "charlie", "delta", "echo"].map((n) => ({
+                meta: { name: n, label: n.toUpperCase(), color: "blue", type: "sandbox" },
+                envVars: { TENANT_BASE_URL: `https://${n}.example.com` },
+            })),
+        };
+        const decisions = bundle.environments.map((e) => ({
+            name: e.meta.name,
+            action: "overwrite" as const,
+        }));
+
+        const res = await importPost(
+            new Request("http://x/api/environments/import", {
+                method: "POST",
+                body: JSON.stringify({ bundle, decisions }),
+            }) as unknown as Parameters<typeof importPost>[0],
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.results.every((r: { status: string }) => r.status === "applied")).toBe(true);
+
+        // environments.json must contain seeds + all 5 new envs (BUG was: only the LAST one)
+        const persisted = JSON.parse(
+            fs.readFileSync(path.join(TMP_DIR, "environments.json"), "utf-8"),
+        ) as Array<{ name: string }>;
+        const names = persisted.map((e) => e.name).sort();
+        expect(names).toEqual(["alpha", "bravo", "charlie", "delta", "echo", "ide3", "uat"]);
+    });
+
     it("rejects encrypted bundle without passphrase", async () => {
         const { POST: exportPost } = await import("@/app/api/environments/export/route");
         const { POST: importPost } = await import("@/app/api/environments/import/route");
