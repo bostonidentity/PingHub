@@ -48,7 +48,7 @@ export function EnvExportModal({ open, onOpenChange, environments }: Props) {
             return;
         }
         if (mode === "encrypted") {
-            if (passphrase.length < 12) return setErr("passphrase must be at least 12 characters");
+            if (passphrase.length < 6) return setErr("passphrase must be at least 6 characters");
             if (passphrase !== confirmPassphrase) return setErr("passphrases do not match");
         }
         setBusy(true);
@@ -161,7 +161,7 @@ export function EnvExportModal({ open, onOpenChange, environments }: Props) {
                                     <input
                                         type="password"
                                         autoComplete="new-password"
-                                        placeholder="Passphrase (≥ 12 chars)"
+                                        placeholder="Passphrase (≥ 6 chars)"
                                         value={passphrase}
                                         onChange={(e) => setPassphrase(e.target.value)}
                                         className="border rounded px-2 py-1 text-sm"

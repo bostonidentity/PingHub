@@ -140,8 +140,8 @@ export function encryptSecrets(
     passphrase: string,
     saltOverride?: Buffer,
 ): EncryptedSecretsResult {
-    if (!passphrase || passphrase.length < 12) {
-        throw new Error("passphrase must be at least 12 characters");
+    if (!passphrase || passphrase.length < 6) {
+        throw new Error("passphrase must be at least 6 characters");
     }
     const salt = saltOverride ?? randomBytes(16);
     const key = deriveKey(passphrase, salt);

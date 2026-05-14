@@ -29,9 +29,9 @@ export async function POST(req: NextRequest) {
     if (!["exclude", "plain", "encrypted"].includes(secretsMode)) {
         return NextResponse.json({ error: "invalid secretsMode" }, { status: 400 });
     }
-    if (secretsMode === "encrypted" && (!body.passphrase || body.passphrase.length < 12)) {
+    if (secretsMode === "encrypted" && (!body.passphrase || body.passphrase.length < 6)) {
         return NextResponse.json(
-            { error: "passphrase of at least 12 characters required for encrypted mode" },
+            { error: "passphrase of at least 6 characters required for encrypted mode" },
             { status: 400 },
         );
     }

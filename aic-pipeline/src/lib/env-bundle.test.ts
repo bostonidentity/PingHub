@@ -69,7 +69,7 @@ describe("encrypt/decrypt secrets", () => {
     });
 
     it("rejects short passphrase", () => {
-        expect(() => encryptSecrets({ X: "y" }, "short")).toThrow(/at least 12/);
+        expect(() => encryptSecrets({ X: "y" }, "abc")).toThrow(/at least 6/);
     });
 
     it("fails on wrong passphrase", () => {
