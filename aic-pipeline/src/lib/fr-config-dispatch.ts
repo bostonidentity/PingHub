@@ -264,7 +264,7 @@ export async function dispatchFrConfig(input: DispatchInput): Promise<DispatchRe
           await vendor.pullSecretMappings({ exportDir, tenantUrl, token: t, realms, name, log });
           return { handled: true, code: 0 };
         case "saml":
-          await vendor.pullSaml({ exportDir, tenantUrl, token: t, descriptorFile: descriptorOf(envVars, envDir, "SAML_CONFIG_FILE"), log });
+          await vendor.pullSaml({ exportDir, tenantUrl, token: t, realms, descriptorFile: descriptorOf(envVars, envDir, "SAML_CONFIG_FILE"), log });
           return { handled: true, code: 0 };
         case "variables":
           await vendor.pullVariables({ exportDir, tenantUrl, token: t, name, log });

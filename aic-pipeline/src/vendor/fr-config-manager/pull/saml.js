@@ -49,14 +49,91 @@ function safeFileNameUnderscore(name) {
   return name.replace(/[^a-zA-Z0-9_.]/g, "_");
 }
 
-async function pullSaml({ exportDir, tenantUrl, token, descriptorFile, log }) {
+async function pullEntity({ exportDir, tenantUrl, token, realm, entityId, samlId, samlLocation, fileName, emit }) {
+  const amSamlBaseUrl = `${tenantUrl}/am/json/realms/root/realms/${realm}/realm-config/saml2`;
+  const entityEndpoint = `${amSamlBaseUrl}/${samlLocation}/${samlId}`;
+  emit(`GET ${entityEndpoint}\n`);
+  const config = escapePlaceholders((await restGet(entityEndpoint, null, token)).data);
+
+  const metadataUrl = `${tenantUrl}/am/saml2/jsp/exportmetadata.jsp?entityid=${encodeURIComponent(entityId)}&realm=${encodeURIComponent(`/${realm}`)}`;
+  emit(`GET ${metadataUrl}\n`);
+  let metadata = "";
+  try {
+    metadata = (await restGet(metadataUrl, null, null)).data;
+  } catch (e) {
+    emit(`Warning: unable to fetch metadata for ${entityId}: ${e?.message ?? String(e)}\n`);
+  }
+
+  const targetName = fileName ?? safeFileNameUnderscore(entityId);
+  const targetDir = path.join(exportDir, "realms", realm, EXPORT_SUBDIR, samlLocation);
+  if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+  fs.writeFileSync(path.join(targetDir, `${targetName}.json`), JSON.stringify({ config, metadata }, null, 2));
+  emit(`  ← ${realm}/${samlLocation}/${targetName}\n`);
+}
+
+async function pullDiscoveredProviders({ exportDir, tenantUrl, token, realm, emit }) {
+  const amSamlBaseUrl = `${tenantUrl}/am/json/realms/root/realms/${realm}/realm-config/saml2`;
+  const queryEndpoint = `${amSamlBaseUrl}?_queryFilter=true&_pageSize=1000`;
+  emit(`GET ${queryEndpoint}\n`);
+  const query = (await restGet(queryEndpoint, null, token)).data;
+  const providers = query.result ?? [];
+  if (providers.length === 0) {
+    emit(`saml: no entity providers found in realm ${realm}\n`);
+    return;
+  }
+
+  for (const provider of providers) {
+    const entityId = provider.entityId ?? provider._id;
+    const samlId = provider._id;
+    const samlLocation = provider.location;
+    if (!entityId || !samlId || !samlLocation) {
+      emit(`Warning: skipping SAML entity with missing id/location in realm ${realm}\n`);
+      continue;
+    }
+    await pullEntity({ exportDir, tenantUrl, token, realm, entityId, samlId, samlLocation, emit });
+  }
+}
+
+async function pullDiscoveredCirclesOfTrust({ exportDir, tenantUrl, token, realm, emit }) {
+  const cotListEndpoint = `${tenantUrl}/am/json/realms/root/realms/${realm}/realm-config/federation/circlesoftrust?_queryFilter=true&_pageSize=1000`;
+  emit(`GET ${cotListEndpoint}\n`);
+  let query;
+  try {
+    query = (await restGet(cotListEndpoint, null, token)).data;
+  } catch (e) {
+    emit(`Warning: unable to discover circles of trust for realm ${realm}: ${e?.message ?? String(e)}\n`);
+    return;
+  }
+  for (const cotRef of query.result ?? []) {
+    const cotName = cotRef._id ?? cotRef.name;
+    if (!cotName) continue;
+    const cotEndpoint = `${tenantUrl}/am/json/realms/root/realms/${realm}/realm-config/federation/circlesoftrust/${encodeURIComponent(cotName)}`;
+    emit(`GET ${cotEndpoint}\n`);
+    try {
+      const cot = (await restGet(cotEndpoint, null, token)).data;
+      const targetDir = path.join(exportDir, "realms", realm, EXPORT_SUBDIR, "COT");
+      if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+      fs.writeFileSync(path.join(targetDir, `${safeFileNameUnderscore(cotName)}.json`), JSON.stringify(cot, null, 2));
+      emit(`  ← ${realm}/COT/${cotName}\n`);
+    } catch (e) {
+      emit(`Warning: unable to fetch COT ${cotName}: ${e?.message ?? String(e)}\n`);
+    }
+  }
+}
+
+async function pullSaml({ exportDir, tenantUrl, token, descriptorFile, realms, log }) {
   if (!exportDir) throw new Error("exportDir is required");
   if (!tenantUrl) throw new Error("tenantUrl is required");
   if (!token) throw new Error("token is required");
   const emit = typeof log === "function" ? log : () => {};
 
   if (!descriptorFile || !fs.existsSync(descriptorFile)) {
-    emit(`saml: no descriptor file at ${descriptorFile ?? "(unset)"} — skipping\n`);
+    const realmList = Array.isArray(realms) && realms.length > 0 ? realms : ["alpha"];
+    emit(`saml: no descriptor file at ${descriptorFile ?? "(unset)"} — auto-discovering providers\n`);
+    for (const realm of realmList) {
+      await pullDiscoveredProviders({ exportDir, tenantUrl, token, realm, emit });
+      await pullDiscoveredCirclesOfTrust({ exportDir, tenantUrl, token, realm, emit });
+    }
     return;
   }
 
