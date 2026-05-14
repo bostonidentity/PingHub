@@ -19,9 +19,9 @@ describe("EnvCard", () => {
     expect(screen.getByText("healthy")).toBeInTheDocument();
   });
 
-  it("shows 'stale' pill when health=stale", () => {
+  it("shows 'checking…' pill when health=stale", () => {
     render(<EnvCard env={ENV} health="stale" lastPull={null} lastPush={null} />);
-    expect(screen.getByText("stale")).toBeInTheDocument();
+    expect(screen.getByText("checking…")).toBeInTheDocument();
   });
 
   it("shows em-dash when no pull history", () => {
