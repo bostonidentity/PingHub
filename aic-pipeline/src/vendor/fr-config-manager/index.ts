@@ -890,9 +890,9 @@ export async function pushSecretMappings(opts: { configDir: string; tenantUrl: s
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const samlPull = require("./pull/saml.js") as {
-  pullSaml: (opts: { exportDir: string; tenantUrl: string; token: string; descriptorFile?: string; log?: (line: string) => void }) => Promise<void>;
+  pullSaml: (opts: { exportDir: string; tenantUrl: string; token: string; realms?: string[]; descriptorFile?: string; log?: (line: string) => void }) => Promise<void>;
 };
-export async function pullSaml(opts: { exportDir: string; tenantUrl: string; token: string; descriptorFile?: string; log?: (line: string) => void }): Promise<void> {
+export async function pullSaml(opts: { exportDir: string; tenantUrl: string; token: string; realms?: string[]; descriptorFile?: string; log?: (line: string) => void }): Promise<void> {
   await samlPull.pullSaml(opts);
 }
 // eslint-disable-next-line @typescript-eslint/no-require-imports

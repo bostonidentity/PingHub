@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { href: "/", label: "Dashboard" },
   { href: "/sync", label: "Sync" },
   { href: "/configs", label: "Browse" },
+  { href: "/federation", label: "Federation" },
   { href: "/compare", label: "Compare" },
   { href: "/promote", label: "Promote" },
   { href: "/analyze", label: "Analyze" },
