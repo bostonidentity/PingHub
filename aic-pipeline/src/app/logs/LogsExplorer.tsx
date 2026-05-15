@@ -1049,14 +1049,22 @@ function JsonLogView({
   // Skipped while a scroll-to-selection loop is in flight so the two
   // animations don't compete.
   useEffect(() => {
-    dbg("auto-tail effect", { entriesLen: entries.length, autoScroll, atBottomRef: atBottomRef.current, scrollLoopActive: scrollLoopActiveRef.current, virtualOffset: virtualOffsetRef.current, totalSize: totalSizeRef.current });
+    dbg("auto-tail effect", { entriesLen: entries.length, autoScroll, atBottomRef: atBottomRef.current, scrollLoopActive: scrollLoopActiveRef.current, virtualOffset: virtualOffsetRef.current, totalSize: totalSizeRef.current, hasInitialTarget, pinned: pinnedRef.current });
     if (!autoScroll || !atBottomRef.current) { dbg("auto-tail SKIP", { reason: !autoScroll ? "autoScroll off" : "not at bottom" }); return; }
     if (entries.length === 0) { dbg("auto-tail SKIP", { reason: "empty" }); return; }
     if (scrollLoopActiveRef.current) { dbg("auto-tail SKIP", { reason: "scroll loop active" }); return; }
+    // Skip while a scroll-to-selection request is pending. On view-mode
+    // switches (terminal → json) the parent bumps selectedScrollNonce in a
+    // useEffect that runs AFTER JsonLogView mounts. So at mount,
+    // selectedScrollRequest is still stale (null or with old nonce) and
+    // `atBottomRef` initializes to true via `useRef(!hasInitialTarget)`.
+    // Without this guard, the mount-phase auto-tail call jams the viewport
+    // to the end before PIN can scroll to the selected row.
+    if (hasInitialTarget && !pinnedRef.current) { dbg("auto-tail SKIP", { reason: "selection target pending" }); return; }
     dbg("auto-tail FIRE scrollToIndex(end)", { idx: entries.length - 1 });
     virtualizer.scrollToIndex(entries.length - 1, { align: "end" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries.length, autoScroll]);
+  }, [entries.length, autoScroll, hasInitialTarget, pinned]);
 
   // Stabilize viewport when buffer evicts from the front. Without this, every
   // eviction shifts every row's index, so the same offset now reveals
