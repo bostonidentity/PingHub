@@ -26,8 +26,8 @@ import ELK from "elkjs/lib/elk.bundled.js";
 import { cn } from "@/lib/utils";
 import { highlightJs, ScriptOverlay } from "./ScriptOverlay";
 import { withLineNumbers } from "@/lib/highlight";
-import { JourneyOutlineView  } from "./JourneyOutlineView";
-import { JourneyTableView    } from "./JourneyTableView";
+import { JourneyOutlineView } from "./JourneyOutlineView";
+import { JourneyTableView } from "./JourneyTableView";
 import { JourneySwimLaneView } from "./JourneySwimLaneView";
 import { JourneyLegendModal } from "@/components/JourneyLegendModal";
 
@@ -35,15 +35,15 @@ import { JourneyLegendModal } from "@/components/JourneyLegendModal";
 
 const SUCCESS_ID = "e301438c-0bd0-429c-ab0c-66126501069a";
 const FAILURE_ID = "70e691a5-1e33-4ac3-a356-e7b6d60d92e0";
-const NODE_W     = 175;
-const NODE_H     = 64;
-const TERM_SIZE  = 60;
+const NODE_W = 175;
+const NODE_H = 64;
+const TERM_SIZE = 60;
 const START_SIZE = 48;
 
 // Page group
-const PAGE_GROUP_W   = 199;
-const PAGE_CHILD_W   = 175; // PAGE_GROUP_W - 24
-const PAGE_CHILD_H   = 30;
+const PAGE_GROUP_W = 199;
+const PAGE_CHILD_W = 175; // PAGE_GROUP_W - 24
+const PAGE_CHILD_H = 30;
 const PAGE_GROUP_TOP = 42;  // header height
 const PAGE_GROUP_PAD = 12;
 const PAGE_CHILD_GAP = 6;
@@ -73,10 +73,10 @@ function getNodeDims(node: Node): [number, number] {
     const children = (node.data.children as PageChildConfig[] | undefined) ?? [];
     return [PAGE_GROUP_W, pageGroupHeight(children.length)];
   }
-  if (node.type === "startNode")     return [START_SIZE, START_SIZE];
-  if (node.type === "successNode")   return [TERM_SIZE,  TERM_SIZE];
-  if (node.type === "failureNode")   return [TERM_SIZE,  TERM_SIZE];
-  if (node.type === "chainCollapsed") return [CHAIN_W,    CHAIN_H];
+  if (node.type === "startNode") return [START_SIZE, START_SIZE];
+  if (node.type === "successNode") return [TERM_SIZE, TERM_SIZE];
+  if (node.type === "failureNode") return [TERM_SIZE, TERM_SIZE];
+  if (node.type === "chainCollapsed") return [CHAIN_W, CHAIN_H];
   return [NODE_W, NODE_H];
 }
 
@@ -108,7 +108,7 @@ interface PageNodeConfig {
 // ── Custom nodes ──────────────────────────────────────────────────────────────
 
 const SPECIAL_NODE_BG: Partial<Record<string, string>> = {
-  ScriptedDecisionNode:   "bg-violet-50",
+  ScriptedDecisionNode: "bg-violet-50",
   InnerTreeEvaluatorNode: "bg-amber-50",
 };
 
@@ -123,7 +123,7 @@ function JourneyNodeComponent({ data }: NodeProps) {
     isFlashing?: boolean;
   };
   const outcomes = d.outcomes ?? [];
-  const h        = journeyNodeHeight(outcomes.length);
+  const h = journeyNodeHeight(outcomes.length);
   const specialBg = d.nodeType ? (SPECIAL_NODE_BG[d.nodeType] ?? "bg-white") : "bg-white";
 
   return (
@@ -131,10 +131,10 @@ function JourneyNodeComponent({ data }: NodeProps) {
       className={cn(
         "border rounded-lg shadow-sm transition-all overflow-visible cursor-pointer active:cursor-grabbing",
         specialBg,
-        d.isFlashing    ? "border-sky-400 ring-4 ring-sky-300 ring-opacity-100 animate-pulse" :
-        d.isSelected    ? "border-sky-500 ring-2 ring-sky-300 shadow-sky-100" :
-        d.isSearchMatch ? "border-amber-400 ring-2 ring-amber-200" :
-                          "border-slate-300"
+        d.isFlashing ? "border-sky-400 ring-4 ring-sky-300 ring-opacity-100 animate-pulse" :
+          d.isSelected ? "border-sky-500 ring-2 ring-sky-300 shadow-sky-100" :
+            d.isSearchMatch ? "border-amber-400 ring-2 ring-amber-200" :
+              "border-slate-300"
       )}
       style={{ width: NODE_W, height: h, position: "relative" }}
     >
@@ -147,23 +147,23 @@ function JourneyNodeComponent({ data }: NodeProps) {
 
       {outcomes.length > 0
         ? outcomes.map((outcome, i) => {
-            const topPct = `${((i + 0.5) / outcomes.length) * 100}%`;
-            return (
-              <Fragment key={outcome}>
-                <span style={{
-                  position: "absolute", right: 14, top: topPct,
-                  transform: "translateY(-50%)", fontSize: 8, color: "#94a3b8",
-                  fontFamily: "monospace", whiteSpace: "nowrap",
-                  maxWidth: 48, overflow: "hidden", textOverflow: "ellipsis",
-                  pointerEvents: "none",
-                }}>
-                  {outcome}
-                </span>
-                <Handle id={outcome} type="source" position={Position.Right}
-                  style={{ top: topPct, background: "#94a3b8" }} />
-              </Fragment>
-            );
-          })
+          const topPct = `${((i + 0.5) / outcomes.length) * 100}%`;
+          return (
+            <Fragment key={outcome}>
+              <span style={{
+                position: "absolute", right: 14, top: topPct,
+                transform: "translateY(-50%)", fontSize: 8, color: "#94a3b8",
+                fontFamily: "monospace", whiteSpace: "nowrap",
+                maxWidth: 48, overflow: "hidden", textOverflow: "ellipsis",
+                pointerEvents: "none",
+              }}>
+                {outcome}
+              </span>
+              <Handle id={outcome} type="source" position={Position.Right}
+                style={{ top: topPct, background: "#94a3b8" }} />
+            </Fragment>
+          );
+        })
         : <Handle type="source" position={Position.Right} style={{ top: "50%", background: "#94a3b8" }} />
       }
     </div>
@@ -185,9 +185,9 @@ function PageGroupNodeComponent({ data }: NodeProps) {
     <div
       className={cn(
         "border-2 rounded-xl transition-all cursor-pointer active:cursor-grabbing",
-        d.isSelected    ? "border-violet-500 bg-violet-50 ring-2 ring-violet-300" :
-        d.isSearchMatch ? "border-amber-400  bg-amber-50  ring-2 ring-amber-200" :
-                          "border-violet-300 bg-violet-50/60"
+        d.isSelected ? "border-violet-500 bg-violet-50 ring-2 ring-violet-300" :
+          d.isSearchMatch ? "border-amber-400  bg-amber-50  ring-2 ring-amber-200" :
+            "border-violet-300 bg-violet-50/60"
       )}
       style={{ width: PAGE_GROUP_W, height: h, position: "relative" }}
     >
@@ -201,12 +201,12 @@ function PageGroupNodeComponent({ data }: NodeProps) {
 
       {outcomes.length > 0
         ? outcomes.map((outcome, i) => {
-            const topPct = `${((i + 0.5) / outcomes.length) * 100}%`;
-            return (
-              <Handle key={outcome} id={outcome} type="source" position={Position.Right}
-                style={{ top: topPct, background: "#94a3b8" }} />
-            );
-          })
+          const topPct = `${((i + 0.5) / outcomes.length) * 100}%`;
+          return (
+            <Handle key={outcome} id={outcome} type="source" position={Position.Right}
+              style={{ top: topPct, background: "#94a3b8" }} />
+          );
+        })
         : <Handle type="source" position={Position.Right} style={{ top: "50%", background: "#94a3b8" }} />
       }
     </div>
@@ -287,12 +287,12 @@ function ChainCollapsedNodeComponent({ data }: NodeProps) {
 }
 
 const nodeTypes = {
-  journeyNode:    JourneyNodeComponent,
-  pageGroup:      PageGroupNodeComponent,
-  pageChild:      PageChildNodeComponent,
-  startNode:      StartNodeComponent,
-  successNode:    SuccessNodeComponent,
-  failureNode:    FailureNodeComponent,
+  journeyNode: JourneyNodeComponent,
+  pageGroup: PageGroupNodeComponent,
+  pageChild: PageChildNodeComponent,
+  startNode: StartNodeComponent,
+  successNode: SuccessNodeComponent,
+  failureNode: FailureNodeComponent,
   chainCollapsed: ChainCollapsedNodeComponent,
 };
 
@@ -307,25 +307,29 @@ function parseJourney(json: string, pageConfigs?: Map<string, PageNodeConfig>): 
 
   for (const [id, pos] of Object.entries(data.staticNodes ?? {})) {
     const type =
-      id === "startNode" ? "startNode"   :
-      id === SUCCESS_ID  ? "successNode" :
-      id === FAILURE_ID  ? "failureNode" : "successNode";
-    rfNodes.push({ id, type, position: { x: pos.x, y: pos.y },
-      data: { label: id === "startNode" ? "Start" : id === SUCCESS_ID ? "Success" : id === FAILURE_ID ? "Failure" : "End", outcomes: [] } });
+      id === "startNode" ? "startNode" :
+        id === SUCCESS_ID ? "successNode" :
+          id === FAILURE_ID ? "failureNode" : "successNode";
+    rfNodes.push({
+      id, type, position: { x: pos.x, y: pos.y },
+      data: { label: id === "startNode" ? "Start" : id === SUCCESS_ID ? "Success" : id === FAILURE_ID ? "Failure" : "End", outcomes: [] }
+    });
   }
 
   if (data.entryNodeId && data.staticNodes?.["startNode"]) {
-    rfEdges.push({ id: "__start__", source: "startNode", target: data.entryNodeId,
-      style: { stroke: "#10b981", strokeWidth: 2 } });
+    rfEdges.push({
+      id: "__start__", source: "startNode", target: data.entryNodeId,
+      style: { stroke: "#10b981", strokeWidth: 2 }
+    });
   }
 
   for (const [id, node] of Object.entries(data.nodes ?? {})) {
-    const isPageNode  = node.nodeType === "PageNode";
-    const pageConfig  = isPageNode ? pageConfigs?.get(id) : undefined;
+    const isPageNode = node.nodeType === "PageNode";
+    const pageConfig = isPageNode ? pageConfigs?.get(id) : undefined;
 
     if (isPageNode && pageConfig) {
       const children = pageConfig.nodes ?? [];
-      const groupH   = pageGroupHeight(children.length);
+      const groupH = pageGroupHeight(children.length);
 
       // Group container node
       rfNodes.push({
@@ -358,8 +362,10 @@ function parseJourney(json: string, pageConfigs?: Map<string, PageNodeConfig>): 
       });
     } else {
       const outcomes = Object.keys(node.connections ?? {});
-      rfNodes.push({ id, type: "journeyNode", position: { x: 0, y: 0 },
-        data: { label: node.displayName ?? node.nodeType ?? id.slice(0, 8), nodeType: node.nodeType, outcomes } });
+      rfNodes.push({
+        id, type: "journeyNode", position: { x: 0, y: 0 },
+        data: { label: node.displayName ?? node.nodeType ?? id.slice(0, 8), nodeType: node.nodeType, outcomes }
+      });
     }
 
     // Edges (same for both regular and page group nodes)
@@ -389,7 +395,7 @@ function applyDagreLayout(nodes: Node[], edges: Edge[], compact = false): Node[]
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
   g.setGraph(compact
-    ? { rankdir: "LR", nodesep: 25, ranksep: 60,  marginx: 24, marginy: 24 }
+    ? { rankdir: "LR", nodesep: 25, ranksep: 60, marginx: 24, marginy: 24 }
     : { rankdir: "LR", nodesep: 60, ranksep: 160, marginx: 40, marginy: 40 },
   );
 
@@ -474,14 +480,14 @@ function collapseChains(
   expandedIds: Set<string>,
   minLen: number,
 ): { nodes: Node[]; edges: Edge[]; chains: Array<{ id: string; memberIds: string[] }> } {
-  const nodeMap   = new Map(nodes.map((n) => [n.id, n]));
-  const inCount   = new Map<string, number>();
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const inCount = new Map<string, number>();
   const outEdgeBy = new Map<string, Edge[]>();
-  const inEdgeBy  = new Map<string, Edge[]>();
+  const inEdgeBy = new Map<string, Edge[]>();
   for (const e of edges) {
     inCount.set(e.target, (inCount.get(e.target) ?? 0) + 1);
     (outEdgeBy.get(e.source) ?? outEdgeBy.set(e.source, []).get(e.source)!).push(e);
-    (inEdgeBy.get(e.target)  ?? inEdgeBy.set(e.target,  []).get(e.target)!).push(e);
+    (inEdgeBy.get(e.target) ?? inEdgeBy.set(e.target, []).get(e.target)!).push(e);
   }
 
   const isChainMember = (id: string): boolean => {
@@ -515,18 +521,18 @@ function collapseChains(
     chains.push({
       id: `__chain__${members[0]}`,
       memberIds: members,
-      inEdge:  inEdgeBy.get(members[0])![0],
+      inEdge: inEdgeBy.get(members[0])![0],
       outEdge: outEdgeBy.get(members[members.length - 1])![0],
     });
   }
 
-  const activeChains  = chains.filter((c) => !expandedIds.has(c.id));
+  const activeChains = chains.filter((c) => !expandedIds.has(c.id));
   const activeMembers = new Set(activeChains.flatMap((c) => c.memberIds));
-  const removedEdges  = new Set<string>();
+  const removedEdges = new Set<string>();
   for (const c of activeChains) {
     for (const m of c.memberIds) {
       for (const e of outEdgeBy.get(m) ?? []) removedEdges.add(e.id);
-      for (const e of inEdgeBy.get(m)  ?? []) removedEdges.add(e.id);
+      for (const e of inEdgeBy.get(m) ?? []) removedEdges.add(e.id);
     }
   }
 
@@ -1004,34 +1010,47 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
 
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState<Node>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [hoveredEdgeId,  setHoveredEdgeId]  = useState<string | null>(null);
-  const [pinnedEdgeId,   setPinnedEdgeId]   = useState<string | null>(null);
-  const [searchQuery,    setSearchQuery]     = useState("");
-  const [layoutKey,      setLayoutKey]       = useState(0);
-  const [nodePanel,      setNodePanel]       = useState<NodePanelData | null>(null);
-  const [pageConfigs,    setPageConfigs]     = useState<Map<string, PageNodeConfig>>(new Map());
-  const [isCompact,      setIsCompact]       = useState(false);
+  const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
+  const [pinnedEdgeId, setPinnedEdgeId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [layoutKey, setLayoutKey] = useState(0);
+  const [nodePanel, setNodePanel] = useState<NodePanelData | null>(null);
+  const [pageConfigs, setPageConfigs] = useState<Map<string, PageNodeConfig>>(new Map());
+  const [isCompact, setIsCompact] = useState(false);
   const [collapseChainsOn, setCollapseChainsOn] = useState(true);
+  const [showCanvasTip, setShowCanvasTip] = useState(true);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (window.localStorage.getItem("journey-graph-tip-dismissed") === "1") {
+      setShowCanvasTip(false);
+    }
+  }, []);
+  const dismissCanvasTip = useCallback(() => {
+    setShowCanvasTip(false);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("journey-graph-tip-dismissed", "1");
+    }
+  }, []);
   const [expandedChainIds, setExpandedChainIds] = useState<Set<string>>(new Set());
   const [layoutEngine, _setLayoutEngine] = useState<"dagre" | "elk">("elk");
-  const [displayView,    setDisplayView]     = useState<"graph" | "outline" | "table" | "swimlane" | "json">("graph");
+  const [displayView, setDisplayView] = useState<"graph" | "outline" | "table" | "swimlane" | "json">("graph");
   // "control" = trace the outcome graph (default). "data" = trace shared-state
   // dependencies derived from every node's `inputs` / `outputs` arrays.
-  const [traceMode,      setTraceMode]       = useState<"neighbors" | "upstream" | "downstream" | "data">("data");
+  const [traceMode, setTraceMode] = useState<"neighbors" | "upstream" | "downstream" | "data">("data");
 
   // ── Inner-tree navigation stack ───────────────────────────────────────────
-  const [navStack,   setNavStack]   = useState<{ journeyId: string; json: string; sourceNodeId: string }[]>([]);
+  const [navStack, setNavStack] = useState<{ journeyId: string; json: string; sourceNodeId: string }[]>([]);
   const [navLoading, setNavLoading] = useState(false);
   const [flashNodeId, setFlashNodeId] = useState<string | null>(null);
 
   // Derive active journey from top of stack (falls back to props)
-  const activeJson      = navStack.length > 0 ? navStack[navStack.length - 1].json      : json;
+  const activeJson = navStack.length > 0 ? navStack[navStack.length - 1].json : json;
   const activeJourneyId = navStack.length > 0 ? navStack[navStack.length - 1].journeyId : journeyId;
 
   // Saved viewport per journey key (to restore when going back)
-  const savedViewports     = useRef<Map<string, { x: number; y: number; zoom: number }>>(new Map());
+  const savedViewports = useRef<Map<string, { x: number; y: number; zoom: number }>>(new Map());
   // null = fit view; non-null = restore this viewport
-  const pendingViewport    = useRef<{ x: number; y: number; zoom: number } | null>(null);
+  const pendingViewport = useRef<{ x: number; y: number; zoom: number } | null>(null);
   // Only adjust viewport when an explicit navigation/layout action occurred,
   // not when dagreNodes changes due to pageConfigs loading
   const shouldAdjustViewport = useRef(true); // true for initial load
@@ -1188,7 +1207,7 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
 
     void doFetch();
     return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewModal?.nodeId, previewModal?.loading]);
 
   // Fetch script names for ScriptedDecisionNodes (for search)
@@ -1244,7 +1263,7 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
     const vp = pendingViewport.current;
     pendingViewport.current = null;
     if (vp) setTimeout(() => setViewport(vp, { duration: 300 }), 80);
-    else    setTimeout(() => fitView({ duration: 400, padding: 0.25 }), 80);
+    else setTimeout(() => fitView({ duration: 400, padding: 0.25 }), 80);
   }, [fitView, setViewport]);
 
   // Reset UI state whenever the graph shape changes (new journey, chain toggle,
@@ -1335,7 +1354,7 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
       fitView({ nodes: [{ id: focusNodeId }], duration: 500, padding: 0.5, maxZoom: 1.5 });
     }, 300);
     return () => clearTimeout(t);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusNodeId]);
 
   // Arrow key panning
@@ -1347,7 +1366,7 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
       e.preventDefault();
       const vp = getViewport();
       const dx = e.key === "ArrowLeft" ? PAN : e.key === "ArrowRight" ? -PAN : 0;
-      const dy = e.key === "ArrowUp"   ? PAN : e.key === "ArrowDown"  ? -PAN : 0;
+      const dy = e.key === "ArrowUp" ? PAN : e.key === "ArrowDown" ? -PAN : 0;
       setViewport({ x: vp.x + dx, y: vp.y + dy, zoom: vp.zoom }, { duration: 100 });
     };
     document.addEventListener("keydown", handler);
@@ -1361,7 +1380,7 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
     const ids = new Set<string>();
     let count = 0;
     for (const n of rfNodes) {
-      const labelMatch  = String(n.data.label ?? "").toLowerCase().includes(q);
+      const labelMatch = String(n.data.label ?? "").toLowerCase().includes(q);
       const scriptMatch = n.data.nodeType === "ScriptedDecisionNode" &&
         (scriptNames.get(n.id) ?? "").toLowerCase().includes(q);
       if (labelMatch || scriptMatch) {
@@ -1416,7 +1435,7 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
       return { ancestors: prev, descendants: next };
     }
     const full = getConnected(selectedNodeId, baseEdges);
-    if (traceMode === "upstream")   return { ancestors: full.ancestors, descendants: new Set<string>() };
+    if (traceMode === "upstream") return { ancestors: full.ancestors, descendants: new Set<string>() };
     if (traceMode === "downstream") return { ancestors: new Set<string>(), descendants: full.descendants };
     return full;
   }, [selectedNodeId, baseEdges, traceMode]);
@@ -1437,10 +1456,10 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
       hasIn.add(e.target); hasOut.add(e.source);
     }
     const sources = [...nodes].filter((n) => !hasIn.has(n));
-    const sinks   = [...nodes].filter((n) => !hasOut.has(n));
+    const sinks = [...nodes].filter((n) => !hasOut.has(n));
     return {
       reachableFromStart: bfs(sources, baseEdges, "forward"),
-      reachableToEnd:     bfs(sinks,   baseEdges, "backward"),
+      reachableToEnd: bfs(sinks, baseEdges, "backward"),
     };
   }, [baseEdges]);
 
@@ -1451,7 +1470,7 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
     // it, so the trace would be meaningless — skip the highlight entirely
     // (same visual as no-selection).
     if (!reachableFromStart.has(selectedNodeId)) return null;
-    if (!reachableToEnd.has(selectedNodeId))     return null;
+    if (!reachableToEnd.has(selectedNodeId)) return null;
     // Upstream nodes are only kept if the journey could actually reach them
     // from a start; downstream nodes only if they can actually exit toward
     // a terminal. This second half is what data-mode was missing — the
@@ -1459,8 +1478,8 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
     // getConnected filter fell back to "no filter" and dead-end data
     // descendants stayed highlighted.
     const filtered = new Set<string>([selectedNodeId]);
-    for (const n of ancestors)   if (reachableFromStart.has(n)) filtered.add(n);
-    for (const n of descendants) if (reachableToEnd.has(n))     filtered.add(n);
+    for (const n of ancestors) if (reachableFromStart.has(n)) filtered.add(n);
+    for (const n of descendants) if (reachableToEnd.has(n)) filtered.add(n);
     return filtered;
   }, [selectedNodeId, ancestors, descendants, reachableFromStart, reachableToEnd]);
 
@@ -1491,8 +1510,8 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
     const activeEdgeId = hoveredEdgeId ?? pinnedEdgeId;
     return baseEdges.map((e) => {
       const isHovered = e.id === hoveredEdgeId;
-      const isPinned  = e.id === pinnedEdgeId;
-      const isActive  = e.id === activeEdgeId;
+      const isPinned = e.id === pinnedEdgeId;
+      const isActive = e.id === activeEdgeId;
       // Strict on-path check: an edge is only on a start→clicked→end path if
       // it sits in one of these four positions. "Both endpoints highlighted"
       // is too permissive — it would light up a shortcut from an ancestor
@@ -1500,15 +1519,15 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
       // cycle back-edge from a descendant to an ancestor.
       const onPath = !highlighted ? true : (
         selectedNodeId != null && (
-          (ancestors.has(e.source)   && ancestors.has(e.target))   ||   // upstream interior
-          (ancestors.has(e.source)   && e.target === selectedNodeId) || // last edge into clicked
+          (ancestors.has(e.source) && ancestors.has(e.target)) ||   // upstream interior
+          (ancestors.has(e.source) && e.target === selectedNodeId) || // last edge into clicked
           (e.source === selectedNodeId && descendants.has(e.target)) || // first edge out of clicked
           (descendants.has(e.source) && descendants.has(e.target))      // downstream interior
         )
       );
 
       let opacity = 1;
-      if (activeEdgeId)     opacity = isActive ? 1 : 0.25;
+      if (activeEdgeId) opacity = isActive ? 1 : 0.25;
       else if (highlighted) opacity = onPath ? 1 : 0.25;
 
       const baseStroke = (e.style?.stroke as string | undefined) ?? "#64748b";
@@ -1568,7 +1587,7 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
 
   const handleEdgeMouseEnter: EdgeMouseHandler = useCallback((_e, edge) => setHoveredEdgeId(edge.id), []);
   const handleEdgeMouseLeave: EdgeMouseHandler = useCallback(() => setHoveredEdgeId(null), []);
-  const handleEdgeClick: EdgeMouseHandler      = useCallback((_e, edge) => setPinnedEdgeId((p) => p === edge.id ? null : edge.id), []);
+  const handleEdgeClick: EdgeMouseHandler = useCallback((_e, edge) => setPinnedEdgeId((p) => p === edge.id ? null : edge.id), []);
   // Two-stage pane click: first click closes drawer (keeps trace highlight);
   // next click clears selection + pinned edge (drops highlight).
   const handlePaneClick = useCallback(() => {
@@ -1647,7 +1666,7 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
                 <>
                   <div className="w-px h-3.5 bg-slate-200 shrink-0" />
                   <button type="button" onClick={goSearchPrev} title="Previous match" className="text-slate-400 hover:text-sky-600 shrink-0 text-sm leading-none">‹</button>
-                  <button type="button" onClick={goSearchNext} title="Next match"     className="text-slate-400 hover:text-sky-600 shrink-0 text-sm leading-none">›</button>
+                  <button type="button" onClick={goSearchNext} title="Next match" className="text-slate-400 hover:text-sky-600 shrink-0 text-sm leading-none">›</button>
                 </>
               )}
             </>
@@ -1687,10 +1706,10 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
                     ? "Downstream"
                     : "Data";
               const title =
-                m === "neighbors"   ? "Highlight only the nodes directly connected to the clicked node (1 hop)"
-                : m === "upstream"  ? "Highlight every path from a start node into the clicked node"
-                : m === "downstream"? "Highlight every path from the clicked node to a terminal (Success / Failure)"
-                                    : "Highlight every start→clicked→end path — the full wiring trace through the clicked node";
+                m === "neighbors" ? "Highlight only the nodes directly connected to the clicked node (1 hop)"
+                  : m === "upstream" ? "Highlight every path from a start node into the clicked node"
+                    : m === "downstream" ? "Highlight every path from the clicked node to a terminal (Success / Failure)"
+                      : "Highlight every start→clicked→end path — the full wiring trace through the clicked node";
               return (
                 <button
                   key={m}
@@ -1775,8 +1794,8 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
         {displayView !== "graph" ? (
           (() => {
             if (!activeJson) return <div className="flex items-center justify-center h-full text-sm text-slate-400">No content available</div>;
-            if (displayView === "outline")  return <div className="h-full overflow-auto"><JourneyOutlineView  json={activeJson} /></div>;
-            if (displayView === "table")    return <div className="h-full overflow-auto"><JourneyTableView    json={activeJson} environment={environment} journeyId={activeJourneyId} /></div>;
+            if (displayView === "outline") return <div className="h-full overflow-auto"><JourneyOutlineView json={activeJson} /></div>;
+            if (displayView === "table") return <div className="h-full overflow-auto"><JourneyTableView json={activeJson} environment={environment} journeyId={activeJourneyId} /></div>;
             if (displayView === "swimlane") return <div className="h-full overflow-auto"><JourneySwimLaneView json={activeJson} /></div>;
             if (displayView === "json") return (
               <div className="h-full overflow-auto bg-slate-950 p-4">
@@ -1805,17 +1824,40 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
             fitViewOptions={{ padding: 0.25 }}
             minZoom={0.1}
             maxZoom={2}
-            // Marquee selection: left-click-drag on empty pane draws a
-            // rectangle; only fully-enclosed nodes are selected. Panning
-            // moves to middle/right mouse drag (scroll still zooms).
-            selectionOnDrag
+            // Pan: left-click-drag on empty pane (default). Marquee
+            // selection: hold Shift and left-drag. React Flow's Pane
+            // hard-codes selection to button 0, so we use the standard
+            // Shift modifier rather than swapping mouse buttons.
             selectionMode={SelectionMode.Full}
-            panOnDrag={[1, 2]}
+            panOnDrag
           >
             {!compact && (
-              <Panel position="top-left">
-                <Legend />
-              </Panel>
+              <>
+                <Panel position="top-left">
+                  <Legend />
+                </Panel>
+                {showCanvasTip && (
+                  <Panel position="top-right">
+                    <div className="flex items-center gap-1.5 bg-white/90 border border-slate-200 rounded-md px-2 py-1 text-[11px] text-slate-600 shadow-sm backdrop-blur-sm">
+                      <span className="font-medium text-slate-500">Tip:</span>
+                      <span>Left-drag to pan</span>
+                      <span className="text-slate-300">·</span>
+                      <span><kbd className="px-1 py-0.5 border border-slate-300 rounded bg-slate-50 text-[10px] font-mono">Shift</kbd> + drag to multi-select</span>
+                      <button
+                        type="button"
+                        onClick={dismissCanvasTip}
+                        className="ml-1 text-slate-400 hover:text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400 rounded"
+                        aria-label="Dismiss tip"
+                        title="Dismiss"
+                      >
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  </Panel>
+                )}
+              </>
             )}
             <Background color="#e2e8f0" gap={20} size={1} />
             <Controls showInteractive={false} showFitView={false}>
@@ -1832,10 +1874,10 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
               <MiniMap
                 nodeColor={(n) =>
                   n.type === "successNode" ? "#34d399" :
-                  n.type === "failureNode" ? "#f87171" :
-                  n.type === "startNode"   ? "#10b981" :
-                  n.type === "pageGroup"   ? "#ddd6fe" :
-                  n.type === "pageChild"   ? "#ede9fe" : "#cbd5e1"
+                    n.type === "failureNode" ? "#f87171" :
+                      n.type === "startNode" ? "#10b981" :
+                        n.type === "pageGroup" ? "#ddd6fe" :
+                          n.type === "pageChild" ? "#ede9fe" : "#cbd5e1"
                 }
                 zoomable pannable
               />
@@ -1875,110 +1917,110 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
               onClose={() => setPreviewModal((p) => p ? { ...p, scriptFullscreen: false } : null)}
             />
           ) : (
-          <div
-            className="absolute inset-0 z-20 flex items-center justify-center bg-black/40"
-            onClick={() => setPreviewModal(null)}
-          >
             <div
-              ref={modalRef}
-              tabIndex={-1}
-              className="bg-white rounded-xl shadow-2xl flex flex-col overflow-hidden outline-none"
-              style={{
-                width:     previewModal.nodeType === "InnerTreeEvaluatorNode" ? "80vw" : "60vw",
-                maxWidth:  960,
-                height:    previewModal.nodeType === "InnerTreeEvaluatorNode" ? "75vh" : "60vh",
-                maxHeight: "90vh",
-              }}
-              onClick={(e) => e.stopPropagation()}
+              className="absolute inset-0 z-20 flex items-center justify-center bg-black/40"
+              onClick={() => setPreviewModal(null)}
             >
-              {/* Modal header */}
-              <div className="flex items-center gap-3 px-5 py-3 border-b border-slate-200 bg-slate-50 shrink-0">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-slate-800 truncate">{previewModal.title}</p>
-                  <p className="text-[10px] text-slate-400 mt-0.5">
-                    {previewModal.nodeType === "ScriptedDecisionNode" ? "Script preview" : "Inner journey preview"}
-                  </p>
-                </div>
-                {previewModal.nodeType === "InnerTreeEvaluatorNode" && previewModal.innerJourneyId && !previewModal.loading && (
-                  <button
-                    type="button"
-                    onClick={() => { void navigateToTree(previewModal.innerJourneyId!, previewModal.nodeId); setPreviewModal(null); }}
-                    className="px-3 py-1.5 text-xs font-medium rounded border border-sky-600 text-sky-600 hover:bg-sky-50 transition-colors shrink-0"
-                  >
-                    Navigate in →
-                  </button>
-                )}
-                {previewModal.nodeType === "ScriptedDecisionNode" && previewModal.scriptContent && !previewModal.loading && (
-                  <>
-                    <button
-                      type="button"
-                      title="Copy script"
-                      onClick={() => {
-                        void navigator.clipboard.writeText(previewModal.scriptContent!).then(() => {
-                          setPreviewModal((p) => p ? { ...p, scriptCopied: true } : null);
-                          setTimeout(() => setPreviewModal((p) => p ? { ...p, scriptCopied: false } : null), 2000);
-                        });
-                      }}
-                      className="text-slate-400 hover:text-slate-600 shrink-0 transition-colors"
-                    >
-                      {previewModal.scriptCopied ? (
-                        <svg className="w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                        </svg>
-                      ) : (
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184" />
-                        </svg>
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      title="View fullscreen"
-                      onClick={() => setPreviewModal((p) => p ? { ...p, scriptFullscreen: true } : null)}
-                      className="text-slate-400 hover:text-slate-600 shrink-0"
-                    >
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
-                      </svg>
-                    </button>
-                  </>
-                )}
-                <button type="button" onClick={() => setPreviewModal(null)} className="text-slate-400 hover:text-slate-600 shrink-0">
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-              {/* Modal body */}
-              <div className="flex-1 min-h-0 overflow-hidden">
-                {previewModal.loading ? (
-                  <div className="flex items-center justify-center h-full text-sm text-slate-400">Loading…</div>
-                ) : previewModal.nodeType === "ScriptedDecisionNode" ? (
-                  <div className="h-full flex flex-col overflow-hidden bg-slate-950">
-                    {previewModal.scriptName && (
-                      <p className="px-4 pt-3 pb-1 text-[10px] font-medium text-slate-400 shrink-0">{previewModal.scriptName}</p>
-                    )}
-                    {previewModal.scriptContent ? (
-                      <div className="flex-1 overflow-auto">
-                        <pre
-                          className="px-4 pb-4 text-[11px] font-mono leading-relaxed text-slate-300"
-                          dangerouslySetInnerHTML={{ __html: withLineNumbers(highlightJs(previewModal.scriptContent)) }}
-                        />
-                      </div>
-                    ) : (
-                      <p className="px-4 py-4 text-sm text-slate-400">No script content available.</p>
-                    )}
+              <div
+                ref={modalRef}
+                tabIndex={-1}
+                className="bg-white rounded-xl shadow-2xl flex flex-col overflow-hidden outline-none"
+                style={{
+                  width: previewModal.nodeType === "InnerTreeEvaluatorNode" ? "80vw" : "60vw",
+                  maxWidth: 960,
+                  height: previewModal.nodeType === "InnerTreeEvaluatorNode" ? "75vh" : "60vh",
+                  maxHeight: "90vh",
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Modal header */}
+                <div className="flex items-center gap-3 px-5 py-3 border-b border-slate-200 bg-slate-50 shrink-0">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-slate-800 truncate">{previewModal.title}</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">
+                      {previewModal.nodeType === "ScriptedDecisionNode" ? "Script preview" : "Inner journey preview"}
+                    </p>
                   </div>
-                ) : (
-                  previewModal.innerJourneyJson ? (
-                    <JourneyGraph json={previewModal.innerJourneyJson} environment={environment} journeyId={previewModal.innerJourneyId} />
+                  {previewModal.nodeType === "InnerTreeEvaluatorNode" && previewModal.innerJourneyId && !previewModal.loading && (
+                    <button
+                      type="button"
+                      onClick={() => { void navigateToTree(previewModal.innerJourneyId!, previewModal.nodeId); setPreviewModal(null); }}
+                      className="px-3 py-1.5 text-xs font-medium rounded border border-sky-600 text-sky-600 hover:bg-sky-50 transition-colors shrink-0"
+                    >
+                      Navigate in →
+                    </button>
+                  )}
+                  {previewModal.nodeType === "ScriptedDecisionNode" && previewModal.scriptContent && !previewModal.loading && (
+                    <>
+                      <button
+                        type="button"
+                        title="Copy script"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(previewModal.scriptContent!).then(() => {
+                            setPreviewModal((p) => p ? { ...p, scriptCopied: true } : null);
+                            setTimeout(() => setPreviewModal((p) => p ? { ...p, scriptCopied: false } : null), 2000);
+                          });
+                        }}
+                        className="text-slate-400 hover:text-slate-600 shrink-0 transition-colors"
+                      >
+                        {previewModal.scriptCopied ? (
+                          <svg className="w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                        ) : (
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184" />
+                          </svg>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        title="View fullscreen"
+                        onClick={() => setPreviewModal((p) => p ? { ...p, scriptFullscreen: true } : null)}
+                        className="text-slate-400 hover:text-slate-600 shrink-0"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                        </svg>
+                      </button>
+                    </>
+                  )}
+                  <button type="button" onClick={() => setPreviewModal(null)} className="text-slate-400 hover:text-slate-600 shrink-0">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+                {/* Modal body */}
+                <div className="flex-1 min-h-0 overflow-hidden">
+                  {previewModal.loading ? (
+                    <div className="flex items-center justify-center h-full text-sm text-slate-400">Loading…</div>
+                  ) : previewModal.nodeType === "ScriptedDecisionNode" ? (
+                    <div className="h-full flex flex-col overflow-hidden bg-slate-950">
+                      {previewModal.scriptName && (
+                        <p className="px-4 pt-3 pb-1 text-[10px] font-medium text-slate-400 shrink-0">{previewModal.scriptName}</p>
+                      )}
+                      {previewModal.scriptContent ? (
+                        <div className="flex-1 overflow-auto">
+                          <pre
+                            className="px-4 pb-4 text-[11px] font-mono leading-relaxed text-slate-300"
+                            dangerouslySetInnerHTML={{ __html: withLineNumbers(highlightJs(previewModal.scriptContent)) }}
+                          />
+                        </div>
+                      ) : (
+                        <p className="px-4 py-4 text-sm text-slate-400">No script content available.</p>
+                      )}
+                    </div>
                   ) : (
-                    <div className="flex items-center justify-center h-full text-sm text-slate-400">Could not load inner journey.</div>
-                  )
-                )}
+                    previewModal.innerJourneyJson ? (
+                      <JourneyGraph json={previewModal.innerJourneyJson} environment={environment} journeyId={previewModal.innerJourneyId} />
+                    ) : (
+                      <div className="flex items-center justify-center h-full text-sm text-slate-400">Could not load inner journey.</div>
+                    )
+                  )}
+                </div>
               </div>
             </div>
-          </div>
           )}
         </>
       )}
