@@ -1068,11 +1068,24 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
       window.localStorage.setItem("journey-graph-tip-dismissed", "1");
     }
   }, []);
-  const [layoutEngine, setLayoutEngine] = useState<"dagre" | "elk">("elk");
+  // Lazy initializer reads the persisted engine synchronously on first render
+  // so the initial layout uses the saved choice (no flicker, no race with the
+  // persist effect overwriting the saved value with the default).
+  const [layoutEngine, setLayoutEngine] = useState<"dagre" | "elk">(() => {
+    if (typeof window === "undefined") return "elk";
+    try {
+      const raw = window.localStorage.getItem("journey-graph-layout-prefs");
+      if (raw) {
+        const p = JSON.parse(raw) as Partial<{ engine: "dagre" | "elk" }>;
+        if (p.engine === "dagre" || p.engine === "elk") return p.engine;
+      }
+    } catch { /* corrupt prefs — fall through to default */ }
+    return "elk";
+  });
   const [displayView, setDisplayView] = useState<"graph" | "outline" | "table" | "swimlane" | "json">("graph");
   // "control" = trace the outcome graph (default). "data" = trace shared-state
   // dependencies derived from every node's `inputs` / `outputs` arrays.
-  const [traceMode, setTraceMode] = useState<"neighbors" | "upstream" | "downstream" | "data">("data");
+  const [traceMode, setTraceMode] = useState<"neighbors" | "upstream" | "downstream" | "data">("neighbors");
 
   // ── Inner-tree navigation stack ───────────────────────────────────────────
   const [navStack, setNavStack] = useState<{ journeyId: string; json: string; sourceNodeId: string }[]>([]);
@@ -1303,16 +1316,8 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
 
   // ── Layout preferences (persisted per-browser) ────────────────────────────
   // Currently only the engine choice is exposed; direction/density/straighten
-  // are pinned to LR / compact / off.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      const raw = window.localStorage.getItem("journey-graph-layout-prefs");
-      if (!raw) return;
-      const p = JSON.parse(raw) as Partial<{ engine: "dagre" | "elk" }>;
-      if (p.engine === "dagre" || p.engine === "elk") setLayoutEngine(p.engine);
-    } catch { /* corrupt prefs — ignore */ }
-  }, []);
+  // are pinned to LR / compact / off. Initial value is hydrated by the
+  // useState lazy initializer above; this effect just persists future changes.
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem("journey-graph-layout-prefs", JSON.stringify({ engine: layoutEngine }));

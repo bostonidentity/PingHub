@@ -1671,12 +1671,30 @@ const TailTerminal = memo(function TailTerminal({
 }) {
   const outerRef = useRef<HTMLDivElement>(null);
   const [viewH, setViewH] = useState(400);
+  // Debug logger — enable in console with:
+  //   localStorage.setItem('debug-tail','1'); location.reload();
+  // Disable with: localStorage.removeItem('debug-tail'); location.reload();
+  const tdbg = useCallback((label: string, data?: Record<string, unknown>) => {
+    if (typeof window === "undefined") return;
+    try {
+      if (window.localStorage?.getItem("debug-tail") !== "1") return;
+    } catch { return; }
+    // Single-line shape so it's easy to grep in DevTools
+    // eslint-disable-next-line no-console
+    console.log(`[TailTerminal] ${label}`, data ?? {});
+  }, []);
   // Initial atBottom state mirrors JsonLogView: when there's a pending
   // scroll request on mount (user switched view with a highlight/selection
   // active), start NOT at bottom — otherwise the auto-tail effect (which
   // fires before scroll-to-match in declaration order) would yank the
   // viewport to the end and a concurrent new tail batch could flash the
   // bottom before scroll-to-match overrides it.
+  // NOTE: atBottomRef now means "auto-scroll is FOLLOWING". It starts true
+  // (we're following on mount) and is demoted to false on any user
+  // interaction (manual scroll, click on a row, scroll-to-match). It is
+  // ONLY re-promoted to true by the user clicking the "Jump to bottom"
+  // button — never automatically. This matches the user's mental model:
+  // any manual intervention pauses tailing until they explicitly resume.
   const atBottomRef = useRef(scrollRequest == null);
   const [atBottom, setAtBottom] = useState(scrollRequest == null);
   // Nowrap virtual list: track only the computed startIdx to avoid re-renders
@@ -1820,14 +1838,77 @@ const TailTerminal = memo(function TailTerminal({
     return Math.max(0, (virtual / intrinsicScroll) * actualScroll);
   }, [entries.length]);
 
-  // Auto-scroll to bottom when new entries arrive
-  useEffect(() => {
-    if (!autoScroll || !atBottomRef.current) return;
+  // Auto-scroll to bottom when new entries arrive.
+  // Must be a useLayoutEffect (not useEffect) for the nowrap path: setting
+  // scrollTop in a post-paint effect produces a one-frame "white flash"
+  // because the row slice (anchored at the old startIdx) doesn't match the
+  // new scrollTop until handleScroll lands. The render-time effectiveStartIdx
+  // below also bottom-anchors the slice while at-bottom + autoScroll, so the
+  // transform stays coherent even before this effect runs.
+  useLayoutEffect(() => {
+    if (!autoScroll || !atBottomRef.current) {
+      tdbg("auto-scroll skip", { autoScroll, atBottomRef: atBottomRef.current, entriesLen: entries.length });
+      return;
+    }
     lastProgrammaticScrollRef.current = Date.now();
     if (wrapLines) {
-      if (entries.length > 0) wrapVirtualizer.scrollToIndex(entries.length - 1, { align: "end" });
+      if (entries.length > 0) {
+        wrapVirtualizer.scrollToIndex(entries.length - 1, { align: "end" });
+        tdbg("auto-scroll wrap", { toIndex: entries.length - 1 });
+      }
     } else if (outerRef.current) {
+      const before = outerRef.current.scrollTop;
       outerRef.current.scrollTop = outerRef.current.scrollHeight;
+      tdbg("auto-scroll nowrap", { entriesLen: entries.length, scrollTopBefore: before, scrollTopAfter: outerRef.current.scrollTop, scrollHeight: outerRef.current.scrollHeight });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries.length, wrapLines, autoScroll]);
+
+  // Anchor virtual scroll position when entries grow while auto-scroll is
+  // PAUSED (atBottomRef.current === false). The nowrap scrollHeight cap
+  // (computeNowrapScrollCap) means the same actual scrollTop maps to a
+  // different virtual position whenever intrinsicH (= entries.length * H)
+  // changes — specifically, when entries grow, the same scrollTop now
+  // points to a LATER virtual row, so the user's view silently shifts
+  // downward ("scrollbar moved down" sensation) and can drift back into
+  // the bottom-detection zone, re-engaging auto-scroll.
+  //
+  // Fix: snapshot the virtual position BEFORE entries grow and recompute
+  // scrollTop so the same virtual row stays under the same pixel.
+  const prevEntriesLenRef = useRef(entries.length);
+  useLayoutEffect(() => {
+    const prevLen = prevEntriesLenRef.current;
+    prevEntriesLenRef.current = entries.length;
+    if (entries.length <= prevLen) return;             // only handle growth
+    if (wrapLines) return;                             // wrap virtualizer self-anchors via measureElement
+    if (autoScroll && atBottomRef.current) return;     // auto-scroll path handles bottom-following
+    const el = outerRef.current;
+    if (!el) return;
+
+    const clientH = el.clientHeight;
+    const cap = computeNowrapScrollCap(clientH);
+    const intrinsicHNew = entries.length * TERMINAL_ROW_H;
+    const intrinsicHOld = prevLen * TERMINAL_ROW_H;
+    const denomNew = Math.max(1, Math.min(intrinsicHNew, cap) - clientH);
+    const denomOld = Math.max(1, Math.min(intrinsicHOld, cap) - clientH);
+    const intrinsicScrollNew = Math.max(1, intrinsicHNew - clientH);
+    const intrinsicScrollOld = Math.max(1, intrinsicHOld - clientH);
+    // Virtual position the user was looking at before growth
+    const virtualOld = intrinsicHOld > cap
+      ? (el.scrollTop / denomOld) * intrinsicScrollOld
+      : el.scrollTop;
+    // scrollTop that yields the same virtual position post-growth
+    const newScrollTop = intrinsicHNew > cap
+      ? (virtualOld / intrinsicScrollNew) * denomNew
+      : virtualOld;
+    const drift = Math.abs(newScrollTop - el.scrollTop);
+    tdbg("anchor-on-growth", {
+      prevLen, newLen: entries.length, scrollTop: el.scrollTop, newScrollTop,
+      virtualOld, intrinsicHOld, intrinsicHNew, capped: intrinsicHNew > cap, drift,
+    });
+    if (drift > 0.5) {
+      lastProgrammaticScrollRef.current = Date.now();
+      el.scrollTop = newScrollTop;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries.length, wrapLines, autoScroll]);
@@ -1887,6 +1968,7 @@ const TailTerminal = memo(function TailTerminal({
         - outerRef.current.clientHeight / 2 + TERMINAL_ROW_H / 2;
       outerRef.current.scrollTop = virtualToActualScrollTop(virtualCenter);
     }
+    tdbg("pause auto-scroll (scroll-to-match)", { scrollRequestIndex, nonce: scrollRequestNonce });
     atBottomRef.current = false;
     setAtBottom(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1910,14 +1992,26 @@ const TailTerminal = memo(function TailTerminal({
       // scroll position immediately during drag (before React reconciles).
       syncNowrapTransformRef.current?.(newStart);
     }
-    // Within ~400ms of a programmatic scroll, skip the at-bottom flip so
-    // the cascade of scroll events from that programmatic scroll can't
-    // re-enable auto-tail and drag the user off a match they're inspecting.
-    if (Date.now() - lastProgrammaticScrollRef.current < 400) return;
-    const atBot = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-    if (atBot !== atBottomRef.current) {
-      atBottomRef.current = atBot;
-      setAtBottom(atBot);
+    // Demote-only: any time the user scrolls AWAY from the bottom, pause
+    // auto-scroll. Never auto-promote based on scroll position — the only
+    // way to RESUME auto-scroll is to click the "Jump to bottom" button.
+    // This matches the requested UX: any manual intervention (scroll, row
+    // click, scroll-to-match) pauses tailing; resume is explicit.
+    //
+    // We still skip the demote within ~400ms of a programmatic scroll, so
+    // a programmatic scroll-to-bottom (auto-tail) doesn't immediately get
+    // demoted by its own cascade of scroll events that briefly land
+    // off-bottom while content layout is still settling.
+    if (Date.now() - lastProgrammaticScrollRef.current < 400) {
+      tdbg("handleScroll suppress", { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight });
+      return;
+    }
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBot = distFromBottom < 60;
+    if (!atBot && atBottomRef.current) {
+      tdbg("pause auto-scroll (user scrolled away)", { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, distFromBottom });
+      atBottomRef.current = false;
+      setAtBottom(false);
     }
   }
 
@@ -1967,7 +2061,12 @@ const TailTerminal = memo(function TailTerminal({
     const virtualScrollTop = intrinsicH > cap
       ? (el.scrollTop / denom) * intrinsicScroll
       : el.scrollTop;
-    const s = nextStart ?? startIdx;
+    // Prefer the render-time effectiveStartIdx (defined below) so the
+    // transform stays coherent with the rendered slice even when state
+    // (startIdx) lags behind props (entries.length) — e.g. a tail batch lands
+    // and the auto-scroll bottom-anchors the slice in the same commit before
+    // the scroll event has had a chance to setStartIdx.
+    const s = nextStart ?? effectiveStartIdxRef.current;
     const groupTop = el.scrollTop + (s * TERMINAL_ROW_H - virtualScrollTop);
     group.style.transform = `translateY(${groupTop}px)`;
   };
@@ -1978,13 +2077,29 @@ const TailTerminal = memo(function TailTerminal({
     syncNowrapTransformRef.current?.();
   });
 
-  // Virtual list window — startIdx is now state-driven (only updates when visible range shifts)
-  // Cap nowrap scrollHeight so the scrollbar thumb stays at the browser's
-  // minimum size and the cursor-to-thumb mapping stays linear during drag.
+  // Virtual list window — startIdx is state-driven (updated by handleScroll
+  // when the user scrolls). When auto-tail is following, we override it at
+  // render time with a bottom-anchored value so the slice and the imperative
+  // transform stay coherent in every commit — without this, a tail batch can
+  // arrive (entries.length jumps) before startIdx state catches up, leaving
+  // the syncNowrapTransform layout effect to compute a groupTop that
+  // translates the row group entirely above the viewport (white flash).
+  // We also clamp to entries.length so a buffer eviction never points
+  // startIdx past the end of the array.
   const intrinsicNowrapH = entries.length * TERMINAL_ROW_H;
   const nowrapCap = computeNowrapScrollCap(viewH);
   const totalH = Math.min(intrinsicNowrapH, nowrapCap);
-  const endIdx = Math.min(entries.length - 1, startIdx + Math.ceil(viewH / TERMINAL_ROW_H) + TERMINAL_OVERSCAN * 2);
+  const visibleRowCount = Math.ceil(viewH / TERMINAL_ROW_H);
+  const effectiveStartIdx = entries.length === 0
+    ? 0
+    : (autoScroll && atBottomRef.current)
+      ? Math.max(0, entries.length - visibleRowCount - TERMINAL_OVERSCAN * 2)
+      : Math.min(startIdx, Math.max(0, entries.length - 1));
+  // Mirror into a ref so syncNowrapTransformRef (defined above) can read the
+  // latest value without depending on render-order closures.
+  const effectiveStartIdxRef = useRef(effectiveStartIdx);
+  effectiveStartIdxRef.current = effectiveStartIdx;
+  const endIdx = Math.min(entries.length - 1, effectiveStartIdx + visibleRowCount + TERMINAL_OVERSCAN * 2);
 
   // Flash key: increments each time we navigate to a match, re-triggers the CSS animation
   const [flashKey, setFlashKey] = useState(0);
@@ -2133,8 +2248,8 @@ const TailTerminal = memo(function TailTerminal({
                 willChange: "transform",
               }}
             >
-              {entries.slice(startIdx, endIdx + 1).map((entry, i) => {
-                const absIdx = startIdx + i;
+              {entries.slice(effectiveStartIdx, endIdx + 1).map((entry, i) => {
+                const absIdx = effectiveStartIdx + i;
                 const count = dupeCounts?.get(absIdx) ?? 1;
                 const isActive = activeMatchIndex === absIdx;
                 const isCtxAnchor = contextAnchorIdx === absIdx;
@@ -2173,7 +2288,13 @@ const TailTerminal = memo(function TailTerminal({
           type="button"
           onClick={() => {
             const el = outerRef.current;
-            if (el) { el.scrollTop = el.scrollHeight; atBottomRef.current = true; setAtBottom(true); }
+            if (el) {
+              tdbg("resume auto-scroll (Jump to bottom)", { scrollTopBefore: el.scrollTop, scrollHeight: el.scrollHeight });
+              lastProgrammaticScrollRef.current = Date.now();
+              el.scrollTop = el.scrollHeight;
+              atBottomRef.current = true;
+              setAtBottom(true);
+            }
           }}
           className="absolute bottom-4 right-4 px-3 py-1.5 text-xs bg-sky-600 text-white rounded-full shadow-lg hover:bg-sky-700 transition-colors z-10"
         >
@@ -4086,13 +4207,22 @@ export function LogsExplorer({
             >
               Scroll to selected
             </button>
-            {/* Bulk expand / collapse — only meaningful when rows are line-clamped (terminal + wrap) */}
-            {viewMode === "terminal" && wrapLines && filtered.length > 0 && (
+            {/* Bulk expand / collapse — meaningful when rows are line-clamped
+                (terminal + wrap) or when expanding payloads in the table view. */}
+            {((viewMode === "terminal" && wrapLines) || viewMode === "table") && filtered.length > 0 && (
               <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
                 <button
                   type="button"
                   title="Expand all entries"
-                  onClick={() => setExpandCmd({ kind: "all", nonce: Date.now() })}
+                  onClick={() => {
+                    if (viewMode === "table") {
+                      const all = new Set<number>();
+                      for (let i = 0; i < filtered.length; i++) all.add(i);
+                      setExpandedTableRows(all);
+                    } else {
+                      setExpandCmd({ kind: "all", nonce: Date.now() });
+                    }
+                  }}
                   className="px-2 py-0.5 text-[11px] font-medium bg-white text-slate-500 hover:bg-slate-50 transition-colors"
                 >
                   Expand all
@@ -4100,7 +4230,13 @@ export function LogsExplorer({
                 <button
                   type="button"
                   title="Collapse all entries"
-                  onClick={() => setExpandCmd({ kind: "none", nonce: Date.now() })}
+                  onClick={() => {
+                    if (viewMode === "table") {
+                      setExpandedTableRows(new Set());
+                    } else {
+                      setExpandCmd({ kind: "none", nonce: Date.now() });
+                    }
+                  }}
                   className="px-2 py-0.5 text-[11px] font-medium bg-white text-slate-500 hover:bg-slate-50 border-l border-slate-300 transition-colors"
                 >
                   Collapse all
