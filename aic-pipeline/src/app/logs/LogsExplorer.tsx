@@ -782,8 +782,24 @@ function JsonLogView({
   // very large `scrollHeight` (sub-pixel thumb, non-linear drag, scrollTop
   // precision loss) — everything is in our coordinate space.
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const [virtualOffset, setVirtualOffset] = useState(0);
-  const virtualOffsetRef = useRef(0);
+  // Initial virtualOffset: when mounted with a pending scroll target (e.g.
+  // user clicked a highlighted row in terminal view then switched to JSON),
+  // pre-position the offset so the first paint already shows the target row
+  // roughly centered. Without this, the view paints at offset 0 first
+  // (highlight off-screen), then the rAF convergence loop scrolls down — a
+  // visible "bounce" where the highlight disappears and reappears.
+  const initialTargetIdx =
+    selectedScrollRequest?.index ??
+    (activeEntryIdx != null && activeEntryIdx >= 0 ? activeEntryIdx : null);
+  const computeInitialOffset = () => {
+    if (initialTargetIdx == null || initialTargetIdx < 0) return 0;
+    // Default viewport is 600 (matches viewportH initial). Estimate is
+    // intentionally rough — the rAF loop refines after first paint.
+    const rough = initialTargetIdx * JSON_VIEW_ROW_ESTIMATE - 300;
+    return Math.max(0, rough);
+  };
+  const [virtualOffset, setVirtualOffset] = useState(computeInitialOffset);
+  const virtualOffsetRef = useRef(virtualOffset);
   const [viewportH, setViewportH] = useState(600);
   // React-virtual's offset observer callback. We hold a ref so we can push
   // updates whenever our internal offset changes.
@@ -799,6 +815,11 @@ function JsonLogView({
     const total = totalSizeRef.current;
     const max = Math.max(0, total - viewportH);
     const clamped = total > 0 ? Math.min(max, Math.max(0, next)) : Math.max(0, next);
+    if (typeof window !== "undefined" && (window as unknown as { __JSON_LOG_DEBUG?: boolean }).__JSON_LOG_DEBUG) {
+      const t = new Date().toISOString().slice(11, 23);
+      // eslint-disable-next-line no-console
+      console.log(`[JsonLogView ${t}] applyVirtualOffset`, { requested: next, clamped, prev: virtualOffsetRef.current, total, viewportH, max, atBottomRef: atBottomRef.current });
+    }
     virtualOffsetRef.current = clamped;
     setVirtualOffset(clamped);
     // Notify react-virtual of the new offset. Deferred via microtask because
@@ -890,30 +911,166 @@ function JsonLogView({
   // NOT at bottom — otherwise the auto-tail effect (which fires before our
   // scroll-to-selection effect because it's declared first) would
   // immediately yank the viewport to the end, fighting our convergence loop.
-  const atBottomRef = useRef(selectedScrollRequest == null);
+  // On initial mount, when there's a pending scroll target (selection from
+  // another view, or an active match-cursor), start NOT at bottom — the
+  // scroll-to-target effect that follows would otherwise be undone by the
+  // auto-tail effect (which fires earlier in declaration order) on the very
+  // next tail batch.
+  const hasInitialTarget = selectedScrollRequest != null || (activeEntryIdx != null && activeEntryIdx >= 0);
+  const atBottomRef = useRef(!hasInitialTarget);
+  // Mirror atBottomRef into state so the floating "Jump to bottom" button
+  // can re-render when the user scrolls away (or programmatically pauses by
+  // clicking an entry / navigating to a match).
+  const [atBottom, setAtBottom] = useState(!hasInitialTarget);
+  // When mounting with a scroll-to-selection target, hide the inner content
+  // until PIN has anchored to the actual measured row. This avoids a
+  // wrong-content flash: react-virtual's first paint uses estimate-based
+  // row positions (e.g. 240 px each) but real entries can be 100x taller,
+  // so the user briefly sees an unrelated chunk of logs before the PIN
+  // re-anchors. Reveal once the selected row is measured AND the PIN has
+  // converged (delta <= 2). Failsafe: reveal after 500 ms regardless.
+  const [pinned, setPinned] = useState(!hasInitialTarget);
+  const pinnedRef = useRef(pinned);
+  pinnedRef.current = pinned;
+  // Tracks the PIN's last computed targetOffset. Reveal only when two
+  // consecutive PIN runs produce the same target (within 2 px). This means
+  // measurements have stopped shifting `rowStart` (the cumulative-sum from
+  // index 0 to selectedIdx) and the anchored offset is final — the user
+  // will see no further scroll motion after the loading overlay clears.
+  const lastPinTargetRef = useRef<number | null>(null);
+  // [DEBUG] gated logger; window.__JSON_LOG_DEBUG = true to enable.
+  const dbg = useCallback((tag: string, data?: Record<string, unknown>) => {
+    if (typeof window === "undefined" || !(window as unknown as { __JSON_LOG_DEBUG?: boolean }).__JSON_LOG_DEBUG) return;
+    const t = new Date().toISOString().slice(11, 23);
+    // eslint-disable-next-line no-console
+    console.log(`[JsonLogView ${t}] ${tag}`, data ?? "");
+  }, []);
+  // Helper: change atBottomRef + state with a log line indicating who and why.
+  const setAtBottomBoth = useCallback((next: boolean, reason: string) => {
+    if (atBottomRef.current === next) return;
+    dbg("atBottom flip", { from: atBottomRef.current, to: next, reason, virtualOffset: virtualOffsetRef.current, totalSize: totalSizeRef.current, viewportH });
+    atBottomRef.current = next;
+    setAtBottom(next);
+  }, [dbg, viewportH]);
+  // [DEBUG] log mount + initial state once.
+  useEffect(() => {
+    dbg("MOUNT", { entriesLen: entries.length, activeEntryIdx, selectedScrollRequest, autoScroll, atBottomInit: atBottomRef.current, hasInitialTarget });
+    return () => { dbg("UNMOUNT"); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // [DEBUG] log every prop change that could affect scroll behavior.
+  useEffect(() => {
+    dbg("props change", { entriesLen: entries.length, activeEntryIdx, selectedScrollRequest, selectedEntryIdx, autoScroll, atBottomRef: atBottomRef.current });
+  }, [entries.length, activeEntryIdx, selectedScrollRequest, selectedEntryIdx, autoScroll, dbg]);
+  // [DEBUG] track what the selected/active row's identity is on every entries
+  // change. If the entry at `selectedEntryIdx` swaps identity (timestamp /
+  // _id) when a tail batch arrives, that's a mid-array insert — rows after
+  // the insertion point shifted index, but the index ref stayed the same so
+  // the highlight is now on a different physical entry.
+  const prevSelectedEntryRef = useRef<{ idx: number; ts?: string; preview?: string } | null>(null);
+  useEffect(() => {
+    const idx = selectedEntryIdx ?? (activeEntryIdx >= 0 ? activeEntryIdx : -1);
+    if (idx < 0 || idx >= entries.length) {
+      if (prevSelectedEntryRef.current != null) {
+        dbg("selected-entry OOR", { idx, entriesLen: entries.length, prev: prevSelectedEntryRef.current });
+        prevSelectedEntryRef.current = null;
+      }
+      return;
+    }
+    const e = entries[idx] as unknown as { timestamp?: string; payload?: { message?: string }; _id?: string };
+    const ts = e?.timestamp;
+    const preview = (e?.payload?.message ?? "").toString().slice(0, 60);
+    const prev = prevSelectedEntryRef.current;
+    if (prev == null) {
+      dbg("selected-entry initial", { idx, ts, preview, entriesLen: entries.length });
+    } else if (prev.idx !== idx) {
+      dbg("selected-entry IDX CHANGED", { fromIdx: prev.idx, toIdx: idx, fromTs: prev.ts, toTs: ts });
+    } else if (prev.ts !== ts) {
+      // SAME idx, DIFFERENT entry → mid-array insert pushed the original row
+      // past idx, and idx now points to a different (later-inserted) entry.
+      dbg("selected-entry IDENTITY CHANGED (mid-insert?)", { idx, fromTs: prev.ts, toTs: ts, fromPreview: prev.preview, toPreview: preview, entriesLen: entries.length });
+    }
+    prevSelectedEntryRef.current = { idx, ts, preview };
+  }, [entries, selectedEntryIdx, activeEntryIdx, dbg]);
+  // [DEBUG] track entries.length deltas + first/last timestamp to detect
+  // out-of-order arrivals that would force a sort-and-reindex.
+  const prevEntriesMetaRef = useRef<{ len: number; firstTs?: string; lastTs?: string }>({ len: 0 });
+  useEffect(() => {
+    const len = entries.length;
+    const firstTs = (entries[0] as unknown as { timestamp?: string } | undefined)?.timestamp;
+    const lastTs = (entries[len - 1] as unknown as { timestamp?: string } | undefined)?.timestamp;
+    const prev = prevEntriesMetaRef.current;
+    if (prev.len !== len || prev.firstTs !== firstTs || prev.lastTs !== lastTs) {
+      dbg("entries meta", { len, delta: len - prev.len, firstTs, prevFirstTs: prev.firstTs, lastTs, prevLastTs: prev.lastTs, firstShifted: prev.firstTs != null && prev.firstTs !== firstTs });
+      prevEntriesMetaRef.current = { len, firstTs, lastTs };
+    }
+  }, [entries, dbg]);
   // Total content size — refreshed each render via virtualizer.getTotalSize()
   // below in JSX. We snapshot into a ref so handlers can read it.
   const totalSizeRef = useRef(0);
-  // Forward-declared flag set by the scroll-to-selection rAF loop (below).
-  // The auto-tail effect reads this to skip while a convergence loop is in
-  // flight so the two animations don't compete.
+  // Forward-declared ref read by the auto-tail effect to skip yanking the
+  // viewport while a programmatic scroll-to-selection is being applied. The
+  // PIN useLayoutEffect (further below) is now synchronous and doesn't need
+  // to set this; kept as `false` so the SKIP branch below is dead code in
+  // the new design but harmless if older flows ever set it again.
   const scrollLoopActiveRef = useRef(false);
   const updateAtBottom = useCallback(() => {
+    // DEMOTE-only. Promotion to atBottom must come from explicit user actions
+    // (wheel/key/drag-to-bottom, jump-to-bottom button) via
+    // userScrollUpdateAtBottom() below. Programmatic scrolls (scroll-to-
+    // selection rAF loop, scroll-to-active-match) can legitimately land near
+    // the bottom while the user is inspecting a row — if updateAtBottom
+    // promoted atBottomRef back to true here, the next tail batch's auto-tail
+    // effect would yank the viewport to the end and the highlight would be
+    // gone. So we only allow this position check to clear atBottom; user
+    // input is the only re-engage path.
     const total = totalSizeRef.current;
     const max = Math.max(0, total - viewportH);
-    atBottomRef.current = max - virtualOffsetRef.current < 60;
-  }, [viewportH]);
+    const atBot = max - virtualOffsetRef.current < 60;
+    if (!atBot && atBottomRef.current) {
+      setAtBottomBoth(false, "updateAtBottom demote (offset moved away from end)");
+    }
+  }, [viewportH, setAtBottomBoth]);
+
+  // Called from user input handlers (wheel, key, scrollbar) AFTER they
+  // applyVirtualOffset. Promotes atBottomRef back to true when the user
+  // explicitly scrolls all the way to the end — the only path that may
+  // re-engage auto-tail.
+  const userScrollUpdateAtBottom = useCallback(() => {
+    const total = totalSizeRef.current;
+    const max = Math.max(0, total - viewportH);
+    const atBot = max - virtualOffsetRef.current < 60;
+    if (atBot !== atBottomRef.current) {
+      setAtBottomBoth(atBot, `userScroll (atBot=${atBot}, gap=${max - virtualOffsetRef.current})`);
+    }
+  }, [viewportH, setAtBottomBoth]);
 
   // Auto-tail: when pinned to bottom and autoScroll is on, follow new entries.
   // Skipped while a scroll-to-selection loop is in flight so the two
   // animations don't compete.
   useEffect(() => {
-    if (!autoScroll || !atBottomRef.current) return;
-    if (entries.length === 0) return;
-    if (scrollLoopActiveRef.current) return;
-    virtualizer.scrollToIndex(entries.length - 1, { align: "end" });
+    dbg("auto-tail effect", { entriesLen: entries.length, autoScroll, atBottomRef: atBottomRef.current, scrollLoopActive: scrollLoopActiveRef.current, virtualOffset: virtualOffsetRef.current, totalSize: totalSizeRef.current, hasInitialTarget, pinned: pinnedRef.current });
+    if (!autoScroll || !atBottomRef.current) { dbg("auto-tail SKIP", { reason: !autoScroll ? "autoScroll off" : "not at bottom" }); return; }
+    if (entries.length === 0) { dbg("auto-tail SKIP", { reason: "empty" }); return; }
+    if (scrollLoopActiveRef.current) { dbg("auto-tail SKIP", { reason: "scroll loop active" }); return; }
+    // Skip while a scroll-to-selection request is pending. On view-mode
+    // switches (terminal → json) the parent bumps selectedScrollNonce in a
+    // useEffect that runs AFTER JsonLogView mounts. So at mount,
+    // selectedScrollRequest is still stale (null or with old nonce) and
+    // `atBottomRef` initializes to true via `useRef(!hasInitialTarget)`.
+    // Without this guard, the mount-phase auto-tail call jams the viewport
+    // to the end before PIN can scroll to the selected row.
+    if (hasInitialTarget && !pinnedRef.current) { dbg("auto-tail SKIP", { reason: "selection target pending" }); return; }
+    // Apply offset directly. virtualizer.scrollToIndex is broken in our
+    // setup (it calls scrollToFn(0) for any index because react-virtual's
+    // measurementsCache is empty for unmounted indices and our
+    // observeElementOffset reports virtualOffset=0). Total/viewportH math
+    // gives the same end-aligned offset without the broken indirection.
+    const endOffset = Math.max(0, totalSizeRef.current - viewportH);
+    dbg("auto-tail FIRE applyVirtualOffset(end)", { idx: entries.length - 1, endOffset });
+    applyVirtualOffset(endOffset);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries.length, autoScroll]);
+  }, [entries.length, autoScroll, hasInitialTarget, pinned]);
 
   // Stabilize viewport when buffer evicts from the front. Without this, every
   // eviction shifts every row's index, so the same offset now reveals
@@ -924,6 +1081,7 @@ function JsonLogView({
     const delta = evictedCount - prevEvictedRef.current;
     prevEvictedRef.current = evictedCount;
     if (delta <= 0) return;
+    dbg("eviction", { delta, autoScroll, atBottomRef: atBottomRef.current, virtualOffset: virtualOffsetRef.current });
     const cache = heightCacheRef.current;
     if (cache.size > 0) {
       const next = new Map<number, number>();
@@ -933,106 +1091,256 @@ function JsonLogView({
       }
       heightCacheRef.current = next;
     }
-    if (autoScroll && atBottomRef.current) return; // following tail
-    applyVirtualOffset(virtualOffsetRef.current - delta * avgRowHeightRef.current);
-  }, [evictedCount, autoScroll, entries.length, applyVirtualOffset]);
+    if (autoScroll && atBottomRef.current) { dbg("eviction SKIP compensation (following tail)"); return; }
+    const newOffset = virtualOffsetRef.current - delta * avgRowHeightRef.current;
+    dbg("eviction COMPENSATE applyVirtualOffset", { from: virtualOffsetRef.current, to: newOffset, delta, avgRowH: avgRowHeightRef.current });
+    applyVirtualOffset(newOffset);
+  }, [evictedCount, autoScroll, entries.length, applyVirtualOffset, dbg])
 
-  // Scroll to the active match when it changes.
+  // Scroll to the active match when it changes. Uses cumulative-sum
+  // estimate (same as PIN Phase 1) since virtualizer.scrollToIndex is
+  // broken in this setup.
   useEffect(() => {
+    dbg("active-match effect", { activeEntryIdx, entriesLen: entries.length, atBottomRef: atBottomRef.current });
     if (activeEntryIdx >= 0 && activeEntryIdx < entries.length) {
-      virtualizer.scrollToIndex(activeEntryIdx, { align: "center" });
+      // Pause auto-tail — user is inspecting a match, so any subsequent tail
+      // batch must NOT yank the viewport to the end.
+      setAtBottomBoth(false, "scroll-to-active-match");
+      const cache = heightCacheRef.current;
+      const avg = avgRowHeightRef.current;
+      const viewport = scrollRef.current?.clientHeight || viewportH;
+      let rowStart = 0;
+      for (let i = 0; i < activeEntryIdx; i++) {
+        rowStart += cache.get(i) ?? avg;
+      }
+      const rowH = cache.get(activeEntryIdx) ?? avg;
+      const targetOffset = rowH > viewport
+        ? Math.max(0, rowStart - 24)
+        : Math.max(0, rowStart - viewport / 2 + rowH / 2);
+      dbg("active-match FIRE applyVirtualOffset(center)", { idx: activeEntryIdx, rowStart, rowH, targetOffset });
+      applyVirtualOffset(targetOffset);
     }
-  }, [activeEntryIdx, entries.length, virtualizer]);
+  }, [activeEntryIdx, entries.length, viewportH, applyVirtualOffset, dbg, setAtBottomBoth]);
 
-  // Scroll to the selected entry on demand (initial click + view-mode switch).
-  //
-  // With huge entry counts (70k+) convergence by render-counting is fragile
-  // because cascading state updates (auto-clamp, atBottom recompute) burn
-  // through the attempt budget before the loop actually iterates. We drive
-  // the loop explicitly via requestAnimationFrame:
-  //  - Each frame, if target row is in DOM, measure its viewport position
-  //    and adjust virtualOffset by the pixel delta from viewport center.
-  //  - If not in DOM, ask react-virtual for the target's offset given
-  //    current per-row measurements; fall back to a proportional jump.
-  //  - Terminate when row is centered within 2px or after 30 frames cap.
+  // Scroll-to-selection: when a new selection request arrives (view-mode
+  // switch or jump-from-match-nav), pause auto-tail. The actual scrolling
+  // is handled by the start-anchored Selection PIN below, which computes
+  // the exact target offset from cumulative row heights and runs
+  // synchronously in a layout effect — no multi-frame convergence loop
+  // needed.
   const selectedNonce = selectedScrollRequest?.nonce;
   const selectedIdx = selectedScrollRequest?.index;
-  const scrollLoopRef = useRef<{ frame: number | null; cancelled: boolean }>({ frame: null, cancelled: false });
   useEffect(() => {
-    if (selectedIdx == null || selectedIdx < 0 || selectedIdx >= entries.length) {
-      return;
-    }
-    // Cancel any in-flight loop.
-    if (scrollLoopRef.current.frame != null) cancelAnimationFrame(scrollLoopRef.current.frame);
-    scrollLoopRef.current.cancelled = true;
-    const state = { frame: null as number | null, cancelled: false };
-    scrollLoopRef.current = state;
-    scrollLoopActiveRef.current = true;
-    // Lock auto-tail off while we converge.
-    atBottomRef.current = false;
-    const targetIdx = selectedIdx;
-    let attempts = 0;
-    let stable = 0;
-    let lastOffset = -1;
-    const finish = () => {
-      scrollLoopActiveRef.current = false;
-    };
-    const step = () => {
-      if (state.cancelled) { finish(); return; }
-      if (attempts >= 30) { finish(); return; }
-      attempts += 1;
-      const scrollEl = scrollRef.current;
-      if (!scrollEl) {
-        state.frame = requestAnimationFrame(step);
-        return;
-      }
-      const viewport = scrollEl.clientHeight;
-      const rowEl = scrollEl.querySelector<HTMLElement>(`[data-entry-idx="${targetIdx}"]`);
-      if (rowEl) {
-        const containerRect = scrollEl.getBoundingClientRect();
-        const rowRect = rowEl.getBoundingClientRect();
-        const rowCenter = rowRect.top - containerRect.top + rowRect.height / 2;
-        const delta = rowCenter - viewport / 2;
-        if (Math.abs(delta) < 2) { finish(); return; } // converged
-        applyVirtualOffset(virtualOffsetRef.current + delta);
-      } else {
-        // Row not in DOM yet. Jump proportionally so the virtualizer will
-        // measure the rows around the target on the next render; once the
-        // row exists in the DOM, the precise rowRect path above takes over.
-        //
-        // We do NOT trust `virtualizer.getOffsetForIndex(idx, "center")`
-        // here: with a custom scroll element it can return 0 for far-off
-        // unmeasured rows (observed in production with 5k+ entries), which
-        // would pin us at offset 0 forever.
-        const ratio = targetIdx / Math.max(1, entries.length - 1);
-        const max = Math.max(0, totalSizeRef.current - viewport);
-        const target = ratio * max;
-        const clamped = Math.min(max, Math.max(0, target));
-        // Bail if offset isn't changing — measurements aren't producing
-        // a better target and the row still isn't visible.
-        if (Math.abs(clamped - lastOffset) < 1) {
-          stable += 1;
-          if (stable > 4) { finish(); return; }
-        } else {
-          stable = 0;
-        }
-        lastOffset = clamped;
-        applyVirtualOffset(clamped);
-      }
-      state.frame = requestAnimationFrame(step);
-    };
-    state.frame = requestAnimationFrame(step);
-    return () => {
-      state.cancelled = true;
-      scrollLoopActiveRef.current = false;
-      if (state.frame != null) cancelAnimationFrame(state.frame);
-    };
+    if (selectedIdx == null || selectedIdx < 0) return;
+    if (atBottomRef.current) setAtBottomBoth(false, "scroll-to-selection request");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNonce]);
 
+  // Snapshot virtualizer measurements early so subsequent effects (the
+  // selection pin below, the layout/atBottom effect further down) can take
+  // them as deps. `getTotalSize()` is cheap and idempotent within a render.
   const items = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
   totalSizeRef.current = totalSize;
+
+  // ── Selection PIN ──
+  // The rAF loop above converges to the target row using current row-height
+  // estimates. With huge entry counts, the avg row height estimate is still
+  // drifting after the loop terminates: as more rows get measured the
+  // estimate stabilizes and the cumulative offset of every row shifts. The
+  // target row's true pixel offset can move by hundreds of thousands of
+  // pixels between rAF convergence and steady state, leaving virtualOffset
+  // pointing at completely different content (highlight slides off-screen).
+  //
+  // The pin keeps the selected row near the viewport center as long as:
+  //  - the user has not interacted with the scroll surface (wheel / key /
+  //    scrollbar / jump-to-bottom) since the selection was made,
+  //  - the rAF convergence loop is not running (don't fight it), and
+  //  - the row's measured position has drifted more than 30px from center
+  //    (cheap no-op when stable; only writes offset when needed).
+  // If the row is no longer in the DOM (estimate drifted past the viewport
+  // entirely), do a proportional jump so the row mounts on the next render
+  // and the cheap measurement path takes over.
+  const userInteractedRef = useRef(false);
+  // Reset interaction flag when a new selection arrives.
+  useEffect(() => {
+    userInteractedRef.current = false;
+    // Reset stable-target tracker so the next PIN run starts a fresh
+    // two-run stability window before revealing.
+    lastPinTargetRef.current = null;
+    if (hasInitialTarget) setPinned(false);
+    dbg("PIN reset (new selection)", { selectedNonce });
+  }, [selectedNonce, hasInitialTarget, dbg]);
+  // Failsafe reveal: if PIN hasn't converged within 700 ms (e.g. selected
+  // row never mounts because index is past end of buffer, or the cumulative-
+  // sum target keeps oscillating because new measurements keep arriving),
+  // do ONE final cumulative-sum correction with whatever is currently in the
+  // height cache, apply that offset, then reveal so the user isn't stuck on
+  // the spinner. Keyed by selectedNonce so each Scroll-to-selected click
+  // gets its own deterministic timer that can't be starved by re-renders.
+  useEffect(() => {
+    if (!hasInitialTarget) return;
+    const t = setTimeout(() => {
+      if (pinnedRef.current) return;
+      // Final corrective scroll using current measurements. Prefer the
+      // DOM-rect path (stable under measurement updates) over the
+      // cumulative-sum path (drifts as nearby rows get measured).
+      if (
+        selectedIdx != null &&
+        selectedIdx >= 0 &&
+        selectedIdx < entries.length &&
+        scrollRef.current
+      ) {
+        const scrollEl = scrollRef.current;
+        const viewport = scrollEl.clientHeight || viewportH;
+        const rowEl = scrollEl.querySelector(
+          `[data-index="${selectedIdx}"]`,
+        ) as HTMLElement | null;
+        if (rowEl) {
+          const scrollRect = scrollEl.getBoundingClientRect();
+          const rowRect = rowEl.getBoundingClientRect();
+          const currentTop = rowRect.top - scrollRect.top;
+          const rowH = rowRect.height;
+          const desiredTop = rowH > viewport ? 24 : (viewport - rowH) / 2;
+          const delta = currentTop - desiredTop;
+          const newOffset = Math.max(0, virtualOffsetRef.current + delta);
+          if (Math.abs(delta) > 2) {
+            dbg("PIN reveal (failsafe dom-rect)", { selectedIdx, currentTop, desiredTop, rowH, delta, newOffset });
+            applyVirtualOffset(newOffset);
+          }
+        } else {
+          // Row not rendered — fall back to cumulative-sum estimate.
+          const cache = heightCacheRef.current;
+          const avg = avgRowHeightRef.current;
+          let rowStart = 0;
+          for (let i = 0; i < selectedIdx; i++) {
+            rowStart += cache.get(i) ?? avg;
+          }
+          const rowH = cache.get(selectedIdx) ?? avg;
+          const targetOffset = rowH > viewport
+            ? Math.max(0, rowStart - 24)
+            : Math.max(0, rowStart - viewport / 2 + rowH / 2);
+          if (Math.abs(targetOffset - virtualOffsetRef.current) > 2) {
+            dbg("PIN reveal (failsafe cumulative)", { selectedIdx, rowStart, rowH, targetOffset });
+            applyVirtualOffset(targetOffset);
+          }
+        }
+      }
+      dbg("PIN reveal (failsafe timeout)");
+      setPinned(true);
+    }, 700);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedNonce, hasInitialTarget]);
+  useLayoutEffect(() => {
+    if (selectedIdx == null || selectedIdx < 0 || selectedIdx >= entries.length) return;
+    if (userInteractedRef.current) return;
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return;
+    const viewport = scrollEl.clientHeight || viewportH;
+    const cache = heightCacheRef.current;
+    const avg = avgRowHeightRef.current;
+    const TOP_PADDING = 24;
+    // Is the selected row currently rendered (in react-virtual's range)?
+    // If so, we can read its actual DOM rect for precise positioning.
+    const isRendered = items.some((it) => it.index === selectedIdx);
+    if (!isRendered) {
+      // Phase 1: row isn't in the rendered range yet. Compute an
+      // approximate target via cumulative-sum-with-estimates so the row
+      // gets near the viewport, mounts, and measureElement fires. Phase 2
+      // (DOM-rect-based) then takes over for exact centring.
+      //
+      // Why NOT delegate to virtualizer.scrollToIndex: in our setup it
+      // calls scrollToFn with 0 (the virtualizer's internal measurements
+      // cache hasn't been built for indices beyond the initial mount range,
+      // and our observeElementOffset reports 0). Reproduced in the trace:
+      // `PIN delegate scrollToIndex {selectedIdx: 23629}` →
+      // `applyVirtualOffset {requested: 0}` despite total ≈ 6.3M px.
+      let rowStart = 0;
+      for (let i = 0; i < selectedIdx; i++) {
+        rowStart += cache.get(i) ?? avg;
+      }
+      const rowH = cache.get(selectedIdx) ?? avg;
+      const targetOffset = rowH > viewport
+        ? Math.max(0, rowStart - TOP_PADDING)
+        : Math.max(0, rowStart - viewport / 2 + rowH / 2);
+      const delta = targetOffset - virtualOffsetRef.current;
+      if (Math.abs(delta) > 2) {
+        dbg("PIN phase1 cumulative", {
+          selectedIdx,
+          rowStart,
+          rowH,
+          targetOffset,
+          prev: virtualOffsetRef.current,
+          delta,
+          measuredCount: cache.size,
+        });
+        applyVirtualOffset(targetOffset);
+      }
+      lastPinTargetRef.current = null;
+      return;
+    }
+    // Phase 2: row is rendered. Read its DOM rect — this is invariant
+    // under measurement updates of OTHER rows: as nearby rows get measured,
+    // react-virtual repositions all visible rows internally, but the
+    // selected row's rect-relative-to-the-scroll-container only changes if
+    // we change virtualOffset. So a delta computed here converges to a
+    // single fixed point in one or two iterations, no oscillation.
+    //
+    // Compare with the old cumulative-sum-from-index-0 approach which
+    // drifted by tens of millions of pixels as new measurements arrived
+    // (selected row at index 23629, avg 2461 → 120 → cumulative shrank
+    // 58M → 30M → 27M).
+    const rowEl = scrollEl.querySelector(
+      `[data-index="${selectedIdx}"]`,
+    ) as HTMLElement | null;
+    if (!rowEl) return; // race: items list says rendered but DOM not yet
+    const scrollRect = scrollEl.getBoundingClientRect();
+    const rowRect = rowEl.getBoundingClientRect();
+    const currentTop = rowRect.top - scrollRect.top;
+    const rowH = rowRect.height;
+    // Anchoring rule: if the row fits in the viewport, centre it. If the
+    // row is TALLER than the viewport, anchor to the top with breathing
+    // room so the highlighted header line is visible.
+    const desiredTop = rowH > viewport
+      ? TOP_PADDING
+      : (viewport - rowH) / 2;
+    const delta = currentTop - desiredTop;
+    const newOffset = Math.max(0, virtualOffsetRef.current + delta);
+    if (Math.abs(delta) > 2) {
+      dbg("PIN phase2 dom-rect", {
+        selectedIdx,
+        currentTop,
+        desiredTop,
+        rowH,
+        delta,
+        prev: virtualOffsetRef.current,
+        next: newOffset,
+        measuredCount: cache.size,
+      });
+      applyVirtualOffset(newOffset);
+      lastPinTargetRef.current = newOffset;
+      return;
+    }
+    // Within tolerance: stable. Reveal.
+    if (!pinnedRef.current) {
+      dbg("PIN reveal (phase2 stable)", {
+        selectedIdx,
+        currentTop,
+        desiredTop,
+        rowH,
+        delta,
+        measuredCount: cache.size,
+      });
+      setPinned(true);
+    }
+    lastPinTargetRef.current = newOffset;
+    // selectedNonce is a dep so the user clicking "Scroll to selected"
+    // re-fires this effect even when nothing else changed (same row, same
+    // entry count). virtualOffset is a dep so Phase 1 → Phase 2 transition
+    // happens on the very next render after Phase 1 applies its target.
+  }, [entries.length, totalSize, selectedIdx, selectedNonce, viewportH, virtualOffset, items, applyVirtualOffset, dbg]);
+
   // Re-check atBottom whenever offset, viewport or total changes. Also
   // re-clamp the virtual offset when totalSize shrinks (e.g. after initial
   // row measurements come in much smaller than the estimate) so we can't
@@ -1040,10 +1348,12 @@ function JsonLogView({
   useEffect(() => {
     const max = Math.max(0, totalSize - viewportH);
     if (virtualOffsetRef.current > max) {
+      dbg("layout-effect re-clamp", { from: virtualOffsetRef.current, to: max, totalSize, viewportH });
       applyVirtualOffset(max);
     }
+    dbg("layout-effect updateAtBottom", { virtualOffset, totalSize, viewportH, gap: Math.max(0, totalSize - viewportH) - virtualOffset, atBottomRef: atBottomRef.current });
     updateAtBottom();
-  }, [virtualOffset, totalSize, viewportH, updateAtBottom, applyVirtualOffset]);
+  }, [virtualOffset, totalSize, viewportH, updateAtBottom, applyVirtualOffset, dbg]);
 
   // Track scroll container size (clientHeight) — needed for thumb sizing,
   // wheel, page nav, and atBottom calculation. ResizeObserver keeps it live.
@@ -1076,15 +1386,17 @@ function JsonLogView({
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      userInteractedRef.current = true;
       let dy = e.deltaY;
       if (e.deltaMode === 1) dy *= avgRowHeightRef.current;
       else if (e.deltaMode === 2) dy *= viewportH;
       const max = Math.max(0, totalSizeRef.current - viewportH);
       applyVirtualOffset(Math.min(max, virtualOffsetRef.current + dy));
+      userScrollUpdateAtBottom();
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [viewportH, applyVirtualOffset]);
+  }, [viewportH, applyVirtualOffset, userScrollUpdateAtBottom]);
 
   // Keyboard nav when focused.
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -1102,8 +1414,10 @@ function JsonLogView({
       default: return;
     }
     e.preventDefault();
+    userInteractedRef.current = true;
     applyVirtualOffset(Math.min(max, Math.max(0, next)));
-  }, [viewportH, applyVirtualOffset]);
+    userScrollUpdateAtBottom();
+  }, [viewportH, applyVirtualOffset, userScrollUpdateAtBottom]);
 
   // Thumb pointer drag.
   const dragStateRef = useRef<{ startY: number; startOffset: number } | null>(null);
@@ -1115,12 +1429,14 @@ function JsonLogView({
   const onThumbPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const drag = dragStateRef.current;
     if (!drag) return;
+    userInteractedRef.current = true;
     const dy = e.clientY - drag.startY;
     const scrollableNow = Math.max(0, totalSizeRef.current - viewportH);
     const travel = Math.max(1, trackH - thumbH);
     const next = drag.startOffset + (dy / travel) * scrollableNow;
     applyVirtualOffset(Math.min(scrollableNow, Math.max(0, next)));
-  }, [trackH, thumbH, viewportH, applyVirtualOffset]);
+    userScrollUpdateAtBottom();
+  }, [trackH, thumbH, viewportH, applyVirtualOffset, userScrollUpdateAtBottom]);
   const onThumbPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     dragStateRef.current = null;
     try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
@@ -1129,6 +1445,7 @@ function JsonLogView({
   // Click on the track (outside the thumb) — page up/down.
   const onTrackPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.target !== e.currentTarget) return; // ignore clicks on the thumb
+    userInteractedRef.current = true;
     const rect = e.currentTarget.getBoundingClientRect();
     const clickY = e.clientY - rect.top;
     const max = Math.max(0, totalSizeRef.current - viewportH);
@@ -1137,7 +1454,8 @@ function JsonLogView({
       ? virtualOffsetRef.current - page
       : virtualOffsetRef.current + page;
     applyVirtualOffset(Math.min(max, Math.max(0, next)));
-  }, [thumbTop, viewportH, applyVirtualOffset]);
+    userScrollUpdateAtBottom();
+  }, [thumbTop, viewportH, applyVirtualOffset, userScrollUpdateAtBottom]);
 
   const copyLabel =
     copyState.phase === "building" ? `Copying… ${copyState.pct}%` :
@@ -1154,11 +1472,32 @@ function JsonLogView({
       >
         {copyLabel}
       </button>
+      {/* Loading overlay while PIN is anchoring the highlighted row.
+          The scroll viewport itself is visibility:hidden during this window
+          (see `pinned` state); without an overlay the user just sees a blank
+          panel for the few hundred ms it takes react-virtual to measure rows
+          and PIN to converge. The overlay covers that gap with a clear
+          "Locating selected entry..." spinner. */}
+      {!pinned && (
+        <div
+          className="absolute inset-0 z-20 flex items-center justify-center bg-white/70 backdrop-blur-sm"
+          aria-live="polite"
+        >
+          <div className="flex items-center gap-2 text-[12px] text-slate-600">
+            <svg className="w-4 h-4 animate-spin text-sky-500" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeOpacity="0.25" strokeWidth="4" />
+              <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />
+            </svg>
+            Locating selected entry…
+          </div>
+        </div>
+      )}
       <div
         ref={scrollRef}
         tabIndex={0}
         onKeyDown={onKeyDown}
         className="flex-1 overflow-hidden relative outline-none"
+        style={{ visibility: pinned ? "visible" : "hidden" }}
       >
         <div
           className={cn(
@@ -1194,7 +1533,14 @@ function JsonLogView({
                   ref={virtualizer.measureElement}
                   data-index={i}
                   data-entry-idx={i}
-                  onClick={() => onEntryClick?.(i)}
+                  onClick={() => {
+                    // Clicking an entry to inspect it should pause auto-tail
+                    // so new entries don't push the inspected row out of view.
+                    // The user resumes by clicking the floating Jump-to-bottom
+                    // button (which scrolls to the end and re-arms atBottom).
+                    if (atBottomRef.current) { atBottomRef.current = false; setAtBottom(false); }
+                    onEntryClick?.(i);
+                  }}
                   onDoubleClick={() => onEntryDoubleClick?.(i)}
                   className={cn(
                     "absolute left-0 right-3 px-4 cursor-pointer",
@@ -1229,6 +1575,26 @@ function JsonLogView({
               style={{ top: thumbTop, height: thumbH, touchAction: "none" }}
             />
           </div>
+        )}
+        {/* Floating Jump-to-bottom — visible when the user has scrolled away
+            from the tail (manual scroll, click-to-inspect, match-nav). The
+            parent's autoScroll toggle stays enabled; clicking this button
+            simply re-arms atBottom so the auto-tail effect resumes. */}
+        {!atBottom && entries.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              const max = Math.max(0, totalSizeRef.current - viewportH);
+              applyVirtualOffset(max);
+              atBottomRef.current = true;
+              setAtBottom(true);
+              userInteractedRef.current = true;
+            }}
+            className="absolute bottom-4 right-6 px-3 py-1.5 text-xs bg-sky-600 text-white rounded-full shadow-lg hover:bg-sky-700 transition-colors z-10"
+            title={autoScroll ? "Jump to bottom and resume auto-scroll" : "Jump to bottom"}
+          >
+            ↓ Jump to bottom
+          </button>
         )}
       </div>
     </div>
@@ -1305,12 +1671,32 @@ const TailTerminal = memo(function TailTerminal({
 }) {
   const outerRef = useRef<HTMLDivElement>(null);
   const [viewH, setViewH] = useState(400);
-  const atBottomRef = useRef(true);
-  const [atBottom, setAtBottom] = useState(true);
+  // Initial atBottom state mirrors JsonLogView: when there's a pending
+  // scroll request on mount (user switched view with a highlight/selection
+  // active), start NOT at bottom — otherwise the auto-tail effect (which
+  // fires before scroll-to-match in declaration order) would yank the
+  // viewport to the end and a concurrent new tail batch could flash the
+  // bottom before scroll-to-match overrides it.
+  const atBottomRef = useRef(scrollRequest == null);
+  const [atBottom, setAtBottom] = useState(scrollRequest == null);
   // Nowrap virtual list: track only the computed startIdx to avoid re-renders
   // on every scroll pixel.  Raw scrollTop is kept in a ref.
   const scrollTopRef = useRef(0);
-  const [startIdx, setStartIdx] = useState(0);
+  // Lazy initial startIdx: when mounted with a pending scrollRequest (e.g.
+  // user switched view back to terminal with a row highlighted), render the
+  // window AROUND the target row on the very first paint. Otherwise the first
+  // paint shows rows 0..viewport (highlight not present), then the
+  // scroll-to-request effect below jumps the viewport — a visible flash where
+  // the highlight "disappears" momentarily.
+  const [startIdx, setStartIdx] = useState(() => {
+    const idx = scrollRequest?.index;
+    if (idx == null || idx < 0) return 0;
+    // 400 = initial viewH guess (matches viewH initial state); good enough for
+    // first paint; handleScroll will refine after layout measures the real
+    // height.
+    const viewportRows = Math.ceil(400 / TERMINAL_ROW_H);
+    return Math.max(0, idx - Math.floor(viewportRows / 2) - TERMINAL_OVERSCAN);
+  });
   // Ref to the absolutely-positioned row group inside the nowrap container.
   // We translate it via DOM (no re-render) so the rendered rows stay glued to
   // the viewport even when the scroll surface is scaled to cap scrollHeight.
@@ -1485,10 +1871,13 @@ const TailTerminal = memo(function TailTerminal({
     }
   }, [evictedCount, autoScroll, wrapLines, entries.length, wrapVirtualizer]);
 
-  // Scroll to match index
+  // Scroll to match index. Uses useLayoutEffect (not useEffect) so the
+  // scrollTop assignment happens after DOM commit but BEFORE the browser
+  // paints — eliminating the "highlight gone" flash on initial mount when
+  // switching views with a selection active.
   const scrollRequestIndex = scrollRequest?.index;
   const scrollRequestNonce = scrollRequest?.nonce;
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (scrollRequestIndex == null || scrollRequestIndex < 0) return;
     lastProgrammaticScrollRef.current = Date.now();
     if (wrapLines) {
@@ -1694,7 +2083,13 @@ const TailTerminal = memo(function TailTerminal({
                   {/* Inner div: re-keyed on flashKey so CSS animation re-fires on each navigation */}
                   <div
                     key={isActive ? flashKey : undefined}
-                    onClick={() => { onEntryClick?.(vRow.index); toggleRow(vRow.index); }}
+                    onClick={() => {
+                      // Clicking an entry pauses auto-tail so the inspected
+                      // row stays in view; user resumes via Jump-to-bottom.
+                      if (atBottomRef.current) { atBottomRef.current = false; setAtBottom(false); }
+                      onEntryClick?.(vRow.index);
+                      toggleRow(vRow.index);
+                    }}
                     onDoubleClick={() => onEntryDoubleClick?.(vRow.index)}
                     className={cn(
                       "px-3 py-px font-mono text-[11px] select-text leading-snug border-b border-slate-200 cursor-pointer",
@@ -1746,7 +2141,10 @@ const TailTerminal = memo(function TailTerminal({
                 return (
                   <div
                     key={isActive ? `flash-${flashKey}` : absIdx}
-                    onClick={() => onEntryClick?.(absIdx)}
+                    onClick={() => {
+                      if (atBottomRef.current) { atBottomRef.current = false; setAtBottom(false); }
+                      onEntryClick?.(absIdx);
+                    }}
                     onDoubleClick={() => onEntryDoubleClick?.(absIdx)}
                     style={{ height: TERMINAL_ROW_H, lineHeight: `${TERMINAL_ROW_H}px` }}
                     className={cn(
@@ -2197,8 +2595,29 @@ export function LogsExplorer({
   // view switch auto-scrolls the new view to the previously selected entry.
   const [selectedEntryIdx, setSelectedEntryIdx] = useState<number | null>(null); // index into `filtered`
   const [selectedScrollNonce, setSelectedScrollNonce] = useState(0);
+  // Snapshot of selectedEntryIdx at the moment selectedScrollNonce was last
+  // bumped. The JsonLogView's PIN treats this as its scroll target. We do
+  // NOT pass live `selectedEntryIdx` to PIN: a click changes
+  // selectedEntryIdx (for highlight) without bumping nonce, so PIN must
+  // ignore it — otherwise every click would re-trigger PIN and scroll the
+  // viewport to the clicked row, breaking the "click highlights in place"
+  // contract. useMemo with [selectedScrollNonce] only captures
+  // selectedEntryIdx at the instant the nonce changes.
+  const selectedScrollRequest = useMemo(() => {
+    if (selectedScrollNonce <= 0 || selectedEntryIdx == null) return null;
+    return { index: selectedEntryIdx, nonce: selectedScrollNonce };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedScrollNonce]);
   const handleEntrySelect = useCallback((displayIdx: number) => {
     setSelectedEntryIdx(displayIdx);
+    // Clicking an entry to inspect it pauses Table-view auto-tail so the
+    // selected row stays in view. The autoScroll toggle stays on; user
+    // resumes by clicking the floating Jump-to-bottom button. Terminal &
+    // JSON viewers manage their own atBottom flag in their click handlers.
+    if (scrollAtBottomRef.current) {
+      scrollAtBottomRef.current = false;
+      setTableAtBottom(false);
+    }
     // Intentionally do NOT bump selectedScrollNonce — clicking should not move
     // the viewport. Scroll-to-selection only fires on view-mode switch.
   }, []);
@@ -2308,6 +2727,11 @@ export function LogsExplorer({
   // bottom. If they've scrolled up (e.g. to inspect a highlighted keyword)
   // we leave the viewport alone so new entries don't yank it.
   const scrollAtBottomRef = useRef(true);
+  // Mirror of scrollAtBottomRef in React state — drives the visibility of
+  // the floating Jump-to-bottom button for Table view (where the parent
+  // container is the scroll surface). Terminal & JSON views render their
+  // own button using their internal atBottom state.
+  const [tableAtBottom, setTableAtBottom] = useState(true);
   // Ignore the onScroll events that fire as a consequence of our own
   // programmatic scrolls (auto-scroll-to-bottom, scrollIntoView to a match)
   // so they can't flip scrollAtBottomRef the wrong way.
@@ -2382,6 +2806,21 @@ export function LogsExplorer({
   const [tailTotalReceived, setTailTotalReceived] = useState(0);
 
   const [fetchProgress, setFetchProgress] = useState<{ loaded: number; page: number; done: boolean; paused: boolean; source?: string; window?: string; sourceIdx?: number; sourceCount?: number; lastTimestamp?: string; overallBegin?: string; overallEnd?: string } | null>(null);
+  // Local "pending" flags so the UI can show "Pausing…" / "Stopping…"
+  // immediately when the user clicks, even though the worker may take up to
+  // a few seconds to actually pause (waiting for an in-flight HTTP request,
+  // a rate-limit sleep, or a 429 backoff to finish).
+  const [pausePending, setPausePending] = useState(false);
+  const [stopPending, setStopPending] = useState(false);
+  // Per-page rate-limit delay (ms) — kept in sync with the worker. The worker
+  // owns the source of truth; this state only mirrors what the worker reports
+  // via "rate-limit-delay" messages (initial broadcast + auto-bumps on 429 +
+  // explicit user changes). Defaults match the worker's default of 1100 ms
+  // until the worker confirms.
+  const [rateLimitDelayMs, setRateLimitDelayMs] = useState<number>(1100);
+  // Last reason the delay changed — used to flash the input briefly when the
+  // worker auto-bumps it after a 429.
+  const [rateLimitFlash, setRateLimitFlash] = useState<string | null>(null);
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -2391,6 +2830,7 @@ export function LogsExplorer({
         | { type: "entries"; entries: LogEntry[]; append: boolean }
         | { type: "status"; loading: boolean }
         | { type: "progress"; loaded: number; page: number; done: boolean; paused: boolean; source?: string; window?: string; sourceIdx?: number; sourceCount?: number; lastTimestamp?: string; overallBegin?: string; overallEnd?: string }
+        | { type: "rate-limit-delay"; value: number; reason: string }
         | { type: "error"; message: string; transient?: boolean };
 
       if (msg.type === "entries") {
@@ -2420,6 +2860,9 @@ export function LogsExplorer({
       } else if (msg.type === "progress") {
         setFetchProgress({ loaded: msg.loaded, page: msg.page, done: msg.done, paused: msg.paused, source: msg.source, window: msg.window, sourceIdx: msg.sourceIdx, sourceCount: msg.sourceCount, lastTimestamp: msg.lastTimestamp, overallBegin: msg.overallBegin, overallEnd: msg.overallEnd });
         onConfigChange({ searching: !msg.done });
+      } else if (msg.type === "rate-limit-delay") {
+        setRateLimitDelayMs(msg.value);
+        setRateLimitFlash(msg.reason);
       } else if (msg.type === "error") {
         if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
         setError(msg.message);
@@ -2432,6 +2875,10 @@ export function LogsExplorer({
       }
     };
     workerRef.current = worker;
+    // Ask the worker to broadcast its current rate-limit delay so the UI
+    // mirror starts off in sync (in case the worker default ever drifts from
+    // the UI default).
+    worker.postMessage({ type: "get-rate-limit-delay" });
     return () => worker.terminate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -2475,6 +2922,34 @@ export function LogsExplorer({
     prevDone.current = done;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchProgress?.done]);
+
+  // ── Clear pause/stop pending flags when worker has acknowledged ──
+  // Pause is acknowledged once the worker reports paused:true. Stop is
+  // acknowledged once the worker reports done:true (or searching flips off).
+  useEffect(() => {
+    if (fetchProgress?.paused) setPausePending(false);
+    if (fetchProgress?.done) {
+      setStopPending(false);
+      setPausePending(false);
+    }
+  }, [fetchProgress?.paused, fetchProgress?.done]);
+  useEffect(() => {
+    if (!searching) {
+      setStopPending(false);
+      setPausePending(false);
+    }
+  }, [searching]);
+
+  // Briefly highlight the rate-limit input when the worker auto-bumps it
+  // after a 429, so the user notices the change.
+  useEffect(() => {
+    if (!rateLimitFlash) return;
+    // Auto-bumps deserve a longer dwell so the inline notice is readable;
+    // user/init updates clear quickly because they don't need a notice.
+    const ms = rateLimitFlash !== "user" && rateLimitFlash !== "init" ? 6000 : 1500;
+    const id = setTimeout(() => setRateLimitFlash(null), ms);
+    return () => clearTimeout(id);
+  }, [rateLimitFlash]);
 
   // ── Auto-scroll when tailing ──
   useEffect(() => {
@@ -2841,6 +3316,13 @@ export function LogsExplorer({
     setMatchCursor(nextCursor);
     setActiveMatchKey(row.key);
     setMatchScrollNonce((n) => n + 1);
+    // Pre-emptively pause Table-view auto-tail. Without this, a tail batch
+    // arriving between the rAF schedule below and its callback would yank
+    // the container to the bottom before scrollIntoView corrects it.
+    if (viewMode === "table" || viewMode === "json") {
+      scrollAtBottomRef.current = false;
+      setTableAtBottom(false);
+    }
 
     // Table view: jump to the right page and highlight the row
     if (viewMode === "table") {
@@ -2855,6 +3337,7 @@ export function LogsExplorer({
           lastProgrammaticScrollAtRef.current = Date.now();
           el.scrollIntoView({ block: "center" });
           scrollAtBottomRef.current = false;
+          setTableAtBottom(false);
         }
       });
     }
@@ -2972,6 +3455,13 @@ export function LogsExplorer({
   useEffect(() => {
     if (selectedEntryIdx === null) return;
     if (viewMode !== "table") return; // table is the only one parent-scrolled
+    // Pre-emptively pause auto-tail synchronously, before the rAF below.
+    // The parent auto-tail effect depends on `entries`, so any new tail
+    // batch arriving in the gap between commit and rAF would otherwise
+    // yank the container to the bottom and flash before scrollIntoView
+    // corrects it. Clearing the flag now makes auto-tail return early.
+    scrollAtBottomRef.current = false;
+    setTableAtBottom(false);
     // Make sure the right page is loaded so the row exists in the DOM.
     const targetPage = Math.floor(selectedEntryIdx / pageSize) + 1;
     if (targetPage !== page) setPage(targetPage);
@@ -2981,10 +3471,62 @@ export function LogsExplorer({
         lastProgrammaticScrollAtRef.current = Date.now();
         el.scrollIntoView({ block: "center" });
         scrollAtBottomRef.current = false;
+        setTableAtBottom(false);
       }
     });
     // viewMode is intentionally a dep so a switch to table re-fires the scroll.
   }, [viewMode, selectedScrollNonce, selectedEntryIdx, pageSize, page]);
+
+  // When the view mode changes and there's an active match (highlight cursor),
+  // re-scroll to that match in the new view. Two reasons this is needed:
+  //   1. Terminal view's scroll-to-match effect keys off matchScrollNonce, so
+  //      the nonce must change for it to re-fire after the view re-mounts.
+  //   2. JSON view does not consume matchScrollRequest at all and the table
+  //      view's existing per-view-switch scroll effect only handles
+  //      selectedEntryIdx, so they each need an imperative scroll here.
+  // Auto-scroll-to-bottom is intentionally overridden — when the user has a
+  // highlight active, they care about the highlighted entry, not the tail.
+  useEffect(() => {
+    if (activeMatchIndex === null) return;
+    // Pre-emptively pause Table-view auto-tail (see the selectedEntryIdx
+    // effect above for the same rationale). For terminal/json the in-viewer
+    // scroll-to-match effects clear their own atBottomRef.
+    scrollAtBottomRef.current = false;
+    setTableAtBottom(false);
+    // Bump the match-scroll nonce so terminal view re-issues its scroll.
+    setMatchScrollNonce((n) => n + 1);
+    if (viewMode === "table") {
+      const targetPage = Math.floor(activeMatchIndex / pageSize) + 1;
+      if (targetPage !== page) setPage(targetPage);
+      // Double rAF: the new view must mount + commit before querySelector
+      // can find the row (especially for table when we just changed page).
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const el = scrollContainerRef.current?.querySelector(`[data-row-idx="${activeMatchIndex}"]`);
+          if (el) {
+            lastProgrammaticScrollAtRef.current = Date.now();
+            el.scrollIntoView({ block: "center" });
+            scrollAtBottomRef.current = false;
+            setTableAtBottom(false);
+          }
+        });
+      });
+    } else if (viewMode === "json") {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const el = scrollContainerRef.current?.querySelector(`[data-entry-idx="${activeMatchIndex}"]`);
+          if (el) {
+            lastProgrammaticScrollAtRef.current = Date.now();
+            el.scrollIntoView({ block: "center" });
+            scrollAtBottomRef.current = false;
+          }
+        });
+      });
+    }
+    // Only fire on view-mode switches; don't re-scroll just because the active
+    // match index moved (navigateToMatch already handles that case).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode]);
 
   return (
     <div className="space-y-4">
@@ -3164,10 +3706,25 @@ export function LogsExplorer({
                   {searching && (
                     <button
                       type="button"
-                      onClick={() => workerRef.current?.postMessage({ type: "fetch-stop" })}
-                      className="px-3 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+                      onClick={() => {
+                        setStopPending(true);
+                        workerRef.current?.postMessage({ type: "fetch-stop" });
+                      }}
+                      disabled={stopPending}
+                      title={stopPending ? "Waiting for the in-flight request to finish…" : "Stop the search"}
+                      className="px-3 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 disabled:opacity-60 disabled:cursor-wait transition-colors flex items-center gap-1"
                     >
-                      Stop
+                      {stopPending ? (
+                        <>
+                          <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                          </svg>
+                          Stopping…
+                        </>
+                      ) : (
+                        "Stop"
+                      )}
                     </button>
                   )}
                   {/* Server-side search keywords — sent to AIC as _queryFilter, runs at fetch time. */}
@@ -3511,6 +4068,24 @@ export function LogsExplorer({
             >
               Dedupe
             </button>
+            {/* Scroll to selected — re-anchors viewport on the highlighted row.
+                Disabled when no row is selected. Works in all view modes by
+                bumping selectedScrollNonce (the same signal used on view-mode
+                switches). `ml-auto` pushes this button and everything after
+                it to the right edge of the controls row. */}
+            <button
+              type="button"
+              disabled={selectedEntryIdx === null || selectedEntryIdx < 0}
+              onClick={() => setSelectedScrollNonce((n) => n + 1)}
+              title={
+                selectedEntryIdx === null || selectedEntryIdx < 0
+                  ? "Select a log entry first to enable this"
+                  : "Scroll the highlighted entry back into view"
+              }
+              className="ml-auto px-2 py-0.5 text-[11px] font-medium rounded border border-slate-300 bg-white text-slate-500 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
+            >
+              Scroll to selected
+            </button>
             {/* Bulk expand / collapse — only meaningful when rows are line-clamped (terminal + wrap) */}
             {viewMode === "terminal" && wrapLines && filtered.length > 0 && (
               <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
@@ -3682,7 +4257,9 @@ export function LogsExplorer({
             // flip the flag the wrong way.
             if (Date.now() - lastProgrammaticScrollAtRef.current < 400) return;
             const el = e.currentTarget;
-            scrollAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+            const atBot = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+            scrollAtBottomRef.current = atBot;
+            setTableAtBottom((prev) => (prev === atBot ? prev : atBot));
           }}
           onMouseUp={() => {
             if (fullscreen) return;
@@ -3763,11 +4340,7 @@ export function LogsExplorer({
                 onEntryDoubleClick={handleContextEntry}
                 contextAnchorIdx={contextAnchorDisplay ?? -1}
                 selectedEntryIdx={selectedEntryIdx}
-                selectedScrollRequest={
-                  selectedEntryIdx !== null && selectedScrollNonce > 0
-                    ? { index: selectedEntryIdx, nonce: selectedScrollNonce }
-                    : null
-                }
+                selectedScrollRequest={selectedScrollRequest}
                 autoScroll={autoScroll}
                 evictedCount={filteredEvictedCount}
               />
@@ -3823,6 +4396,33 @@ export function LogsExplorer({
           )}
         </div>
         {viewMode === "table" && <ScrollbarOverlay containerRef={scrollContainerRef} />}
+        {/* Floating Jump-to-bottom — Table view only. Terminal & JSON viewers
+            render their own button. Visible whenever the user has scrolled
+            away from the tail (manual scroll, click-to-inspect, match-nav).
+            Click resumes auto-tail by snapping to the latest entries. */}
+        {viewMode === "table" && fetched && filtered.length > 0 && !tableAtBottom && (
+          <button
+            type="button"
+            onClick={() => {
+              // Land on the latest page so the newest entries are visible,
+              // then scroll to the bottom and re-arm auto-tail.
+              if (currentPage !== totalPages) setPage(totalPages);
+              requestAnimationFrame(() => {
+                const el = scrollContainerRef.current;
+                if (el) {
+                  lastProgrammaticScrollAtRef.current = Date.now();
+                  el.scrollTop = el.scrollHeight;
+                }
+                scrollAtBottomRef.current = true;
+                setTableAtBottom(true);
+              });
+            }}
+            className="absolute bottom-16 right-6 px-3 py-1.5 text-xs bg-sky-600 text-white rounded-full shadow-lg hover:bg-sky-700 transition-colors z-20"
+            title={autoScroll && tailing ? "Jump to bottom and resume auto-scroll" : "Jump to bottom"}
+          >
+            ↓ Jump to bottom
+          </button>
+        )}
 
         {/* Pagination controls — table view only */}
         {viewMode === "table" && fetched && filtered.length > 0 && (
@@ -3904,6 +4504,21 @@ export function LogsExplorer({
                   />
                 </div>
               )}
+              {/* Auto-bump notice — shown when the worker raises the
+                  rate-limit delay after a 429. Auto-dismissed by the
+                  rateLimitFlash useEffect above. */}
+              {rateLimitFlash && rateLimitFlash !== "user" && rateLimitFlash !== "init" && (
+                <div className="flex items-center gap-2 px-4 py-1.5 bg-amber-50 border-b border-amber-200 text-[11px] text-amber-800">
+                  <svg className="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+                    <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495ZM10 6a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 10 6Zm0 9a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clipRule="evenodd" />
+                  </svg>
+                  <span>
+                    Hit a 429 from AIC — per-page delay auto-raised to{" "}
+                    <span className="font-mono font-semibold">{rateLimitDelayMs} ms</span>
+                    . You can override the value in the Delay box.
+                  </span>
+                </div>
+              )}
               <div className="flex items-center justify-between px-4 py-2">
                 <div className="flex items-center gap-2">
                   {fetchProgress?.paused ? (
@@ -3917,17 +4532,56 @@ export function LogsExplorer({
                   <span className="text-xs text-slate-600">
                     {!fetchProgress
                       ? "Starting search…"
-                      : fetchProgress.paused
-                        ? `Paused — ${fetchProgress.loaded.toLocaleString()} entries loaded`
-                        : [
-                          fetchProgress.source && `[${fetchProgress.source}]`,
-                          fetchProgress.window && fetchProgress.window,
-                          fetchProgress.loaded > 0 && `${fetchProgress.loaded.toLocaleString()} entries`,
-                          pct !== null && `${pct}%`,
-                        ].filter(Boolean).join(' · ')}
+                      : stopPending
+                        ? `Stopping — finishing in-flight request…`
+                        : pausePending && !fetchProgress.paused
+                          ? `Pausing — waiting for in-flight request…`
+                          : fetchProgress.paused
+                            ? `Paused — ${fetchProgress.loaded.toLocaleString()} entries loaded`
+                            : [
+                              fetchProgress.source && `[${fetchProgress.source}]`,
+                              fetchProgress.window && fetchProgress.window,
+                              fetchProgress.loaded > 0 && `${fetchProgress.loaded.toLocaleString()} entries`,
+                              pct !== null && `${pct}%`,
+                            ].filter(Boolean).join(' · ')}
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5">
+                  {/* Live rate-limit-delay control. The worker owns the
+                      authoritative value: it auto-bumps on 429 and broadcasts
+                      back here, and accepts user edits while a search is
+                      running. Clamped to 200..5000 ms. */}
+                  <label
+                    className={cn(
+                      "flex items-center gap-1 text-[11px] text-slate-600 px-1.5 py-0.5 rounded border transition-colors",
+                      rateLimitFlash && rateLimitFlash !== "user" && rateLimitFlash !== "init"
+                        ? "border-amber-400 bg-amber-50 text-amber-800"
+                        : "border-slate-200 bg-white",
+                    )}
+                    title={
+                      rateLimitFlash && rateLimitFlash !== "user" && rateLimitFlash !== "init"
+                        ? `Auto-raised after a 429 (${rateLimitFlash}). You can override the value below.`
+                        : "Per-page delay (ms) sent between paginated AIC log requests. AIC caps at ~60 req/min, so values below ~1000 ms are likely to trigger 429s. Editable while a search is running."
+                    }
+                  >
+                    <span className="font-medium">Delay</span>
+                    <input
+                      type="number"
+                      min={200}
+                      max={5000}
+                      step={50}
+                      value={rateLimitDelayMs}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        if (!Number.isFinite(v)) return;
+                        const clamped = Math.max(200, Math.min(5000, Math.round(v)));
+                        setRateLimitDelayMs(clamped);
+                        workerRef.current?.postMessage({ type: "set-rate-limit-delay", value: clamped, reason: "user" });
+                      }}
+                      className="w-16 text-[11px] font-mono px-1 py-0 border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-sky-500 bg-white"
+                    />
+                    <span className="text-slate-400">ms</span>
+                  </label>
                   {fetchProgress?.paused ? (
                     <button
                       type="button"
@@ -3939,18 +4593,48 @@ export function LogsExplorer({
                   ) : (
                     <button
                       type="button"
-                      onClick={() => workerRef.current?.postMessage({ type: "fetch-pause" })}
-                      className="px-2.5 py-1 text-xs font-medium bg-amber-100 text-amber-700 rounded hover:bg-amber-200 transition-colors"
+                      onClick={() => {
+                        setPausePending(true);
+                        workerRef.current?.postMessage({ type: "fetch-pause" });
+                      }}
+                      disabled={pausePending || stopPending}
+                      title={pausePending ? "Waiting for the in-flight request to finish…" : "Pause the search"}
+                      className="px-2.5 py-1 text-xs font-medium bg-amber-100 text-amber-700 rounded hover:bg-amber-200 disabled:opacity-60 disabled:cursor-wait transition-colors flex items-center gap-1"
                     >
-                      Pause
+                      {pausePending ? (
+                        <>
+                          <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                          </svg>
+                          Pausing…
+                        </>
+                      ) : (
+                        "Pause"
+                      )}
                     </button>
                   )}
                   <button
                     type="button"
-                    onClick={() => workerRef.current?.postMessage({ type: "fetch-stop" })}
-                    className="px-2.5 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+                    onClick={() => {
+                      setStopPending(true);
+                      workerRef.current?.postMessage({ type: "fetch-stop" });
+                    }}
+                    disabled={stopPending}
+                    title={stopPending ? "Waiting for the in-flight request to finish…" : "Stop the search"}
+                    className="px-2.5 py-1 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 disabled:opacity-60 disabled:cursor-wait transition-colors flex items-center gap-1"
                   >
-                    Stop
+                    {stopPending ? (
+                      <>
+                        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Stopping…
+                      </>
+                    ) : (
+                      "Stop"
+                    )}
                   </button>
                 </div>
               </div>

@@ -8,6 +8,8 @@
  *   { type: "fetch-stop" }
  *   { type: "tail-start", env, sources, tailSecs, levels? }
  *   { type: "tail-stop" }
+ *   { type: "set-rate-limit-delay", value }   // ms; clamped to [200, 5000]
+ *   { type: "get-rate-limit-delay" }
  *   { type: "cancel" }
  *
  *   `levels` (when present) is an array of effective level strings
@@ -18,6 +20,7 @@
  *   { type: "entries",  entries: LogEntry[], append: boolean }
  *   { type: "status",   loading: boolean }
  *   { type: "progress", loaded: number, page: number, done: boolean, paused: boolean, source?: string, window?: string }
+ *   { type: "rate-limit-delay", value: number, reason: string }
  *   { type: "error",    message: string }
  */
 
@@ -49,14 +52,28 @@ let searchPaused = false;
 let searchResolveResume = null; // resolve function for pause promise
 let sleepReject = null; // reject function to interrupt sleep on stop
 
-const RATE_LIMIT_DELAY = 1100; // 1.1s between pages (60 req/min limit)
+const DEFAULT_RATE_LIMIT_DELAY = 1100; // 1.1s between pages (60 req/min limit)
+const MIN_RATE_LIMIT_DELAY = 200;
+const MAX_RATE_LIMIT_DELAY = 5000;
+const AUTO_BUMP_MS = 150; // each 429 increases the delay by this amount
+// Mutable: can be changed on the fly via "set-rate-limit-delay" and is
+// auto-bumped each time a 429 is observed. Reported back to the UI as
+// { type: "rate-limit-delay", value, reason } whenever it changes.
+let rateLimitDelay = DEFAULT_RATE_LIMIT_DELAY;
 const MAX_RETRIES = 5;
 const MAX_CHUNK_MS = 23 * 60 * 60 * 1000; // AIC limit: < 1 day per request
 // Per tick, drain at most this many pages before yielding to the next scheduled
-// tick. With RATE_LIMIT_DELAY = 1100 ms, 25 pages ≈ 27.5 s — enough to absorb
+// tick. With rateLimitDelay = 1100 ms, 25 pages ≈ 27.5 s — enough to absorb
 // large bursts but bounded so a single source can't monopolise the rate-limit
 // budget when multiple sources are tailed concurrently.
 const MAX_TAIL_PAGES_PER_TICK = 25;
+
+function setRateLimitDelay(ms, reason) {
+  const clamped = Math.max(MIN_RATE_LIMIT_DELAY, Math.min(MAX_RATE_LIMIT_DELAY, Math.round(Number(ms) || 0)));
+  if (clamped === rateLimitDelay) return;
+  rateLimitDelay = clamped;
+  self.postMessage({ type: "rate-limit-delay", value: rateLimitDelay, reason: reason || "user" });
+}
 
 /** Split a time range into sub-day chunks if it exceeds 23 hours. */
 function splitTimeRange(beginTime, endTime) {
@@ -85,14 +102,45 @@ async function apiPost(body, retries = MAX_RETRIES, attempt = 0) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (res.status === 429 && retries > 0) {
-    const retryAfter = parseInt(res.headers.get("Retry-After") || "0", 10);
-    // Exponential backoff: 5s, 10s, 20s, 40s, 80s — respect Retry-After if larger
-    const backoff = Math.pow(2, attempt) * 5000;
-    const waitMs = Math.max(retryAfter * 1000, backoff);
-    self.postMessage({ type: "error", message: `Rate limited — retrying in ${Math.ceil(waitMs / 1000)}s… (attempt ${attempt + 1}/${MAX_RETRIES})`, transient: true });
-    await sleep(waitMs);
-    return apiPost(body, retries - 1, attempt + 1);
+  if (res.status === 429) {
+    // AIC returns 429 for two very different reasons. We need to peek at the
+    // body to tell them apart so we don't waste 5×exponential-backoff retries
+    // on a quota error that won't change.
+    let bodyText = "";
+    try { bodyText = await res.text(); } catch { /* ignore */ }
+    const isVolumeQuota = /more log data than permitted|log.*quota|exceeded.*log/i.test(bodyText);
+    if (isVolumeQuota) {
+      // Per-tenant log-volume cap (e.g. AIC's 1 GB/24 h). Retrying or
+      // raising the per-page delay does NOT help — the only fix is to
+      // narrow the request (shorter range, fewer sources, level filter,
+      // server-side keywords). Surface a clear, actionable error.
+      return {
+        error:
+          "AIC log-volume quota hit (HTTP 429: \"more log data than permitted\"). " +
+          "This is a per-tenant 24-hour download cap, not a per-minute rate limit — " +
+          "raising the per-page delay will not help. Try: (1) shorten the time range, " +
+          "(2) narrow the Min Level to ERROR/WARN, (3) add server-side Keywords, or " +
+          "(4) deselect one of the log sources. Wait for the rolling window to reset " +
+          "and retry with a smaller request.",
+        quotaError: true,
+      };
+    }
+    if (retries > 0) {
+      // Throughput rate-limit (60 req/min). Auto-tune: every 429 bumps the
+      // steady-state delay so subsequent pages are slower and (hopefully)
+      // avoid the next 429. Capped at MAX_RATE_LIMIT_DELAY. The UI is
+      // notified so it can show the new value.
+      setRateLimitDelay(rateLimitDelay + AUTO_BUMP_MS, "auto-bump (429)");
+      const retryAfter = parseInt(res.headers.get("Retry-After") || "0", 10);
+      // Exponential backoff: 5s, 10s, 20s, 40s, 80s — respect Retry-After if larger
+      const backoff = Math.pow(2, attempt) * 5000;
+      const waitMs = Math.max(retryAfter * 1000, backoff);
+      self.postMessage({ type: "error", message: `Rate limited — retrying in ${Math.ceil(waitMs / 1000)}s… (attempt ${attempt + 1}/${MAX_RETRIES}). Per-page delay raised to ${rateLimitDelay} ms.`, transient: true });
+      await sleep(waitMs);
+      return apiPost(body, retries - 1, attempt + 1);
+    }
+    // Retries exhausted on a throughput 429 — surface as a normal error.
+    return { error: `HTTP 429 after ${MAX_RETRIES} retries: ${bodyText || "rate limited"}` };
   }
   return res.json();
 }
@@ -144,7 +192,7 @@ async function doFetch(env, sources, beginTime, endTime, queryFilter, levels, fe
           }
 
           // Rate limit delay between pages (skip very first request)
-          if (!isVeryFirst) await sleep(RATE_LIMIT_DELAY);
+          if (!isVeryFirst) await sleep(rateLimitDelay);
 
           pageNum++;
           const data = await apiPost({
@@ -247,7 +295,7 @@ async function doTailTick(env, source, levels, tailSecs, gen) {
       if (tailGen.get(source) !== gen) return;
       if (pageCount > 0) {
         // Stay under AIC's 60 req/min cap when draining a backlog.
-        try { await tailSleep(source, RATE_LIMIT_DELAY); } catch { return; }
+        try { await tailSleep(source, rateLimitDelay); } catch { return; }
         if (tailGen.get(source) !== gen) return;
       }
       const data = await apiPost(
@@ -369,6 +417,16 @@ self.onmessage = async function (e) {
 
     case "tail-stop":
       stopTail();
+      break;
+
+    case "set-rate-limit-delay":
+      setRateLimitDelay(msg.value, msg.reason || "user");
+      break;
+
+    case "get-rate-limit-delay":
+      // Allow the UI to request the current value (e.g. after worker boot)
+      // without changing it.
+      self.postMessage({ type: "rate-limit-delay", value: rateLimitDelay, reason: "init" });
       break;
 
     case "cancel":

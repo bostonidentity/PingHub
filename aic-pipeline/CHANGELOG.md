@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6.9] - 2026-05-15
+
+### Fixed
+
+- **Logs JSON view scroll-to-selected** now works reliably across view-switches, scroll-to-selected button clicks, and during/after tail. Root cause was that `@tanstack/react-virtual`'s `scrollToIndex` cannot be used with our custom `observeElementOffset` / `scrollToFn` configuration: it consistently called `scrollToFn(0)` regardless of the requested index because react-virtual's `measurementsCache` is only populated for currently-mounted rows. Replaced all four call sites (auto-tail, active-match, PIN, failsafe) with direct `applyVirtualOffset` math: cumulative-sum estimates for unrendered targets and `getBoundingClientRect`-based delta correction for rendered ones. The view now lands on the selected entry on the very first JSON-view mount, even when no row near the target was ever rendered before.
+- **JSON view auto-tail** correctly jumps to the end of the buffer on mount instead of staying at offset 0 (which previously demoted `atBottomRef` and broke subsequent tail batches).
+- **JSON view height cache** is preserved across Scroll-to-selected so per-row measurements survive view switches and don't reset to the 240px estimate.
+- **Selection PIN** uses two-phase reveal — cumulative-sum estimate for the first frame, then a single DOM-rect delta correction once the row mounts — eliminating the multi-frame convergence loop that used to drift as adjacent rows were measured.
+
 ## [0.2.6.8] - 2026-05-14
 
 ### Added
