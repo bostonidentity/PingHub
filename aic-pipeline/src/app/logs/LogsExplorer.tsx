@@ -1061,8 +1061,14 @@ function JsonLogView({
     // Without this guard, the mount-phase auto-tail call jams the viewport
     // to the end before PIN can scroll to the selected row.
     if (hasInitialTarget && !pinnedRef.current) { dbg("auto-tail SKIP", { reason: "selection target pending" }); return; }
-    dbg("auto-tail FIRE scrollToIndex(end)", { idx: entries.length - 1 });
-    virtualizer.scrollToIndex(entries.length - 1, { align: "end" });
+    // Apply offset directly. virtualizer.scrollToIndex is broken in our
+    // setup (it calls scrollToFn(0) for any index because react-virtual's
+    // measurementsCache is empty for unmounted indices and our
+    // observeElementOffset reports virtualOffset=0). Total/viewportH math
+    // gives the same end-aligned offset without the broken indirection.
+    const endOffset = Math.max(0, totalSizeRef.current - viewportH);
+    dbg("auto-tail FIRE applyVirtualOffset(end)", { idx: entries.length - 1, endOffset });
+    applyVirtualOffset(endOffset);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries.length, autoScroll, hasInitialTarget, pinned]);
 
@@ -1091,17 +1097,30 @@ function JsonLogView({
     applyVirtualOffset(newOffset);
   }, [evictedCount, autoScroll, entries.length, applyVirtualOffset, dbg])
 
-  // Scroll to the active match when it changes.
+  // Scroll to the active match when it changes. Uses cumulative-sum
+  // estimate (same as PIN Phase 1) since virtualizer.scrollToIndex is
+  // broken in this setup.
   useEffect(() => {
     dbg("active-match effect", { activeEntryIdx, entriesLen: entries.length, atBottomRef: atBottomRef.current });
     if (activeEntryIdx >= 0 && activeEntryIdx < entries.length) {
       // Pause auto-tail — user is inspecting a match, so any subsequent tail
       // batch must NOT yank the viewport to the end.
       setAtBottomBoth(false, "scroll-to-active-match");
-      dbg("active-match FIRE scrollToIndex(center)", { idx: activeEntryIdx });
-      virtualizer.scrollToIndex(activeEntryIdx, { align: "center" });
+      const cache = heightCacheRef.current;
+      const avg = avgRowHeightRef.current;
+      const viewport = scrollRef.current?.clientHeight || viewportH;
+      let rowStart = 0;
+      for (let i = 0; i < activeEntryIdx; i++) {
+        rowStart += cache.get(i) ?? avg;
+      }
+      const rowH = cache.get(activeEntryIdx) ?? avg;
+      const targetOffset = rowH > viewport
+        ? Math.max(0, rowStart - 24)
+        : Math.max(0, rowStart - viewport / 2 + rowH / 2);
+      dbg("active-match FIRE applyVirtualOffset(center)", { idx: activeEntryIdx, rowStart, rowH, targetOffset });
+      applyVirtualOffset(targetOffset);
     }
-  }, [activeEntryIdx, entries.length, virtualizer, dbg, setAtBottomBoth]);
+  }, [activeEntryIdx, entries.length, viewportH, applyVirtualOffset, dbg, setAtBottomBoth]);
 
   // Scroll-to-selection: when a new selection request arrives (view-mode
   // switch or jump-from-match-nav), pause auto-tail. The actual scrolling
