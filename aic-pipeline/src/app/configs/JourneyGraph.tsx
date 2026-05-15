@@ -391,20 +391,43 @@ function parseJourney(json: string, pageConfigs?: Map<string, PageNodeConfig>): 
 
 // ── Dagre layout ──────────────────────────────────────────────────────────────
 
-function applyDagreLayout(nodes: Node[], edges: Edge[], compact = false): Node[] {
+type LayoutDirection = "TB" | "LR" | "BT" | "RL";
+type LayoutDensity = "compact" | "comfortable" | "roomy";
+
+interface LayoutOptions {
+  direction: LayoutDirection;
+  density: LayoutDensity;
+  /** Edge ids on the happy path (start → Success). Layouts may give these
+   *  extra weight/priority so the canonical success route stays visually
+   *  straight. Pass empty/undefined to disable. */
+  happyPathEdgeIds?: Set<string>;
+}
+
+function densitySpacing(d: LayoutDensity): { nodesep: number; ranksep: number; margin: number } {
+  switch (d) {
+    case "compact": return { nodesep: 25, ranksep: 60, margin: 24 };
+    case "roomy": return { nodesep: 100, ranksep: 240, margin: 56 };
+    case "comfortable":
+    default: return { nodesep: 60, ranksep: 160, margin: 40 };
+  }
+}
+
+function applyDagreLayout(nodes: Node[], edges: Edge[], opts: LayoutOptions): Node[] {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph(compact
-    ? { rankdir: "LR", nodesep: 25, ranksep: 60, marginx: 24, marginy: 24 }
-    : { rankdir: "LR", nodesep: 60, ranksep: 160, marginx: 40, marginy: 40 },
-  );
+  const { nodesep, ranksep, margin } = densitySpacing(opts.density);
+  g.setGraph({ rankdir: opts.direction, nodesep, ranksep, marginx: margin, marginy: margin });
 
   // Only layout top-level nodes — children keep relative position inside group
   nodes.filter((n) => !n.parentId).forEach((n) => {
     const [w, h] = getNodeDims(n);
     g.setNode(n.id, { width: w, height: h });
   });
-  edges.forEach((e) => g.setEdge(e.source, e.target));
+  edges.forEach((e) => {
+    // Higher weight pulls happy-path edges toward straight short routes.
+    const weight = opts.happyPathEdgeIds?.has(e.id) ? 10 : 1;
+    g.setEdge(e.source, e.target, { weight });
+  });
   dagre.layout(g);
 
   return nodes.map((n) => {
@@ -420,23 +443,31 @@ function applyDagreLayout(nodes: Node[], edges: Edge[], compact = false): Node[]
 
 const elk = new ELK();
 
+const ELK_DIRECTION: Record<LayoutDirection, string> = {
+  TB: "DOWN",
+  BT: "UP",
+  LR: "RIGHT",
+  RL: "LEFT",
+};
+
 /**
- * Layered layout via elkjs. Same visual grammar as dagre (ranks, LR flow) but
+ * Layered layout via elkjs. Same visual grammar as dagre (ranks, flow) but
  * with a stronger crossing minimizer and an `aspectRatio` hint so wide-shallow
  * journeys pull their branches into unused vertical space instead of sprawling
- * further right. `considerModelOrder` keeps outcome order stable across runs;
- * SPLINES routing matches dagre's smooth edges.
+ * further along the flow axis. `considerModelOrder` keeps outcome order stable
+ * across runs; SPLINES routing matches dagre's smooth edges. When happy-path
+ * edge ids are supplied they are tagged with high `priority` so ELK keeps the
+ * canonical success route visually straight.
  */
-async function applyElkLayout(nodes: Node[], edges: Edge[], compact = false): Promise<Node[]> {
-  const nodesep = compact ? 25 : 60;
-  const ranksep = compact ? 60 : 160;
+async function applyElkLayout(nodes: Node[], edges: Edge[], opts: LayoutOptions): Promise<Node[]> {
+  const { nodesep, ranksep } = densitySpacing(opts.density);
   const topLevel = nodes.filter((n) => !n.parentId);
 
   const elkGraph = {
     id: "root",
     layoutOptions: {
       "elk.algorithm": "layered",
-      "elk.direction": "RIGHT",
+      "elk.direction": ELK_DIRECTION[opts.direction],
       "elk.edgeRouting": "SPLINES",
       "elk.aspectRatio": "1.6",
       "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
@@ -447,7 +478,14 @@ async function applyElkLayout(nodes: Node[], edges: Edge[], compact = false): Pr
       const [w, h] = getNodeDims(n);
       return { id: n.id, width: w, height: h };
     }),
-    edges: edges.map((e) => ({ id: e.id, sources: [e.source], targets: [e.target] })),
+    edges: edges.map((e) => ({
+      id: e.id,
+      sources: [e.source],
+      targets: [e.target],
+      layoutOptions: opts.happyPathEdgeIds?.has(e.id)
+        ? { "elk.layered.priority.straightness": "10", "elk.priority": "10" }
+        : undefined,
+    })),
   };
 
   const laid = await elk.layout(elkGraph);
@@ -1016,8 +1054,7 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
   const [layoutKey, setLayoutKey] = useState(0);
   const [nodePanel, setNodePanel] = useState<NodePanelData | null>(null);
   const [pageConfigs, setPageConfigs] = useState<Map<string, PageNodeConfig>>(new Map());
-  const [isCompact, setIsCompact] = useState(false);
-  const [collapseChainsOn, setCollapseChainsOn] = useState(true);
+  const [hideUnreachable, setHideUnreachable] = useState(true);
   const [showCanvasTip, setShowCanvasTip] = useState(true);
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1031,8 +1068,7 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
       window.localStorage.setItem("journey-graph-tip-dismissed", "1");
     }
   }, []);
-  const [expandedChainIds, setExpandedChainIds] = useState<Set<string>>(new Set());
-  const [layoutEngine, _setLayoutEngine] = useState<"dagre" | "elk">("elk");
+  const [layoutEngine, setLayoutEngine] = useState<"dagre" | "elk">("elk");
   const [displayView, setDisplayView] = useState<"graph" | "outline" | "table" | "swimlane" | "json">("graph");
   // "control" = trace the outcome graph (default). "data" = trace shared-state
   // dependencies derived from every node's `inputs` / `outputs` arrays.
@@ -1241,17 +1277,55 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
     return () => { cancelled = true; };
   }, [environment, activeJourneyId, scriptNodeIds]);
 
-  const { rawNodes, baseEdges, collapsedChains } = useMemo(() => {
+  const { rawNodes, baseEdges, unreachableCount } = useMemo(() => {
     const parsed = parseJourney(activeJson, pageConfigs.size > 0 ? pageConfigs : undefined);
-    const col = collapseChainsOn
-      ? collapseChains(parsed.nodes, parsed.edges, expandedChainIds, CHAIN_MIN_LEN)
-      : { nodes: parsed.nodes, edges: parsed.edges, chains: [] };
-    return { rawNodes: col.nodes, baseEdges: col.edges, collapsedChains: col.chains };
-  }, [activeJson, pageConfigs, collapseChainsOn, expandedChainIds]);
+
+    // Optionally drop nodes the journey can never reach from `startNode`.
+    // Such nodes have no inbound edge chain from the entry point and so
+    // will never execute at runtime — typically orphans left over from edits.
+    let nodes = parsed.nodes;
+    let edges = parsed.edges;
+    let hidden = 0;
+    if (hideUnreachable) {
+      const reachable = bfs(["startNode"], parsed.edges, "forward");
+      const before = parsed.nodes.filter((n) => !n.parentId).length;
+      nodes = parsed.nodes.filter((n) => {
+        if (n.parentId) return reachable.has(n.parentId);
+        return reachable.has(n.id);
+      });
+      edges = parsed.edges.filter((e) => reachable.has(e.source) && reachable.has(e.target));
+      const after = nodes.filter((n) => !n.parentId).length;
+      hidden = Math.max(0, before - after);
+    }
+
+    return { rawNodes: nodes, baseEdges: edges, unreachableCount: hidden };
+  }, [activeJson, pageConfigs, hideUnreachable]);
+
+  // ── Layout preferences (persisted per-browser) ────────────────────────────
+  // Currently only the engine choice is exposed; direction/density/straighten
+  // are pinned to LR / compact / off.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem("journey-graph-layout-prefs");
+      if (!raw) return;
+      const p = JSON.parse(raw) as Partial<{ engine: "dagre" | "elk" }>;
+      if (p.engine === "dagre" || p.engine === "elk") setLayoutEngine(p.engine);
+    } catch { /* corrupt prefs — ignore */ }
+  }, []);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("journey-graph-layout-prefs", JSON.stringify({ engine: layoutEngine }));
+  }, [layoutEngine]);
+
+  const layoutOptions = useMemo<LayoutOptions>(
+    () => ({ direction: "LR", density: "compact" }),
+    [],
+  );
 
   const dagreNodes = useMemo(
-    () => applyDagreLayout(rawNodes, baseEdges, isCompact),
-    [rawNodes, baseEdges, isCompact, layoutKey],
+    () => applyDagreLayout(rawNodes, baseEdges, layoutOptions),
+    [rawNodes, baseEdges, layoutOptions, layoutKey],
   );
 
   // Helper: fit the current rfNodes or restore a saved viewport (once per
@@ -1293,19 +1367,19 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
 
   useEffect(() => {
     setElkPending(layoutEngine === "elk");
-  }, [rawNodes, baseEdges, isCompact, layoutEngine, layoutKey]);
+  }, [rawNodes, baseEdges, layoutOptions, layoutEngine, layoutKey]);
 
   useEffect(() => {
     if (layoutEngine !== "elk") return;
     let cancelled = false;
-    applyElkLayout(rawNodes, baseEdges, isCompact).then((positioned) => {
+    applyElkLayout(rawNodes, baseEdges, layoutOptions).then((positioned) => {
       if (cancelled) return;
       setRfNodes(positioned);
       applyPendingViewport();
       setElkPending(false);
     });
     return () => { cancelled = true; };
-  }, [rawNodes, baseEdges, isCompact, layoutEngine, layoutKey, setRfNodes, applyPendingViewport]);
+  }, [rawNodes, baseEdges, layoutOptions, layoutEngine, layoutKey, setRfNodes, applyPendingViewport]);
 
   // Clear flash after animation completes
   useEffect(() => {
@@ -1547,10 +1621,6 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
 
   const handleNodeClick: NodeMouseHandler = useCallback((_e, node) => {
     if (node.parentId) return; // ignore clicks on page child nodes
-    if (node.type === "chainCollapsed") {
-      setExpandedChainIds((prev) => { const next = new Set(prev); next.add(node.id); return next; });
-      return;
-    }
     const d = node.data as { label: string; nodeType?: string; outcomes?: string[] };
 
     const isSame = selectedNodeId === node.id;
@@ -1739,51 +1809,39 @@ function JourneyGraphInner({ json, fitViewKey, environment, journeyId, focusNode
             </svg>
           </button>
 
-          {/* Collapse passthrough chains */}
+          {/* Hide nodes unreachable from startNode (dead code) */}
           <button
             type="button"
-            onClick={() => {
-              shouldAdjustViewport.current = true;
-              setCollapseChainsOn((v) => !v);
-              setExpandedChainIds(new Set());
-            }}
+            onClick={() => { shouldAdjustViewport.current = true; setHideUnreachable((v) => !v); }}
             title={
-              collapseChainsOn
-                ? `Showing collapsed chains (≥ ${CHAIN_MIN_LEN} linear steps folded into one pill). Click to show all nodes.`
-                : "Fold linear runs of single-step nodes into collapsible pills."
+              hideUnreachable
+                ? "Showing only nodes reachable from Start. Click to show every node, including orphans."
+                : "Hide nodes that have no inbound path from Start (these never execute at runtime)."
             }
             className={cn(
               "px-2.5 py-1 text-[11px] rounded border transition-colors shrink-0 flex items-center gap-1",
-              collapseChainsOn
+              hideUnreachable
                 ? "bg-sky-600 text-white border-sky-600"
                 : "text-slate-500 border-slate-300 hover:text-slate-700 hover:border-slate-400",
             )}
           >
             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round"
-                d="M6 12h.01M12 12h.01M18 12h.01M3 6h18M3 18h18" />
+                d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" />
             </svg>
-            Fold runs{collapsedChains.length > 0 ? ` (${collapsedChains.length})` : ""}
+            Hide unreachable{hideUnreachable && unreachableCount > 0 ? ` (${unreachableCount})` : ""}
           </button>
 
-          {/* Compact layout */}
-          <button
-            type="button"
-            onClick={() => { shouldAdjustViewport.current = true; setIsCompact((v) => !v); }}
-            title={isCompact ? "Switch to normal layout" : "Switch to compact layout"}
-            className={cn(
-              "px-2.5 py-1 text-[11px] rounded border transition-colors shrink-0 flex items-center gap-1",
-              isCompact
-                ? "bg-sky-600 text-white border-sky-600"
-                : "text-slate-500 border-slate-300 hover:text-slate-700 hover:border-slate-400",
-            )}
+          {/* Layout engine */}
+          <select
+            value={layoutEngine}
+            onChange={(e) => { shouldAdjustViewport.current = true; setLayoutEngine(e.target.value as "dagre" | "elk"); }}
+            title="Layout engine. ELK Layered minimizes edge crossings best; Dagre is faster on small graphs."
+            className="px-1.5 py-1 text-[11px] rounded border border-slate-300 bg-white text-slate-600 hover:border-slate-400 shrink-0"
           >
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round"
-                d="M9 9V4.5M9 9H4.5M9 9 3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5 5.25 5.25" />
-            </svg>
-            Compact
-          </button>
+            <option value="elk">ELK</option>
+            <option value="dagre">Dagre</option>
+          </select>
 
         </>)}
 
