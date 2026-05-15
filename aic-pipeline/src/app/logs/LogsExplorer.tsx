@@ -1163,27 +1163,48 @@ function JsonLogView({
     if (!hasInitialTarget) return;
     const t = setTimeout(() => {
       if (pinnedRef.current) return;
-      // Final corrective scroll using current measurements.
+      // Final corrective scroll using current measurements. Prefer the
+      // DOM-rect path (stable under measurement updates) over the
+      // cumulative-sum path (drifts as nearby rows get measured).
       if (
         selectedIdx != null &&
         selectedIdx >= 0 &&
         selectedIdx < entries.length &&
         scrollRef.current
       ) {
-        const viewport = scrollRef.current.clientHeight || viewportH;
-        const cache = heightCacheRef.current;
-        const avg = avgRowHeightRef.current;
-        let rowStart = 0;
-        for (let i = 0; i < selectedIdx; i++) {
-          rowStart += cache.get(i) ?? avg;
-        }
-        const rowH = cache.get(selectedIdx) ?? avg;
-        const targetOffset = rowH > viewport
-          ? Math.max(0, rowStart - 24)
-          : Math.max(0, rowStart - viewport / 2 + rowH / 2);
-        if (Math.abs(targetOffset - virtualOffsetRef.current) > 2) {
-          dbg("PIN reveal (failsafe final scroll)", { selectedIdx, rowStart, rowH, targetOffset });
-          applyVirtualOffset(targetOffset);
+        const scrollEl = scrollRef.current;
+        const viewport = scrollEl.clientHeight || viewportH;
+        const rowEl = scrollEl.querySelector(
+          `[data-index="${selectedIdx}"]`,
+        ) as HTMLElement | null;
+        if (rowEl) {
+          const scrollRect = scrollEl.getBoundingClientRect();
+          const rowRect = rowEl.getBoundingClientRect();
+          const currentTop = rowRect.top - scrollRect.top;
+          const rowH = rowRect.height;
+          const desiredTop = rowH > viewport ? 24 : (viewport - rowH) / 2;
+          const delta = currentTop - desiredTop;
+          const newOffset = Math.max(0, virtualOffsetRef.current + delta);
+          if (Math.abs(delta) > 2) {
+            dbg("PIN reveal (failsafe dom-rect)", { selectedIdx, currentTop, desiredTop, rowH, delta, newOffset });
+            applyVirtualOffset(newOffset);
+          }
+        } else {
+          // Row not rendered — fall back to cumulative-sum estimate.
+          const cache = heightCacheRef.current;
+          const avg = avgRowHeightRef.current;
+          let rowStart = 0;
+          for (let i = 0; i < selectedIdx; i++) {
+            rowStart += cache.get(i) ?? avg;
+          }
+          const rowH = cache.get(selectedIdx) ?? avg;
+          const targetOffset = rowH > viewport
+            ? Math.max(0, rowStart - 24)
+            : Math.max(0, rowStart - viewport / 2 + rowH / 2);
+          if (Math.abs(targetOffset - virtualOffsetRef.current) > 2) {
+            dbg("PIN reveal (failsafe cumulative)", { selectedIdx, rowStart, rowH, targetOffset });
+            applyVirtualOffset(targetOffset);
+          }
         }
       }
       dbg("PIN reveal (failsafe timeout)");
@@ -1195,103 +1216,111 @@ function JsonLogView({
   useLayoutEffect(() => {
     if (selectedIdx == null || selectedIdx < 0 || selectedIdx >= entries.length) return;
     if (userInteractedRef.current) return;
-    // Compute target offset from cumulative row heights (start-anchored).
-    // Runs synchronously after commit, before paint, so the user sees the
-    // highlighted row in the correct position on the very first paint after
-    // a view switch — no multi-frame settling.
-    //
-    // Anchoring by START offset is invariant under tail appends: new rows
-    // added at the end of the buffer can never shift `rowStart` (which
-    // depends only on rows 0..selectedIdx-1). Compare with the older
-    // "delta-from-DOM-rect" approach: that requires the row to be in the
-    // viewport AND multiple frames to converge as measurements stream in.
     const scrollEl = scrollRef.current;
     if (!scrollEl) return;
     const viewport = scrollEl.clientHeight || viewportH;
     const cache = heightCacheRef.current;
     const avg = avgRowHeightRef.current;
-    // Phase 1: selected row hasn't been measured yet.
-    // Cumulative-sum target = Σ heights for i < selectedIdx, but with
-    // 33000+ unmeasured rows above the target and avg drifting wildly
-    // (240 → 1200 → 360 → ...) as new rows get measured, the target
-    // oscillates by tens of millions of pixels and never converges.
-    // Delegate to react-virtual's scrollToIndex instead — it maintains
-    // its own measurementsCache and re-issues the scroll iteratively
-    // as new measurements arrive, eventually mounting the selected row.
-    // Once the row mounts and our cache picks it up, Phase 2 takes over.
-    if (!cache.has(selectedIdx)) {
-      const estRowH = avg;
-      const align = estRowH > viewport ? "start" : "center";
-      dbg("PIN delegate scrollToIndex", {
-        selectedIdx,
-        align,
-        avg,
-        measuredCount: cache.size,
-      });
-      virtualizer.scrollToIndex(selectedIdx, { align, behavior: "auto" });
-      // Reset stability tracker so Phase 2's first run isn't compared
-      // against a stale Phase 1 target.
+    const TOP_PADDING = 24;
+    // Is the selected row currently rendered (in react-virtual's range)?
+    // If so, we can read its actual DOM rect for precise positioning.
+    const isRendered = items.some((it) => it.index === selectedIdx);
+    if (!isRendered) {
+      // Phase 1: row isn't in the rendered range yet. Compute an
+      // approximate target via cumulative-sum-with-estimates so the row
+      // gets near the viewport, mounts, and measureElement fires. Phase 2
+      // (DOM-rect-based) then takes over for exact centring.
+      //
+      // Why NOT delegate to virtualizer.scrollToIndex: in our setup it
+      // calls scrollToFn with 0 (the virtualizer's internal measurements
+      // cache hasn't been built for indices beyond the initial mount range,
+      // and our observeElementOffset reports 0). Reproduced in the trace:
+      // `PIN delegate scrollToIndex {selectedIdx: 23629}` →
+      // `applyVirtualOffset {requested: 0}` despite total ≈ 6.3M px.
+      let rowStart = 0;
+      for (let i = 0; i < selectedIdx; i++) {
+        rowStart += cache.get(i) ?? avg;
+      }
+      const rowH = cache.get(selectedIdx) ?? avg;
+      const targetOffset = rowH > viewport
+        ? Math.max(0, rowStart - TOP_PADDING)
+        : Math.max(0, rowStart - viewport / 2 + rowH / 2);
+      const delta = targetOffset - virtualOffsetRef.current;
+      if (Math.abs(delta) > 2) {
+        dbg("PIN phase1 cumulative", {
+          selectedIdx,
+          rowStart,
+          rowH,
+          targetOffset,
+          prev: virtualOffsetRef.current,
+          delta,
+          measuredCount: cache.size,
+        });
+        applyVirtualOffset(targetOffset);
+      }
       lastPinTargetRef.current = null;
       return;
     }
-    // Phase 2: selected row is measured. Compute precise centring offset.
-    // Anchoring by START offset is invariant under tail appends: new rows
-    // added at the end of the buffer can never shift `rowStart` (which
-    // depends only on rows 0..selectedIdx-1).
-    let rowStart = 0;
-    for (let i = 0; i < selectedIdx; i++) {
-      rowStart += cache.get(i) ?? avg;
-    }
-    const rowH = cache.get(selectedIdx)!;
-    // Anchoring rule: if the row fits in the viewport, centre it. If the row
-    // is TALLER than the viewport (huge JSON entries can be 10k+ px), centring
-    // would put the viewport in the middle of the row's body and leave the
-    // highlighted header far above the visible area. In that case anchor to
-    // the top of the row with a small breathing-room offset so the user sees
-    // the highlighted header line on the first visible scanline.
-    const TOP_PADDING = 24;
-    const targetOffset = rowH > viewport
-      ? Math.max(0, rowStart - TOP_PADDING)
-      : Math.max(0, rowStart - viewport / 2 + rowH / 2);
-    const delta = targetOffset - virtualOffsetRef.current;
+    // Phase 2: row is rendered. Read its DOM rect — this is invariant
+    // under measurement updates of OTHER rows: as nearby rows get measured,
+    // react-virtual repositions all visible rows internally, but the
+    // selected row's rect-relative-to-the-scroll-container only changes if
+    // we change virtualOffset. So a delta computed here converges to a
+    // single fixed point in one or two iterations, no oscillation.
+    //
+    // Compare with the old cumulative-sum-from-index-0 approach which
+    // drifted by tens of millions of pixels as new measurements arrived
+    // (selected row at index 23629, avg 2461 → 120 → cumulative shrank
+    // 58M → 30M → 27M).
+    const rowEl = scrollEl.querySelector(
+      `[data-index="${selectedIdx}"]`,
+    ) as HTMLElement | null;
+    if (!rowEl) return; // race: items list says rendered but DOM not yet
+    const scrollRect = scrollEl.getBoundingClientRect();
+    const rowRect = rowEl.getBoundingClientRect();
+    const currentTop = rowRect.top - scrollRect.top;
+    const rowH = rowRect.height;
+    // Anchoring rule: if the row fits in the viewport, centre it. If the
+    // row is TALLER than the viewport, anchor to the top with breathing
+    // room so the highlighted header line is visible.
+    const desiredTop = rowH > viewport
+      ? TOP_PADDING
+      : (viewport - rowH) / 2;
+    const delta = currentTop - desiredTop;
+    const newOffset = Math.max(0, virtualOffsetRef.current + delta);
     if (Math.abs(delta) > 2) {
-      dbg("PIN anchor", {
+      dbg("PIN phase2 dom-rect", {
         selectedIdx,
-        rowStart,
+        currentTop,
+        desiredTop,
         rowH,
-        targetOffset,
+        delta,
         prev: virtualOffsetRef.current,
+        next: newOffset,
+        measuredCount: cache.size,
+      });
+      applyVirtualOffset(newOffset);
+      lastPinTargetRef.current = newOffset;
+      return;
+    }
+    // Within tolerance: stable. Reveal.
+    if (!pinnedRef.current) {
+      dbg("PIN reveal (phase2 stable)", {
+        selectedIdx,
+        currentTop,
+        desiredTop,
+        rowH,
         delta,
         measuredCount: cache.size,
       });
-      applyVirtualOffset(targetOffset);
-    }
-    // Reveal the viewport once the target offset is APPROXIMATELY stable
-    // across two consecutive PIN runs AND the selected row itself is
-    // measured (so the centring math used real numbers). Tolerance scales
-    // with row height: huge rows (10k+ px) can have their start-offset
-    // drift by hundreds of px as rows above them get measured, but as long
-    // as the target is within ~25% of the row's height the highlight will
-    // still be visible to the user — and waiting for exact stability would
-    // mean the spinner never clears.
-    const prevTarget = lastPinTargetRef.current;
-    const tolerance = Math.max(20, Math.min(rowH, viewport) * 0.25);
-    const stable = prevTarget != null && Math.abs(targetOffset - prevTarget) <= tolerance;
-    lastPinTargetRef.current = targetOffset;
-    if (
-      !pinnedRef.current &&
-      stable &&
-      cache.has(selectedIdx) &&
-      Math.abs(delta) <= tolerance
-    ) {
-      dbg("PIN reveal", { selectedIdx, rowStart, rowH, targetOffset, measuredCount: cache.size });
       setPinned(true);
     }
+    lastPinTargetRef.current = newOffset;
     // selectedNonce is a dep so the user clicking "Scroll to selected"
     // re-fires this effect even when nothing else changed (same row, same
-    // entry count). The PIN-reset effect above clears userInteractedRef on
-    // the same nonce change, so this run is allowed to scroll.
-  }, [entries.length, totalSize, selectedIdx, selectedNonce, viewportH, applyVirtualOffset, dbg]);
+    // entry count). virtualOffset is a dep so Phase 1 → Phase 2 transition
+    // happens on the very next render after Phase 1 applies its target.
+  }, [entries.length, totalSize, selectedIdx, selectedNonce, viewportH, virtualOffset, items, applyVirtualOffset, dbg]);
 
   // Re-check atBottom whenever offset, viewport or total changes. Also
   // re-clamp the virtual offset when totalSize shrinks (e.g. after initial
