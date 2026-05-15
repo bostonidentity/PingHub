@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7.0] - 2026-05-15
+
+### Added
+
+- **Journey graph: hide unreachable nodes** toolbar toggle (default ON). Drops every node the journey can never reach from `startNode` plus their dangling edges, catching orphan sub-graphs in addition to single-node orphans.
+- **Journey graph: ELK / Dagre layout selector**. Choice persists per-browser via `localStorage` key `journey-graph-layout-prefs`, restored synchronously via a lazy `useState` initializer so the saved engine is honored on first paint (no race with the persist effect).
+- **Journey graph: left-drag pans, Shift+drag marquee selects.**
+- **Journey graph: trace mode defaults to `neighbors`** instead of full graph for faster orientation.
+- **Logs Expand-all / Collapse-all** toolbar buttons now work in **Table view** as well as Terminal-wrap view.
+- **Tail terminal debug logger** gated by `localStorage.setItem('debug-tail','1')`. Instruments auto-scroll, anchor-on-growth, `handleScroll`, Jump-to-bottom, and scroll-to-match.
+
+### Fixed
+
+- **Tail terminal auto-scroll is now demote-only.** Any user interaction (manual scroll away, row click, scroll-to-match) pauses tailing; the only way to resume is the **Jump to bottom** button. Previously, scrolling back near the bottom would silently re-engage auto-scroll and yank the viewport.
+- **Tail terminal blank-flash during tailing** when the user had scrolled up. Caused by the nowrap `scrollHeight` cap rescaling the same `scrollTop` to a different virtual position whenever `entries.length` grew — the rendered slice and the imperative transform briefly desynced and the row group translated above the viewport. Fixed with a layout effect that snapshots the pre-growth virtual position and adjusts `scrollTop` so the same virtual content stays under the same pixel.
+- **Tail terminal blank-flash during auto-tail at bottom** (round-2 fix retained): `effectiveStartIdx` derived during render keeps the rendered slice and transform coherent in every commit, even across `startTransition` boundaries.
+
 ## [0.2.6.9] - 2026-05-15
 
 ### Fixed
