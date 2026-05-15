@@ -1202,11 +1202,39 @@ function JsonLogView({
     const viewport = scrollEl.clientHeight || viewportH;
     const cache = heightCacheRef.current;
     const avg = avgRowHeightRef.current;
+    // Phase 1: selected row hasn't been measured yet.
+    // Cumulative-sum target = Σ heights for i < selectedIdx, but with
+    // 33000+ unmeasured rows above the target and avg drifting wildly
+    // (240 → 1200 → 360 → ...) as new rows get measured, the target
+    // oscillates by tens of millions of pixels and never converges.
+    // Delegate to react-virtual's scrollToIndex instead — it maintains
+    // its own measurementsCache and re-issues the scroll iteratively
+    // as new measurements arrive, eventually mounting the selected row.
+    // Once the row mounts and our cache picks it up, Phase 2 takes over.
+    if (!cache.has(selectedIdx)) {
+      const estRowH = avg;
+      const align = estRowH > viewport ? "start" : "center";
+      dbg("PIN delegate scrollToIndex", {
+        selectedIdx,
+        align,
+        avg,
+        measuredCount: cache.size,
+      });
+      virtualizer.scrollToIndex(selectedIdx, { align, behavior: "auto" });
+      // Reset stability tracker so Phase 2's first run isn't compared
+      // against a stale Phase 1 target.
+      lastPinTargetRef.current = null;
+      return;
+    }
+    // Phase 2: selected row is measured. Compute precise centring offset.
+    // Anchoring by START offset is invariant under tail appends: new rows
+    // added at the end of the buffer can never shift `rowStart` (which
+    // depends only on rows 0..selectedIdx-1).
     let rowStart = 0;
     for (let i = 0; i < selectedIdx; i++) {
       rowStart += cache.get(i) ?? avg;
     }
-    const rowH = cache.get(selectedIdx) ?? avg;
+    const rowH = cache.get(selectedIdx)!;
     // Anchoring rule: if the row fits in the viewport, centre it. If the row
     // is TALLER than the viewport (huge JSON entries can be 10k+ px), centring
     // would put the viewport in the middle of the row's body and leave the
@@ -2511,6 +2539,19 @@ export function LogsExplorer({
   // view switch auto-scrolls the new view to the previously selected entry.
   const [selectedEntryIdx, setSelectedEntryIdx] = useState<number | null>(null); // index into `filtered`
   const [selectedScrollNonce, setSelectedScrollNonce] = useState(0);
+  // Snapshot of selectedEntryIdx at the moment selectedScrollNonce was last
+  // bumped. The JsonLogView's PIN treats this as its scroll target. We do
+  // NOT pass live `selectedEntryIdx` to PIN: a click changes
+  // selectedEntryIdx (for highlight) without bumping nonce, so PIN must
+  // ignore it — otherwise every click would re-trigger PIN and scroll the
+  // viewport to the clicked row, breaking the "click highlights in place"
+  // contract. useMemo with [selectedScrollNonce] only captures
+  // selectedEntryIdx at the instant the nonce changes.
+  const selectedScrollRequest = useMemo(() => {
+    if (selectedScrollNonce <= 0 || selectedEntryIdx == null) return null;
+    return { index: selectedEntryIdx, nonce: selectedScrollNonce };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedScrollNonce]);
   const handleEntrySelect = useCallback((displayIdx: number) => {
     setSelectedEntryIdx(displayIdx);
     // Clicking an entry to inspect it pauses Table-view auto-tail so the
@@ -4243,11 +4284,7 @@ export function LogsExplorer({
                 onEntryDoubleClick={handleContextEntry}
                 contextAnchorIdx={contextAnchorDisplay ?? -1}
                 selectedEntryIdx={selectedEntryIdx}
-                selectedScrollRequest={
-                  selectedEntryIdx !== null && selectedScrollNonce > 0
-                    ? { index: selectedEntryIdx, nonce: selectedScrollNonce }
-                    : null
-                }
+                selectedScrollRequest={selectedScrollRequest}
                 autoScroll={autoScroll}
                 evictedCount={filteredEvictedCount}
               />
