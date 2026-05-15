@@ -782,8 +782,24 @@ function JsonLogView({
   // very large `scrollHeight` (sub-pixel thumb, non-linear drag, scrollTop
   // precision loss) — everything is in our coordinate space.
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const [virtualOffset, setVirtualOffset] = useState(0);
-  const virtualOffsetRef = useRef(0);
+  // Initial virtualOffset: when mounted with a pending scroll target (e.g.
+  // user clicked a highlighted row in terminal view then switched to JSON),
+  // pre-position the offset so the first paint already shows the target row
+  // roughly centered. Without this, the view paints at offset 0 first
+  // (highlight off-screen), then the rAF convergence loop scrolls down — a
+  // visible "bounce" where the highlight disappears and reappears.
+  const initialTargetIdx =
+    selectedScrollRequest?.index ??
+    (activeEntryIdx != null && activeEntryIdx >= 0 ? activeEntryIdx : null);
+  const computeInitialOffset = () => {
+    if (initialTargetIdx == null || initialTargetIdx < 0) return 0;
+    // Default viewport is 600 (matches viewportH initial). Estimate is
+    // intentionally rough — the rAF loop refines after first paint.
+    const rough = initialTargetIdx * JSON_VIEW_ROW_ESTIMATE - 300;
+    return Math.max(0, rough);
+  };
+  const [virtualOffset, setVirtualOffset] = useState(computeInitialOffset);
+  const virtualOffsetRef = useRef(virtualOffset);
   const [viewportH, setViewportH] = useState(600);
   // React-virtual's offset observer callback. We hold a ref so we can push
   // updates whenever our internal offset changes.
@@ -906,6 +922,22 @@ function JsonLogView({
   // can re-render when the user scrolls away (or programmatically pauses by
   // clicking an entry / navigating to a match).
   const [atBottom, setAtBottom] = useState(!hasInitialTarget);
+  // When mounting with a scroll-to-selection target, hide the inner content
+  // until PIN has anchored to the actual measured row. This avoids a
+  // wrong-content flash: react-virtual's first paint uses estimate-based
+  // row positions (e.g. 240 px each) but real entries can be 100x taller,
+  // so the user briefly sees an unrelated chunk of logs before the PIN
+  // re-anchors. Reveal once the selected row is measured AND the PIN has
+  // converged (delta <= 2). Failsafe: reveal after 500 ms regardless.
+  const [pinned, setPinned] = useState(!hasInitialTarget);
+  const pinnedRef = useRef(pinned);
+  pinnedRef.current = pinned;
+  // Tracks the PIN's last computed targetOffset. Reveal only when two
+  // consecutive PIN runs produce the same target (within 2 px). This means
+  // measurements have stopped shifting `rowStart` (the cumulative-sum from
+  // index 0 to selectedIdx) and the anchored offset is final — the user
+  // will see no further scroll motion after the loading overlay clears.
+  const lastPinTargetRef = useRef<number | null>(null);
   // [DEBUG] gated logger; window.__JSON_LOG_DEBUG = true to enable.
   const dbg = useCallback((tag: string, data?: Record<string, unknown>) => {
     if (typeof window === "undefined" || !(window as unknown as { __JSON_LOG_DEBUG?: boolean }).__JSON_LOG_DEBUG) return;
@@ -928,7 +960,7 @@ function JsonLogView({
   }, []);
   // [DEBUG] log every prop change that could affect scroll behavior.
   useEffect(() => {
-    dbg("props change", { entriesLen: entries.length, activeEntryIdx, selectedScrollRequest, selectedEntryIdx, autoScroll, atBottomRef: atBottomRef.current, scrollLoopActive: scrollLoopActiveRef.current });
+    dbg("props change", { entriesLen: entries.length, activeEntryIdx, selectedScrollRequest, selectedEntryIdx, autoScroll, atBottomRef: atBottomRef.current });
   }, [entries.length, activeEntryIdx, selectedScrollRequest, selectedEntryIdx, autoScroll, dbg]);
   // [DEBUG] track what the selected/active row's identity is on every entries
   // change. If the entry at `selectedEntryIdx` swaps identity (timestamp /
@@ -976,9 +1008,11 @@ function JsonLogView({
   // Total content size — refreshed each render via virtualizer.getTotalSize()
   // below in JSX. We snapshot into a ref so handlers can read it.
   const totalSizeRef = useRef(0);
-  // Forward-declared flag set by the scroll-to-selection rAF loop (below).
-  // The auto-tail effect reads this to skip while a convergence loop is in
-  // flight so the two animations don't compete.
+  // Forward-declared ref read by the auto-tail effect to skip yanking the
+  // viewport while a programmatic scroll-to-selection is being applied. The
+  // PIN useLayoutEffect (further below) is now synchronous and doesn't need
+  // to set this; kept as `false` so the SKIP branch below is dead code in
+  // the new design but harmless if older flows ever set it again.
   const scrollLoopActiveRef = useRef(false);
   const updateAtBottom = useCallback(() => {
     // DEMOTE-only. Promotion to atBottom must come from explicit user actions
@@ -1061,89 +1095,17 @@ function JsonLogView({
     }
   }, [activeEntryIdx, entries.length, virtualizer, dbg, setAtBottomBoth]);
 
-  // Scroll to the selected entry on demand (initial click + view-mode switch).
-  //
-  // With huge entry counts (70k+) convergence by render-counting is fragile
-  // because cascading state updates (auto-clamp, atBottom recompute) burn
-  // through the attempt budget before the loop actually iterates. We drive
-  // the loop explicitly via requestAnimationFrame:
-  //  - Each frame, if target row is in DOM, measure its viewport position
-  //    and adjust virtualOffset by the pixel delta from viewport center.
-  //  - If not in DOM, ask react-virtual for the target's offset given
-  //    current per-row measurements; fall back to a proportional jump.
-  //  - Terminate when row is centered within 2px or after 30 frames cap.
+  // Scroll-to-selection: when a new selection request arrives (view-mode
+  // switch or jump-from-match-nav), pause auto-tail. The actual scrolling
+  // is handled by the start-anchored Selection PIN below, which computes
+  // the exact target offset from cumulative row heights and runs
+  // synchronously in a layout effect — no multi-frame convergence loop
+  // needed.
   const selectedNonce = selectedScrollRequest?.nonce;
   const selectedIdx = selectedScrollRequest?.index;
-  const scrollLoopRef = useRef<{ frame: number | null; cancelled: boolean }>({ frame: null, cancelled: false });
   useEffect(() => {
-    if (selectedIdx == null || selectedIdx < 0 || selectedIdx >= entries.length) {
-      return;
-    }
-    // Cancel any in-flight loop.
-    if (scrollLoopRef.current.frame != null) cancelAnimationFrame(scrollLoopRef.current.frame);
-    scrollLoopRef.current.cancelled = true;
-    const state = { frame: null as number | null, cancelled: false };
-    scrollLoopRef.current = state;
-    scrollLoopActiveRef.current = true;
-    // Lock auto-tail off while we converge.
-    atBottomRef.current = false;
-    const targetIdx = selectedIdx;
-    let attempts = 0;
-    let stable = 0;
-    let lastOffset = -1;
-    const finish = () => {
-      scrollLoopActiveRef.current = false;
-    };
-    const step = () => {
-      if (state.cancelled) { finish(); return; }
-      if (attempts >= 30) { finish(); return; }
-      attempts += 1;
-      const scrollEl = scrollRef.current;
-      if (!scrollEl) {
-        state.frame = requestAnimationFrame(step);
-        return;
-      }
-      const viewport = scrollEl.clientHeight;
-      const rowEl = scrollEl.querySelector<HTMLElement>(`[data-entry-idx="${targetIdx}"]`);
-      if (rowEl) {
-        const containerRect = scrollEl.getBoundingClientRect();
-        const rowRect = rowEl.getBoundingClientRect();
-        const rowCenter = rowRect.top - containerRect.top + rowRect.height / 2;
-        const delta = rowCenter - viewport / 2;
-        if (Math.abs(delta) < 2) { finish(); return; } // converged
-        applyVirtualOffset(virtualOffsetRef.current + delta);
-      } else {
-        // Row not in DOM yet. Jump proportionally so the virtualizer will
-        // measure the rows around the target on the next render; once the
-        // row exists in the DOM, the precise rowRect path above takes over.
-        //
-        // We do NOT trust `virtualizer.getOffsetForIndex(idx, "center")`
-        // here: with a custom scroll element it can return 0 for far-off
-        // unmeasured rows (observed in production with 5k+ entries), which
-        // would pin us at offset 0 forever.
-        const ratio = targetIdx / Math.max(1, entries.length - 1);
-        const max = Math.max(0, totalSizeRef.current - viewport);
-        const target = ratio * max;
-        const clamped = Math.min(max, Math.max(0, target));
-        // Bail if offset isn't changing — measurements aren't producing
-        // a better target and the row still isn't visible.
-        if (Math.abs(clamped - lastOffset) < 1) {
-          stable += 1;
-          if (stable > 4) { finish(); return; }
-        } else {
-          stable = 0;
-        }
-        lastOffset = clamped;
-        applyVirtualOffset(clamped);
-      }
-      state.frame = requestAnimationFrame(step);
-    };
-    state.frame = requestAnimationFrame(step);
-    return () => {
-      state.cancelled = true;
-      scrollLoopActiveRef.current = false;
-      if (state.frame != null) cancelAnimationFrame(state.frame);
-    };
+    if (selectedIdx == null || selectedIdx < 0) return;
+    if (atBottomRef.current) setAtBottomBoth(false, "scroll-to-selection request");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNonce]);
 
@@ -1176,40 +1138,124 @@ function JsonLogView({
   // Reset interaction flag when a new selection arrives.
   useEffect(() => {
     userInteractedRef.current = false;
+    // Reset stable-target tracker so the next PIN run starts a fresh
+    // two-run stability window before revealing.
+    lastPinTargetRef.current = null;
+    if (hasInitialTarget) setPinned(false);
     dbg("PIN reset (new selection)", { selectedNonce });
-  }, [selectedNonce, dbg]);
+  }, [selectedNonce, hasInitialTarget, dbg]);
+  // Failsafe reveal: if PIN hasn't converged within 700 ms (e.g. selected
+  // row never mounts because index is past end of buffer, or the cumulative-
+  // sum target keeps oscillating because new measurements keep arriving),
+  // do ONE final cumulative-sum correction with whatever is currently in the
+  // height cache, apply that offset, then reveal so the user isn't stuck on
+  // the spinner. Keyed by selectedNonce so each Scroll-to-selected click
+  // gets its own deterministic timer that can't be starved by re-renders.
   useEffect(() => {
+    if (!hasInitialTarget) return;
+    const t = setTimeout(() => {
+      if (pinnedRef.current) return;
+      // Final corrective scroll using current measurements.
+      if (
+        selectedIdx != null &&
+        selectedIdx >= 0 &&
+        selectedIdx < entries.length &&
+        scrollRef.current
+      ) {
+        const viewport = scrollRef.current.clientHeight || viewportH;
+        const cache = heightCacheRef.current;
+        const avg = avgRowHeightRef.current;
+        let rowStart = 0;
+        for (let i = 0; i < selectedIdx; i++) {
+          rowStart += cache.get(i) ?? avg;
+        }
+        const rowH = cache.get(selectedIdx) ?? avg;
+        const targetOffset = rowH > viewport
+          ? Math.max(0, rowStart - 24)
+          : Math.max(0, rowStart - viewport / 2 + rowH / 2);
+        if (Math.abs(targetOffset - virtualOffsetRef.current) > 2) {
+          dbg("PIN reveal (failsafe final scroll)", { selectedIdx, rowStart, rowH, targetOffset });
+          applyVirtualOffset(targetOffset);
+        }
+      }
+      dbg("PIN reveal (failsafe timeout)");
+      setPinned(true);
+    }, 700);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedNonce, hasInitialTarget]);
+  useLayoutEffect(() => {
     if (selectedIdx == null || selectedIdx < 0 || selectedIdx >= entries.length) return;
     if (userInteractedRef.current) return;
-    if (scrollLoopActiveRef.current) return;
-    // Wait one frame for the virtualizer to render the new layout.
-    const raf = requestAnimationFrame(() => {
-      const scrollEl = scrollRef.current;
-      if (!scrollEl) return;
-      const rowEl = scrollEl.querySelector<HTMLElement>(`[data-entry-idx="${selectedIdx}"]`);
-      const viewport = scrollEl.clientHeight;
-      if (rowEl) {
-        const containerRect = scrollEl.getBoundingClientRect();
-        const rowRect = rowEl.getBoundingClientRect();
-        const rowCenter = rowRect.top - containerRect.top + rowRect.height / 2;
-        const delta = rowCenter - viewport / 2;
-        if (Math.abs(delta) > 30) {
-          dbg("PIN re-center", { selectedIdx, delta, prev: virtualOffsetRef.current, next: virtualOffsetRef.current + delta });
-          applyVirtualOffset(virtualOffsetRef.current + delta);
-        }
-      } else {
-        // Row not in DOM — estimate drift pushed it out of the rendered
-        // window. Jump proportionally so the next render mounts it; the
-        // measurement path above will take over on the next pin tick.
-        const ratio = selectedIdx / Math.max(1, entries.length - 1);
-        const max = Math.max(0, totalSizeRef.current - viewport);
-        const target = ratio * max;
-        dbg("PIN jump (row OOR)", { selectedIdx, target, prev: virtualOffsetRef.current, totalSize: totalSizeRef.current });
-        applyVirtualOffset(target);
-      }
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [entries.length, totalSize, selectedIdx, applyVirtualOffset, dbg]);
+    // Compute target offset from cumulative row heights (start-anchored).
+    // Runs synchronously after commit, before paint, so the user sees the
+    // highlighted row in the correct position on the very first paint after
+    // a view switch — no multi-frame settling.
+    //
+    // Anchoring by START offset is invariant under tail appends: new rows
+    // added at the end of the buffer can never shift `rowStart` (which
+    // depends only on rows 0..selectedIdx-1). Compare with the older
+    // "delta-from-DOM-rect" approach: that requires the row to be in the
+    // viewport AND multiple frames to converge as measurements stream in.
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return;
+    const viewport = scrollEl.clientHeight || viewportH;
+    const cache = heightCacheRef.current;
+    const avg = avgRowHeightRef.current;
+    let rowStart = 0;
+    for (let i = 0; i < selectedIdx; i++) {
+      rowStart += cache.get(i) ?? avg;
+    }
+    const rowH = cache.get(selectedIdx) ?? avg;
+    // Anchoring rule: if the row fits in the viewport, centre it. If the row
+    // is TALLER than the viewport (huge JSON entries can be 10k+ px), centring
+    // would put the viewport in the middle of the row's body and leave the
+    // highlighted header far above the visible area. In that case anchor to
+    // the top of the row with a small breathing-room offset so the user sees
+    // the highlighted header line on the first visible scanline.
+    const TOP_PADDING = 24;
+    const targetOffset = rowH > viewport
+      ? Math.max(0, rowStart - TOP_PADDING)
+      : Math.max(0, rowStart - viewport / 2 + rowH / 2);
+    const delta = targetOffset - virtualOffsetRef.current;
+    if (Math.abs(delta) > 2) {
+      dbg("PIN anchor", {
+        selectedIdx,
+        rowStart,
+        rowH,
+        targetOffset,
+        prev: virtualOffsetRef.current,
+        delta,
+        measuredCount: cache.size,
+      });
+      applyVirtualOffset(targetOffset);
+    }
+    // Reveal the viewport once the target offset is APPROXIMATELY stable
+    // across two consecutive PIN runs AND the selected row itself is
+    // measured (so the centring math used real numbers). Tolerance scales
+    // with row height: huge rows (10k+ px) can have their start-offset
+    // drift by hundreds of px as rows above them get measured, but as long
+    // as the target is within ~25% of the row's height the highlight will
+    // still be visible to the user — and waiting for exact stability would
+    // mean the spinner never clears.
+    const prevTarget = lastPinTargetRef.current;
+    const tolerance = Math.max(20, Math.min(rowH, viewport) * 0.25);
+    const stable = prevTarget != null && Math.abs(targetOffset - prevTarget) <= tolerance;
+    lastPinTargetRef.current = targetOffset;
+    if (
+      !pinnedRef.current &&
+      stable &&
+      cache.has(selectedIdx) &&
+      Math.abs(delta) <= tolerance
+    ) {
+      dbg("PIN reveal", { selectedIdx, rowStart, rowH, targetOffset, measuredCount: cache.size });
+      setPinned(true);
+    }
+    // selectedNonce is a dep so the user clicking "Scroll to selected"
+    // re-fires this effect even when nothing else changed (same row, same
+    // entry count). The PIN-reset effect above clears userInteractedRef on
+    // the same nonce change, so this run is allowed to scroll.
+  }, [entries.length, totalSize, selectedIdx, selectedNonce, viewportH, applyVirtualOffset, dbg]);
 
   // Re-check atBottom whenever offset, viewport or total changes. Also
   // re-clamp the virtual offset when totalSize shrinks (e.g. after initial
@@ -1342,11 +1388,32 @@ function JsonLogView({
       >
         {copyLabel}
       </button>
+      {/* Loading overlay while PIN is anchoring the highlighted row.
+          The scroll viewport itself is visibility:hidden during this window
+          (see `pinned` state); without an overlay the user just sees a blank
+          panel for the few hundred ms it takes react-virtual to measure rows
+          and PIN to converge. The overlay covers that gap with a clear
+          "Locating selected entry..." spinner. */}
+      {!pinned && (
+        <div
+          className="absolute inset-0 z-20 flex items-center justify-center bg-white/70 backdrop-blur-sm"
+          aria-live="polite"
+        >
+          <div className="flex items-center gap-2 text-[12px] text-slate-600">
+            <svg className="w-4 h-4 animate-spin text-sky-500" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeOpacity="0.25" strokeWidth="4" />
+              <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />
+            </svg>
+            Locating selected entry…
+          </div>
+        </div>
+      )}
       <div
         ref={scrollRef}
         tabIndex={0}
         onKeyDown={onKeyDown}
         className="flex-1 overflow-hidden relative outline-none"
+        style={{ visibility: pinned ? "visible" : "hidden" }}
       >
         <div
           className={cn(
@@ -1531,7 +1598,21 @@ const TailTerminal = memo(function TailTerminal({
   // Nowrap virtual list: track only the computed startIdx to avoid re-renders
   // on every scroll pixel.  Raw scrollTop is kept in a ref.
   const scrollTopRef = useRef(0);
-  const [startIdx, setStartIdx] = useState(0);
+  // Lazy initial startIdx: when mounted with a pending scrollRequest (e.g.
+  // user switched view back to terminal with a row highlighted), render the
+  // window AROUND the target row on the very first paint. Otherwise the first
+  // paint shows rows 0..viewport (highlight not present), then the
+  // scroll-to-request effect below jumps the viewport — a visible flash where
+  // the highlight "disappears" momentarily.
+  const [startIdx, setStartIdx] = useState(() => {
+    const idx = scrollRequest?.index;
+    if (idx == null || idx < 0) return 0;
+    // 400 = initial viewH guess (matches viewH initial state); good enough for
+    // first paint; handleScroll will refine after layout measures the real
+    // height.
+    const viewportRows = Math.ceil(400 / TERMINAL_ROW_H);
+    return Math.max(0, idx - Math.floor(viewportRows / 2) - TERMINAL_OVERSCAN);
+  });
   // Ref to the absolutely-positioned row group inside the nowrap container.
   // We translate it via DOM (no re-render) so the rendered rows stay glued to
   // the viewport even when the scroll surface is scaled to cap scrollHeight.
@@ -1706,10 +1787,13 @@ const TailTerminal = memo(function TailTerminal({
     }
   }, [evictedCount, autoScroll, wrapLines, entries.length, wrapVirtualizer]);
 
-  // Scroll to match index
+  // Scroll to match index. Uses useLayoutEffect (not useEffect) so the
+  // scrollTop assignment happens after DOM commit but BEFORE the browser
+  // paints — eliminating the "highlight gone" flash on initial mount when
+  // switching views with a selection active.
   const scrollRequestIndex = scrollRequest?.index;
   const scrollRequestNonce = scrollRequest?.nonce;
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (scrollRequestIndex == null || scrollRequestIndex < 0) return;
     lastProgrammaticScrollRef.current = Date.now();
     if (wrapLines) {
@@ -3886,6 +3970,24 @@ export function LogsExplorer({
               )}
             >
               Dedupe
+            </button>
+            {/* Scroll to selected — re-anchors viewport on the highlighted row.
+                Disabled when no row is selected. Works in all view modes by
+                bumping selectedScrollNonce (the same signal used on view-mode
+                switches). `ml-auto` pushes this button and everything after
+                it to the right edge of the controls row. */}
+            <button
+              type="button"
+              disabled={selectedEntryIdx === null || selectedEntryIdx < 0}
+              onClick={() => setSelectedScrollNonce((n) => n + 1)}
+              title={
+                selectedEntryIdx === null || selectedEntryIdx < 0
+                  ? "Select a log entry first to enable this"
+                  : "Scroll the highlighted entry back into view"
+              }
+              className="ml-auto px-2 py-0.5 text-[11px] font-medium rounded border border-slate-300 bg-white text-slate-500 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
+            >
+              Scroll to selected
             </button>
             {/* Bulk expand / collapse — only meaningful when rows are line-clamped (terminal + wrap) */}
             {viewMode === "terminal" && wrapLines && filtered.length > 0 && (
