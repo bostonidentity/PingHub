@@ -89,6 +89,17 @@ function getTextPayload(entry: LogEntry): string {
   return typeof entry.payload === "string" ? entry.payload : "";
 }
 
+/**
+ * True when the user has an active text selection (e.g. click-and-drag to
+ * highlight text inside a log row). Used by row click handlers to suppress
+ * expand/collapse toggles so that text selection across rows isn't disrupted.
+ */
+function isUserSelectingText(): boolean {
+  if (typeof window === "undefined") return false;
+  const sel = window.getSelection();
+  return !!sel && !sel.isCollapsed && sel.toString().length > 0;
+}
+
 type TailSecs = 2 | 3 | 5 | 10 | 30 | 60;
 
 const TAIL_SECS_OPTIONS: { value: TailSecs; label: string }[] = [
@@ -656,7 +667,6 @@ function JsonLogView({
   matchIndices = [],
   matchCase = false,
   wholeWord = false,
-  onEntryDoubleClick,
   onEntryClick,
   contextAnchorIdx = -1,
   selectedEntryIdx = null,
@@ -672,7 +682,6 @@ function JsonLogView({
   matchIndices?: number[];
   matchCase?: boolean;
   wholeWord?: boolean;
-  onEntryDoubleClick?: (idx: number) => void;
   onEntryClick?: (idx: number) => void;
   contextAnchorIdx?: number;
   /** Entry index currently selected by user click (sky highlight, distinct from match-amber). */
@@ -1541,13 +1550,14 @@ function JsonLogView({
                     if (atBottomRef.current) { atBottomRef.current = false; setAtBottom(false); }
                     onEntryClick?.(i);
                   }}
-                  onDoubleClick={() => onEntryDoubleClick?.(i)}
                   className={cn(
                     "absolute left-0 right-3 px-4 cursor-pointer",
-                    isActive && "bg-amber-50 ring-1 ring-inset ring-amber-300 rounded",
-                    !isActive && isSelected && "bg-sky-50 ring-1 ring-inset ring-sky-400 rounded",
-                    isMatch && !isActive && !isSelected && "bg-yellow-50/60",
-                    isCtxAnchor && !isActive && !isSelected && "bg-violet-50 ring-1 ring-inset ring-violet-300 rounded",
+                    // Selection (blue) wins over match (amber/yellow) and ctx anchor (violet)
+                    // so the user always sees their explicitly-clicked row highlighted.
+                    isSelected && "bg-sky-50 ring-1 ring-inset ring-sky-400 rounded",
+                    !isSelected && isActive && "bg-amber-50 ring-1 ring-inset ring-amber-300 rounded",
+                    !isSelected && !isActive && isCtxAnchor && "bg-violet-50 ring-1 ring-inset ring-violet-300 rounded",
+                    !isSelected && !isActive && !isCtxAnchor && isMatch && "bg-yellow-50/60",
                   )}
                   style={{ top }}
                 >
@@ -1638,7 +1648,7 @@ function terminalMsgClass(level: string): string {
 const TailTerminal = memo(function TailTerminal({
   entries, defaultSource, searchTerm, keywords, wrapLines = false,
   scrollRequest = null, activeMatchIndex = null, matchCase = false, wholeWord = false,
-  dupeCounts, autoScroll = true, onEntryDoubleClick, onEntryClick, contextAnchorIdx = null,
+  dupeCounts, autoScroll = true, onEntryClick, contextAnchorIdx = null,
   expandCommand = null, matchIndices = null, filterActive = false, selectedEntryIdx = null,
   evictedCount = 0,
 }: {
@@ -1653,7 +1663,6 @@ const TailTerminal = memo(function TailTerminal({
   matchCase?: boolean;
   wholeWord?: boolean;
   autoScroll?: boolean;
-  onEntryDoubleClick?: (idx: number) => void;
   onEntryClick?: (idx: number) => void;
   contextAnchorIdx?: number | null;
   /** Bulk expand/collapse signal from parent. Bumped via nonce to retrigger. */
@@ -2199,19 +2208,24 @@ const TailTerminal = memo(function TailTerminal({
                   <div
                     key={isActive ? flashKey : undefined}
                     onClick={() => {
+                      // Click-and-drag to highlight text inside a row must
+                      // NOT toggle the row's expand/collapse state — the
+                      // collapse would yank the selected text out from
+                      // under the cursor.
+                      if (isUserSelectingText()) return;
                       // Clicking an entry pauses auto-tail so the inspected
                       // row stays in view; user resumes via Jump-to-bottom.
                       if (atBottomRef.current) { atBottomRef.current = false; setAtBottom(false); }
                       onEntryClick?.(vRow.index);
                       toggleRow(vRow.index);
                     }}
-                    onDoubleClick={() => onEntryDoubleClick?.(vRow.index)}
                     className={cn(
                       "px-3 py-px font-mono text-[11px] select-text leading-snug border-b border-slate-200 cursor-pointer",
                       vRow.index % 2 === 0 && "bg-slate-100/60",
-                      isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
-                      !isActive && selectedEntryIdx === vRow.index && "border-l-[3px] border-sky-400 pl-2.5 bg-sky-50 ring-1 ring-inset ring-sky-400/40",
-                      isCtxAnchor && !isActive && selectedEntryIdx !== vRow.index && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
+                      // Selection (blue) wins over match (amber) and ctx (violet)
+                      selectedEntryIdx === vRow.index && "border-l-[3px] border-sky-400 pl-2.5 bg-sky-50 ring-1 ring-inset ring-sky-400/40",
+                      selectedEntryIdx !== vRow.index && isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
+                      selectedEntryIdx !== vRow.index && !isActive && isCtxAnchor && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
                     )}
                   >
                     <span className={cn(
@@ -2260,14 +2274,14 @@ const TailTerminal = memo(function TailTerminal({
                       if (atBottomRef.current) { atBottomRef.current = false; setAtBottom(false); }
                       onEntryClick?.(absIdx);
                     }}
-                    onDoubleClick={() => onEntryDoubleClick?.(absIdx)}
                     style={{ height: TERMINAL_ROW_H, lineHeight: `${TERMINAL_ROW_H}px` }}
                     className={cn(
                       "px-3 font-mono text-[11px] whitespace-nowrap select-text border-b border-slate-200 cursor-pointer",
                       absIdx % 2 === 0 && "bg-slate-100/60",
-                      isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
-                      !isActive && selectedEntryIdx === absIdx && "border-l-[3px] border-sky-400 pl-2.5 bg-sky-50 ring-1 ring-inset ring-sky-400/40",
-                      isCtxAnchor && !isActive && selectedEntryIdx !== absIdx && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
+                      // Selection (blue) wins over match (amber) and ctx (violet)
+                      selectedEntryIdx === absIdx && "border-l-[3px] border-sky-400 pl-2.5 bg-sky-50 ring-1 ring-inset ring-sky-400/40",
+                      selectedEntryIdx !== absIdx && isActive && "border-l-[3px] border-amber-400 pl-2.5 bg-amber-50 ring-1 ring-inset ring-amber-400/40 animate-match-flash",
+                      selectedEntryIdx !== absIdx && !isActive && isCtxAnchor && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
                     )}
                   >
                     {renderStructuredLine(entry, isActive)}
@@ -2317,7 +2331,6 @@ const EntryRow = memo(function EntryRow({
   keywords,
   onTransactionClick,
   onTimestampClick,
-  onContextClick,
   fullscreen = false,
   showFullMessage = false,
   highlighted = false,
@@ -2335,7 +2348,6 @@ const EntryRow = memo(function EntryRow({
   keywords: string[];
   onTransactionClick: (txId: string) => void;
   onTimestampClick?: (timestamp: string, source: string) => void;
-  onContextClick?: () => void;
   fullscreen?: boolean;
   showFullMessage?: boolean;
   highlighted?: boolean;
@@ -2384,7 +2396,6 @@ const EntryRow = memo(function EntryRow({
     <Fragment>
       <tr
         onClick={onToggle}
-        onDoubleClick={(e) => { e.stopPropagation(); onContextClick?.(); }}
         data-row-idx={rowIdx}
         className={cn(
           "cursor-pointer text-xs border-b border-slate-200 hover:bg-slate-100/60 transition-colors",
@@ -3450,29 +3461,36 @@ export function LogsExplorer({
       const targetPage = Math.floor(row.index / pageSize) + 1;
       setPage(targetPage);
       setSelectedEntryIdx(row.index);
-      setExpandedTableRows(new Set());
-      // Scroll into view after React re-renders the page
+      // Auto-expand only the active match (collapses any previously-expanded
+      // matches so stepping through never leaves the page littered).
+      setExpandedTableRows(new Set([row.index]));
+      // Scroll into view after React re-renders the page. Use manual
+      // scrollTop on the inner container instead of element.scrollIntoView
+      // — the latter scrolls every ancestor (including the page) which
+      // visibly moves the outer browser scrollbar.
       requestAnimationFrame(() => {
-        const el = scrollContainerRef.current?.querySelector(`[data-row-idx="${row.index}"]`);
-        if (el) {
+        const container = scrollContainerRef.current;
+        const el = container?.querySelector(`[data-row-idx="${row.index}"]`) as HTMLElement | null;
+        if (container && el) {
           lastProgrammaticScrollAtRef.current = Date.now();
-          el.scrollIntoView({ block: "center" });
+          const containerRect = container.getBoundingClientRect();
+          const rowRect = el.getBoundingClientRect();
+          const currentTop = rowRect.top - containerRect.top;
+          const desiredTop = (container.clientHeight - rowRect.height) / 2;
+          container.scrollTop += currentTop - desiredTop;
           scrollAtBottomRef.current = false;
           setTableAtBottom(false);
         }
       });
     }
 
-    // JSON view: scroll to the matched entry block
+    // JSON view: route through the Selection PIN so the virtualized
+    // viewer can precisely center the target row even when it isn't
+    // currently rendered. Bumping selectedScrollNonce + updating
+    // selectedEntryIdx triggers JsonLogView's PIN convergence loop.
     if (viewMode === "json") {
-      requestAnimationFrame(() => {
-        const el = scrollContainerRef.current?.querySelector(`[data-entry-idx="${row.index}"]`);
-        if (el) {
-          lastProgrammaticScrollAtRef.current = Date.now();
-          el.scrollIntoView({ block: "center" });
-          scrollAtBottomRef.current = false;
-        }
-      });
+      setSelectedEntryIdx(row.index);
+      setSelectedScrollNonce((n) => n + 1);
     }
   }
 
@@ -3587,10 +3605,18 @@ export function LogsExplorer({
     const targetPage = Math.floor(selectedEntryIdx / pageSize) + 1;
     if (targetPage !== page) setPage(targetPage);
     requestAnimationFrame(() => {
-      const el = scrollContainerRef.current?.querySelector(`[data-row-idx="${selectedEntryIdx}"]`);
-      if (el) {
+      const container = scrollContainerRef.current;
+      const el = container?.querySelector(`[data-row-idx="${selectedEntryIdx}"]`) as HTMLElement | null;
+      if (container && el) {
         lastProgrammaticScrollAtRef.current = Date.now();
-        el.scrollIntoView({ block: "center" });
+        // Manual scrollTop instead of element.scrollIntoView — the latter
+        // scrolls every ancestor (including the outer page), which visibly
+        // jumps the browser scrollbar. We only want the inner container.
+        const containerRect = container.getBoundingClientRect();
+        const rowRect = el.getBoundingClientRect();
+        const currentTop = rowRect.top - containerRect.top;
+        const desiredTop = (container.clientHeight - rowRect.height) / 2;
+        container.scrollTop += currentTop - desiredTop;
         scrollAtBottomRef.current = false;
         setTableAtBottom(false);
       }
@@ -3619,30 +3645,32 @@ export function LogsExplorer({
     if (viewMode === "table") {
       const targetPage = Math.floor(activeMatchIndex / pageSize) + 1;
       if (targetPage !== page) setPage(targetPage);
+      // Auto-expand only the active match in table view; collapses any
+      // previously-expanded match row.
+      setExpandedTableRows(new Set([activeMatchIndex]));
       // Double rAF: the new view must mount + commit before querySelector
       // can find the row (especially for table when we just changed page).
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          const el = scrollContainerRef.current?.querySelector(`[data-row-idx="${activeMatchIndex}"]`);
-          if (el) {
+          const container = scrollContainerRef.current;
+          const el = container?.querySelector(`[data-row-idx="${activeMatchIndex}"]`) as HTMLElement | null;
+          if (container && el) {
             lastProgrammaticScrollAtRef.current = Date.now();
-            el.scrollIntoView({ block: "center" });
+            const containerRect = container.getBoundingClientRect();
+            const rowRect = el.getBoundingClientRect();
+            const currentTop = rowRect.top - containerRect.top;
+            const desiredTop = (container.clientHeight - rowRect.height) / 2;
+            container.scrollTop += currentTop - desiredTop;
             scrollAtBottomRef.current = false;
             setTableAtBottom(false);
           }
         });
       });
     } else if (viewMode === "json") {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          const el = scrollContainerRef.current?.querySelector(`[data-entry-idx="${activeMatchIndex}"]`);
-          if (el) {
-            lastProgrammaticScrollAtRef.current = Date.now();
-            el.scrollIntoView({ block: "center" });
-            scrollAtBottomRef.current = false;
-          }
-        });
-      });
+      // Route through Selection PIN so the JsonLogView virtualizer can
+      // precisely center the (possibly unrendered) target row.
+      setSelectedEntryIdx(activeMatchIndex);
+      setSelectedScrollNonce((n) => n + 1);
     }
     // Only fire on view-mode switches; don't re-scroll just because the active
     // match index moved (navigateToMatch already handles that case).
@@ -4207,6 +4235,26 @@ export function LogsExplorer({
             >
               Scroll to selected
             </button>
+            {/* Open a new tab with the ±5-second window around the selected
+                entry. Disabled until the user clicks/highlights a log row. */}
+            {onOpenEntryContextTab && (
+              <button
+                type="button"
+                disabled={selectedEntryIdx === null || selectedEntryIdx < 0}
+                onClick={() => {
+                  if (selectedEntryIdx === null || selectedEntryIdx < 0) return;
+                  handleContextEntry(selectedEntryIdx);
+                }}
+                title={
+                  selectedEntryIdx === null || selectedEntryIdx < 0
+                    ? "Select a log entry first to enable this"
+                    : "Open ±5 seconds of context around the selected entry in a new tab"
+                }
+                className="px-2 py-0.5 text-[11px] font-medium rounded border border-slate-300 bg-white text-slate-500 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
+              >
+                Context ±5s
+              </button>
+            )}
             {/* Bulk expand / collapse — meaningful when rows are line-clamped
                 (terminal + wrap) or when expanding payloads in the table view. */}
             {((viewMode === "terminal" && wrapLines) || viewMode === "table") && filtered.length > 0 && (
@@ -4444,7 +4492,6 @@ export function LogsExplorer({
                 wholeWord={highlightWholeWord}
                 autoScroll={autoScroll}
                 onEntryClick={handleEntrySelect}
-                onEntryDoubleClick={handleContextEntry}
                 contextAnchorIdx={contextAnchorDisplay}
                 expandCommand={expandCmd}
                 matchIndices={matchIndices}
@@ -4473,7 +4520,6 @@ export function LogsExplorer({
                 matchCase={highlightMatchCase}
                 wholeWord={highlightWholeWord}
                 onEntryClick={handleEntrySelect}
-                onEntryDoubleClick={handleContextEntry}
                 contextAnchorIdx={contextAnchorDisplay ?? -1}
                 selectedEntryIdx={selectedEntryIdx}
                 selectedScrollRequest={selectedScrollRequest}
@@ -4510,12 +4556,17 @@ export function LogsExplorer({
                       entry={entry}
                       source={tailSource}
                       expanded={expandedTableRows.has(globalIdx)}
-                      onToggle={() => { toggleTableRow(globalIdx); handleEntrySelect(globalIdx); }}
+                      onToggle={() => {
+                        // Don't toggle expand/collapse while the user is
+                        // dragging to highlight text inside a row.
+                        if (isUserSelectingText()) return;
+                        toggleTableRow(globalIdx);
+                        handleEntrySelect(globalIdx);
+                      }}
                       searchTerm={search}
                       keywords={keywords}
                       onTransactionClick={(txId) => setDrilldown({ txId })}
                       onTimestampClick={onOpenContextTab}
-                      onContextClick={() => handleContextEntry(globalIdx)}
                       fullscreen={fullscreen}
                       showFullMessage={showFullMessage}
                       highlighted={selectedEntryIdx === globalIdx || activeMatchIndex === globalIdx}
