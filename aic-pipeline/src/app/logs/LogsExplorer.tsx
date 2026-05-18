@@ -2506,7 +2506,7 @@ const EntryRow = memo(function EntryRow({
         <tr className="bg-slate-950 border-b border-slate-700">
           <td colSpan={6} className="p-0">
             <pre className="p-4 text-xs font-mono text-green-300 overflow-x-auto whitespace-pre-wrap break-all max-h-96 overflow-y-auto leading-5">
-              {isText ? getTextPayload(entry) : JSON.stringify(entry.payload, null, 2)}
+              {highlight(isText ? getTextPayload(entry) : JSON.stringify(entry.payload, null, 2))}
             </pre>
           </td>
         </tr>
