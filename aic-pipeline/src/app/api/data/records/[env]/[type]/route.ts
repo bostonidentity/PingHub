@@ -27,6 +27,13 @@ export async function GET(
   const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10));
   const limit = Math.min(500, Math.max(1, parseInt(url.searchParams.get("limit") ?? "50", 10)));
   const titleField = url.searchParams.get("titleField")?.trim() || undefined;
+  const attr = url.searchParams.get("attr")?.trim() || undefined;
+  const opRaw = url.searchParams.get("op")?.trim();
+  const allowedOps = ["contains", "equals", "startsWith", "endsWith", "regex"] as const;
+  const op = (allowedOps as readonly string[]).includes(opRaw ?? "")
+    ? (opRaw as typeof allowedOps[number])
+    : undefined;
+  const caseSensitive = url.searchParams.get("caseSensitive") === "true";
 
   const schema = loadSchema(env, type);
   const envsRoot = ENVIRONMENTS_DIR;
@@ -37,6 +44,6 @@ export async function GET(
     display = fallbackDisplayFields({});
   }
 
-  const result = await listRecords(envsRoot, env, type, { q, page, limit, display, titleField });
+  const result = await listRecords(envsRoot, env, type, { q, page, limit, display, titleField, attr, op, caseSensitive });
   return NextResponse.json(result);
 }

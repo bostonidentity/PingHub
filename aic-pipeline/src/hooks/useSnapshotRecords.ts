@@ -3,8 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { SnapshotRecordPage } from "@/lib/data/types";
 
+export type SnapshotOp = "contains" | "equals" | "startsWith" | "endsWith" | "regex";
+
 export function useSnapshotRecords(env: string, type: string | null, titleField?: string) {
   const [q, setQ] = useState("");
+  const [attr, setAttr] = useState("");
+  const [op, setOp] = useState<SnapshotOp>("contains");
+  const [caseSensitive, setCaseSensitive] = useState(false);
   const [page, setPage] = useState(1);
   const [limit] = useState(50);
   const [data, setData] = useState<SnapshotRecordPage | null>(null);
@@ -23,6 +28,12 @@ export function useSnapshotRecords(env: string, type: string | null, titleField?
       try {
         const params = new URLSearchParams({ q, page: String(page), limit: String(limit) });
         if (titleField) params.set("titleField", titleField);
+        const trimmedAttr = attr.trim();
+        if (trimmedAttr) {
+          params.set("attr", trimmedAttr);
+          params.set("op", op);
+          if (caseSensitive) params.set("caseSensitive", "true");
+        }
         const res = await fetch(`/api/data/records/${env}/${type}?${params.toString()}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
@@ -41,7 +52,7 @@ export function useSnapshotRecords(env: string, type: string | null, titleField?
       cancelled = true;
       if (debounce.current) clearTimeout(debounce.current);
     };
-  }, [env, type, q, page, limit, titleField]);
+  }, [env, type, q, page, limit, titleField, attr, op, caseSensitive]);
 
-  return { q, setQ, page, setPage, limit, data, loading, error };
+  return { q, setQ, attr, setAttr, op, setOp, caseSensitive, setCaseSensitive, page, setPage, limit, data, loading, error };
 }
