@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7.1] - 2026-05-18
+
+### Fixed
+
+- **Logs Table view: pagination buttons work after clicking a row.** The center-selected-row effect had `page` in its dependency list, so any Older/Newer/Oldest click after a row had been clicked or highlighted immediately re-fired the effect and snapped `page` back to the page containing the selected entry. Removed `page` from the deps — the effect still recenters on view-mode switches and row selection but no longer fights manual pagination.
+- **Logs Table view: tail no longer hides expanded rows.** Added a `tableManualPagingRef` flag that's set whenever the user manually paginates (Oldest / ← Older / Newer →) or expands any row, and cleared on Latest / Jump-to-bottom / page-size or filter changes. While set, the auto-tail effect no longer snaps `page` to the latest, so expanded entries stay visible as new entries stream in.
+
 ## [0.2.7.0] - 2026-05-15
 
 ### Added

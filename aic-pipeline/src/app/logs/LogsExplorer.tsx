@@ -2834,10 +2834,20 @@ export function LogsExplorer({
   // expandedIdx so we can auto-expand every matching row when Filter or
   // Highlight is active.
   const [expandedTableRows, setExpandedTableRows] = useState<Set<number>>(new Set());
+  // True when the user has manually paginated or expanded a row in Table
+  // view. While set, new tail entries don't yank the page back to "latest"
+  // (so expanded rows stay visible and Older/Newer navigation isn't fought
+  // by the auto-tail effect). Cleared when the user explicitly returns to
+  // the latest page (Latest button / Jump to bottom) or changes filter.
+  const tableManualPagingRef = useRef(false);
   const toggleTableRow = useCallback((idx: number) => {
     setExpandedTableRows((prev) => {
       const next = new Set(prev);
       if (next.has(idx)) next.delete(idx); else next.add(idx);
+      // Expanding any row pins the current page so tail updates don't
+      // shift the expanded entry off-screen. Collapsing the last row
+      // re-arms auto-follow.
+      tableManualPagingRef.current = next.size > 0;
       return next;
     });
   }, []);
@@ -3529,6 +3539,7 @@ export function LogsExplorer({
   // the rows the user has manually expanded for inspection.
   useEffect(() => {
     setExpandedTableRows(new Set());
+    tableManualPagingRef.current = false;
   }, [search, levelFilter]);
 
   // Page tracking on tail / filter changes (separate from expanded-row reset
@@ -3538,9 +3549,10 @@ export function LogsExplorer({
       // First matching entry found — jump to page 1 (oldest = first match) and stay there
       firstMatchJumpedRef.current = true;
       setPage(1);
-    } else if (!search && autoScroll) {
+    } else if (!search && autoScroll && !tableManualPagingRef.current) {
       // No filter active and auto-scroll on — follow the latest page as results stream in.
-      // When auto-scroll is off, leave the page alone so the user can inspect a stable view.
+      // When auto-scroll is off, or the user has manually paginated / expanded
+      // a row, leave the page alone so the inspected view stays stable.
       setPage(Math.max(1, Math.ceil(filtered.length / pageSize)));
     }
     // search active + already jumped: leave page alone so user can browse
@@ -3622,7 +3634,12 @@ export function LogsExplorer({
       }
     });
     // viewMode is intentionally a dep so a switch to table re-fires the scroll.
-  }, [viewMode, selectedScrollNonce, selectedEntryIdx, pageSize, page]);
+    // `page` is intentionally NOT a dep: this effect calls setPage to bring
+    // the selected row's page into view; including `page` would cause it to
+    // immediately undo any manual Older/Newer pagination after a row has
+    // been clicked/highlighted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode, selectedScrollNonce, selectedEntryIdx, pageSize]);
 
   // When the view mode changes and there's an active match (highlight cursor),
   // re-scroll to that match in the new view. Two reasons this is needed:
@@ -4593,6 +4610,7 @@ export function LogsExplorer({
             onClick={() => {
               // Land on the latest page so the newest entries are visible,
               // then scroll to the bottom and re-arm auto-tail.
+              tableManualPagingRef.current = false;
               if (currentPage !== totalPages) setPage(totalPages);
               requestAnimationFrame(() => {
                 const el = scrollContainerRef.current;
@@ -4623,7 +4641,7 @@ export function LogsExplorer({
             <div className="flex items-center gap-2">
               <select
                 value={pageSize}
-                onChange={(e) => { setPageSize(Number(e.target.value)); setPage(Infinity); setExpandedTableRows(new Set()); }}
+                onChange={(e) => { setPageSize(Number(e.target.value)); tableManualPagingRef.current = false; setPage(Infinity); setExpandedTableRows(new Set()); }}
                 className="text-xs rounded border border-slate-300 px-2 py-1 focus:outline-none focus:ring-2 focus:ring-sky-500"
               >
                 {[50, 100, 200, 500].map((s) => (
@@ -4631,11 +4649,11 @@ export function LogsExplorer({
                 ))}
               </select>
               <div className="flex items-center gap-1">
-                <button type="button" onClick={() => { setPage(1); setExpandedTableRows(new Set()); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Oldest (page 1)">Oldest</button>
-                <button type="button" onClick={() => { setPage((p) => Math.max(1, p - 1)); setExpandedTableRows(new Set()); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Older entries">← Older</button>
+                <button type="button" onClick={() => { tableManualPagingRef.current = true; setPage(1); setExpandedTableRows(new Set()); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Oldest (page 1)">Oldest</button>
+                <button type="button" onClick={() => { tableManualPagingRef.current = true; setPage((p) => Math.max(1, p - 1)); setExpandedTableRows(new Set()); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage <= 1} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Older entries">← Older</button>
                 <span className="text-xs text-slate-500 px-2 tabular-nums">{currentPage} / {totalPages}</span>
-                <button type="button" onClick={() => { setPage((p) => Math.min(totalPages, p + 1)); setExpandedTableRows(new Set()); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Newer entries">Newer →</button>
-                <button type="button" onClick={() => { setPage(totalPages); setExpandedTableRows(new Set()); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Latest (last page)">Latest</button>
+                <button type="button" onClick={() => { tableManualPagingRef.current = true; setPage((p) => Math.min(totalPages, p + 1)); setExpandedTableRows(new Set()); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Newer entries">Newer →</button>
+                <button type="button" onClick={() => { tableManualPagingRef.current = false; setPage(totalPages); setExpandedTableRows(new Set()); scrollContainerRef.current?.scrollTo(0, 0); }} disabled={currentPage >= totalPages} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Latest (last page)">Latest</button>
               </div>
             </div>
           </div>
