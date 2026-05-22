@@ -4,6 +4,7 @@ import os from "os";
 import path from "path";
 import { listSnapshotTypes, readRecord, listRecords, evictCache, resolveTitles } from "./snapshot-fs";
 import { buildIndexFromNDJson } from "./index-builder";
+import { flattenForIndex } from "./flatten-fields";
 
 let tmpDir: string;
 const ENV = "test-env";
@@ -426,5 +427,237 @@ describe("resolveTitles", () => {
     const out = await resolveTitles(tmpDir, ENV, [], {});
     expect(out.titles).toEqual({});
     expect(out.fieldsByType).toEqual({});
+  });
+});
+
+// ── Deep-nested attribute search (schema v2) ───────────────────────────────
+
+async function buildDeepType(type: string, records: Record<string, unknown>[]) {
+  const dir = path.join(tmpDir, ENV, "managed-data", type);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "_manifest.json"),
+    JSON.stringify({ type, pulledAt: 1700000000000, count: records.length, jobId: "j1" }),
+  );
+  fs.writeFileSync(
+    path.join(dir, "data.ndjson"),
+    records.map((r) => JSON.stringify(r) + "\n").join(""),
+  );
+  await buildIndexFromNDJson(dir, flattenForIndex);
+}
+
+describe("listRecords — nested attribute search", () => {
+  const RECORDS = [
+    {
+      _id: "u1",
+      userName: "alice",
+      profile: { givenName: "Alice", address: { city: "Boston" } },
+      mail: ["alice@x.co", "alice@y.co"],
+      manager: { _ref: "managed/user/u9" },
+    },
+    {
+      _id: "u2",
+      userName: "bob",
+      profile: { givenName: "Robert", address: { city: "Boston" } },
+      mail: ["bob@x.co"],
+      manager: { _ref: "managed/user/u9" },
+    },
+    {
+      _id: "u3",
+      userName: "charlie",
+      profile: { givenName: "Charlie", address: { city: "Seattle" } },
+      mail: ["charlie@x.co"],
+    },
+  ];
+
+  beforeEach(async () => {
+    await buildDeepType("alpha_user", RECORDS);
+  });
+
+  it("matches a value inside a nested object via dotted path", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "Alice", page: 1, limit: 10,
+      display: { title: "userName", searchFields: [] },
+      attr: "profile.givenName",
+      op: "equals",
+    });
+    expect(page.records.map((r) => r.id)).toEqual(["u1"]);
+  });
+
+  it("matches a deeply nested value", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "Boston", page: 1, limit: 10,
+      display: { title: "userName", searchFields: [] },
+      attr: "profile.address.city",
+    });
+    expect(page.records.map((r) => r.id).sort()).toEqual(["u1", "u2"]);
+  });
+
+  it("matches any element of an array via the bare attr prefix", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "@y.co", page: 1, limit: 10,
+      display: { title: "userName", searchFields: [] },
+      attr: "mail",
+    });
+    expect(page.records.map((r) => r.id)).toEqual(["u1"]);
+  });
+
+  it("matches by last-segment leaf name at any depth", async () => {
+    // attr="givenName" should match profile.givenName everywhere.
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "Char", page: 1, limit: 10,
+      display: { title: "userName", searchFields: [] },
+      attr: "givenName",
+      op: "startsWith",
+    });
+    expect(page.records.map((r) => r.id)).toEqual(["u3"]);
+  });
+
+  it("matches relationship _ref values", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "managed/user/u9", page: 1, limit: 10,
+      display: { title: "userName", searchFields: [] },
+      attr: "manager._ref",
+      op: "equals",
+    });
+    expect(page.records.map((r) => r.id).sort()).toEqual(["u1", "u2"]);
+  });
+
+  it("exposes collapsed array paths in the fields dropdown", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "", page: 1, limit: 10,
+      display: { title: "userName", searchFields: [] },
+    });
+    // `mail.0`, `mail.1` collapse to a single `mail` entry.
+    expect(page.fields).toContain("mail");
+    expect(page.fields.find((f) => /^mail\.\d+$/.test(f))).toBeUndefined();
+    // Nested paths preserved.
+    expect(page.fields).toContain("profile.givenName");
+    expect(page.fields).toContain("profile.address.city");
+    expect(page.fields).toContain("manager._ref");
+  });
+
+  it("finds a keyword inside a long description nested in an array (prod regression)", async () => {
+    // Mirrors the prod alpha_kyid_dashboardapplicationwidget record. The
+    // user picks `content.myAppsDescription.en` from the dropdown (collapsed
+    // form), the stored path is `content.0.myAppsDescription.en`, and the
+    // value is a ~400-char description containing the search keyword.
+    const desc = "Allows case workers to query data - WARNING! BY ACCESSING AND USING THIS GOVERNMENT COMPUTER SYSTEM, YOU ARE CONSENTING TO SYSTEM MONITORING FOR LAW ENFORCEMENT AND OTHER PURPOSES. UNAUTHORIZED USE OF, OR ACCESS TO, THIS COMPUTER SYSTEM MAY SUBJECT YOU TO CRIMINAL PROSECUTION AND PENALTIES.";
+    await buildDeepType("alpha_widget", [
+      {
+        _id: "w1",
+        content: [{
+          title: { en: "DCSS BI", es: "DCSS BI" },
+          myAppsDescription: { en: desc, es: "otro texto" },
+        }],
+      },
+      {
+        _id: "w2",
+        content: [{ title: { en: "Other", es: "Otro" }, myAppsDescription: { en: "nope", es: "nope" } }],
+      },
+    ]);
+    const page = await listRecords(tmpDir, ENV, "alpha_widget", {
+      q: "government", page: 1, limit: 10,
+      display: { title: "_id", searchFields: [] },
+      attr: "content.myAppsDescription.en",
+      op: "contains",
+    });
+    expect(page.records.map((r) => r.id)).toEqual(["w1"]);
+  });
+});
+
+describe("listRecords — auto-rebuild on stale index schema", () => {
+  it("rebuilds a v1-style index lazily when fields_json lacks nested paths", async () => {
+    // Simulate a tenant pulled with the v1 indexer: only top-level scalars in
+    // fields_json. The new openIndexDb() detects the version mismatch and
+    // wipes records; loadCache() then rebuilds from data.ndjson with the deep
+    // flattener, so the next search finds nested values.
+    const type = "alpha_user";
+    const dir = path.join(tmpDir, ENV, "managed-data", type);
+    fs.mkdirSync(dir, { recursive: true });
+    const records = [
+      { _id: "u1", userName: "alice", profile: { givenName: "Alice" } },
+    ];
+    fs.writeFileSync(
+      path.join(dir, "data.ndjson"),
+      records.map((r) => JSON.stringify(r) + "\n").join(""),
+    );
+    fs.writeFileSync(
+      path.join(dir, "_manifest.json"),
+      JSON.stringify({ type, pulledAt: 1700000000000, count: 1, jobId: "j1" }),
+    );
+    // Build the index using the legacy (top-level-only) projection and stamp
+    // schemaVersion=1, simulating an upgrade-in-place scenario.
+    await buildIndexFromNDJson(dir, (rec) => {
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rec)) {
+        if (k.startsWith("_") && k !== "_id") continue;
+        if (typeof v === "string") out[k] = v;
+      }
+      return out;
+    });
+    const Database = (await import("better-sqlite3")).default;
+    const db = new Database(path.join(dir, "index.sqlite"));
+    db.prepare("INSERT OR REPLACE INTO meta(key,value) VALUES ('schemaVersion', '1')").run();
+    db.close();
+    evictCache(dir);
+
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "Alice", page: 1, limit: 10,
+      display: { title: "userName", searchFields: [] },
+      attr: "profile.givenName",
+      op: "equals",
+    });
+    expect(page.records.map((r) => r.id)).toEqual(["u1"]);
+  });
+
+  it("rebuilds a true v1-shaped DB (no meta table at all)", async () => {
+    // Reproduces the bug where a tenant pulled before the v2 indexer had a
+    // `records` table but no `meta` table. The first v2 openIndexDb would
+    // silently stamp schemaVersion=2 on top of the v1 data instead of
+    // dropping it. The fix detects "records table exists + no schemaVersion"
+    // as stale and forces a rebuild via the bumped SCHEMA_VERSION (now 3).
+    const type = "alpha_user";
+    const dir = path.join(tmpDir, ENV, "managed-data", type);
+    fs.mkdirSync(dir, { recursive: true });
+    const records = [
+      { _id: "u1", userName: "alice", profile: { givenName: "Alice" } },
+    ];
+    fs.writeFileSync(
+      path.join(dir, "data.ndjson"),
+      records.map((r) => JSON.stringify(r) + "\n").join(""),
+    );
+    fs.writeFileSync(
+      path.join(dir, "_manifest.json"),
+      JSON.stringify({ type, pulledAt: 1700000000001, count: 1, jobId: "j1" }),
+    );
+    // Build a v1-shaped DB by hand: records table populated with scalar-only
+    // fields_json, NO meta table.
+    const Database = (await import("better-sqlite3")).default;
+    const dbPath = path.join(dir, "index.sqlite");
+    const db = new Database(dbPath);
+    db.prepare(`
+      CREATE TABLE records (
+        id TEXT PRIMARY KEY NOT NULL,
+        ord INTEGER NOT NULL,
+        offset INTEGER NOT NULL,
+        length INTEGER NOT NULL,
+        fields_json TEXT NOT NULL,
+        searchable TEXT NOT NULL
+      )
+    `).run();
+    db.prepare(
+      "INSERT INTO records(id,ord,offset,length,fields_json,searchable) VALUES (?,?,?,?,?,?)",
+    ).run("u1", 0, 0, 50, JSON.stringify({ _id: "u1", userName: "alice" }), "u1 alice");
+    db.close();
+    evictCache(dir);
+
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "Alice", page: 1, limit: 10,
+      display: { title: "userName", searchFields: [] },
+      attr: "profile.givenName",
+      op: "equals",
+    });
+    expect(page.records.map((r) => r.id)).toEqual(["u1"]);
   });
 });

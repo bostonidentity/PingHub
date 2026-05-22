@@ -82,6 +82,22 @@ export function PullPanel({
 
   const { jobs, start, abort, resume, suspend } = useDataPullJobs({ pollMs: 2000, includeFinished: true });
   const types = useMemo(() => typesByEnv[env] ?? [], [typesByEnv, env]);
+
+  // Client-side pagination for the activity list. Jobs come from the API in
+  // newest-first order; we keep that ordering and slice 10 at a time so long
+  // histories don't dominate the panel. Reset to page 1 when the env changes
+  // or when the underlying job count shrinks below the current page.
+  const JOBS_PAGE_SIZE = 10;
+  const [jobsPage, setJobsPage] = useState(1);
+  useEffect(() => { setJobsPage(1); }, [env]);
+  const jobsTotalPages = Math.max(1, Math.ceil(jobs.length / JOBS_PAGE_SIZE));
+  useEffect(() => {
+    if (jobsPage > jobsTotalPages) setJobsPage(jobsTotalPages);
+  }, [jobsPage, jobsTotalPages]);
+  const pagedJobs = useMemo(
+    () => jobs.slice((jobsPage - 1) * JOBS_PAGE_SIZE, jobsPage * JOBS_PAGE_SIZE),
+    [jobs, jobsPage],
+  );
   const visibleTypes = useMemo(() => {
     const q = filter.trim().toLowerCase();
     return q ? types.filter((t) => t.toLowerCase().includes(q)) : types;
@@ -401,11 +417,18 @@ export function PullPanel({
       </div>
 
       <div className="space-y-2">
-        <h2 className="text-sm font-semibold text-slate-700">Active & recent jobs</h2>
+        <div className="flex items-baseline justify-between">
+          <h2 className="text-sm font-semibold text-slate-700">Active & recent jobs</h2>
+          {jobs.length > JOBS_PAGE_SIZE && (
+            <span className="text-xs text-slate-500">
+              {(jobsPage - 1) * JOBS_PAGE_SIZE + 1}–{Math.min(jobs.length, jobsPage * JOBS_PAGE_SIZE)} of {jobs.length}
+            </span>
+          )}
+        </div>
         {jobs.length === 0 && (
           <p className="text-xs text-slate-400 italic">No jobs yet.</p>
         )}
-        {jobs.map((j) => {
+        {pagedJobs.map((j) => {
           // Per-job probed-count map: counts for j.env/type, in case the server
           // preflight returned null (tenant doesn't honor _countPolicy).
           const probedForJob: Record<string, number | null> = {};
@@ -425,6 +448,27 @@ export function PullPanel({
             />
           );
         })}
+        {jobs.length > JOBS_PAGE_SIZE && (
+          <div className="flex items-center justify-between pt-1">
+            <button
+              type="button"
+              onClick={() => setJobsPage((p) => Math.max(1, p - 1))}
+              disabled={jobsPage <= 1}
+              className="text-xs px-2 py-1 border border-slate-300 rounded disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50"
+            >
+              ← Newer
+            </button>
+            <span className="text-xs text-slate-500">Page {jobsPage} of {jobsTotalPages}</span>
+            <button
+              type="button"
+              onClick={() => setJobsPage((p) => Math.min(jobsTotalPages, p + 1))}
+              disabled={jobsPage >= jobsTotalPages}
+              className="text-xs px-2 py-1 border border-slate-300 rounded disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50"
+            >
+              Older →
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
