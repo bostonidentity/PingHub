@@ -128,6 +128,12 @@ interface ListOpts {
   display: DisplayFields;
   /** Override the display.title field with a user-chosen attribute (e.g. "userName"). */
   titleField?: string;
+  /** Restrict matching to this attribute's value (case-insensitive key match). */
+  attr?: string;
+  /** Comparison operator when `attr` is set. Defaults to "contains". */
+  op?: "contains" | "equals" | "startsWith" | "endsWith" | "regex";
+  /** When true, operator comparison is case-sensitive. Default false. */
+  caseSensitive?: boolean;
 }
 
 // Match the record key case-insensitively — users configure attributes by
@@ -152,6 +158,56 @@ export async function listRecords(
   const { db, fields } = tc;
   const titleField = opts.titleField ?? opts.display.title;
   const start = (opts.page - 1) * opts.limit;
+
+  // Attribute-scoped filter: when set, ignore the cross-field LIKE path and
+  // walk rows applying the operator to that attribute's value only. We use
+  // SQLite's iterator so we don't materialize the whole table at once.
+  const attrName = opts.attr?.trim();
+  if (attrName && opts.q.trim()) {
+    const cs = !!opts.caseSensitive;
+    const needle = cs ? opts.q : opts.q.toLowerCase();
+    const op = opts.op ?? "contains";
+    let testFn: (value: string) => boolean;
+    if (op === "regex") {
+      try {
+        const re = new RegExp(opts.q, cs ? "" : "i");
+        testFn = (v) => re.test(v);
+      } catch {
+        // Invalid regex → no matches. UI surfaces an error elsewhere.
+        return { total: 0, page: opts.page, limit: opts.limit, records: [], fields };
+      }
+    } else if (op === "equals") {
+      testFn = (v) => (cs ? v : v.toLowerCase()) === needle;
+    } else if (op === "startsWith") {
+      testFn = (v) => (cs ? v : v.toLowerCase()).startsWith(needle);
+    } else if (op === "endsWith") {
+      testFn = (v) => (cs ? v : v.toLowerCase()).endsWith(needle);
+    } else {
+      testFn = (v) => (cs ? v : v.toLowerCase()).includes(needle);
+    }
+    const iter = db.prepare(
+      "SELECT id, fields_json FROM records ORDER BY ord",
+    ).iterate() as Iterable<{ id: string; fields_json: string }>;
+    const matches: { id: string; fields_json: string }[] = [];
+    for (const r of iter) {
+      let f: Record<string, string>;
+      try { f = JSON.parse(r.fields_json) as Record<string, string>; }
+      catch { continue; }
+      const key = findKeyCI(f, attrName);
+      if (!key) continue;
+      const val = String(f[key] ?? "");
+      if (testFn(val)) matches.push(r);
+    }
+    const total = matches.length;
+    const pageRows = matches.slice(start, start + opts.limit);
+    const records = pageRows.map((r) => {
+      const f = JSON.parse(r.fields_json) as Record<string, string>;
+      const key = findKeyCI(f, titleField);
+      const title = (key && f[key]) || r.id;
+      return { id: r.id, title };
+    });
+    return { total, page: opts.page, limit: opts.limit, fields, records };
+  }
 
   if (!q) {
     const total = (db.prepare("SELECT COUNT(*) AS c FROM records").get() as { c: number }).c;

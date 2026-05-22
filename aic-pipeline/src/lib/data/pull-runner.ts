@@ -7,6 +7,7 @@ import type { Registry } from "./job-registry";
 import { NDJSON_FILE } from "./ndjson-format";
 import { openIndexDb } from "./index-db";
 import { buildIndexFromNDJson } from "./index-builder";
+import { evictCache } from "./snapshot-fs";
 import type Database from "better-sqlite3";
 
 const MAX_RETRIES = 5;
@@ -559,6 +560,10 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
       try {
         const currentDir = path.join(envsRoot, job.env, "managed-data", type);
         const backupDir = path.join(envsRoot, job.env, "managed-data", `.prev-${job.id}-${type}`);
+        // Release the snapshot-fs reader cache's SQLite handle on this dir
+        // before renaming. On Windows an open handle inside a directory
+        // blocks the directory rename with EPERM/EACCES.
+        evictCache(currentDir);
         if (fs.existsSync(currentDir)) await renameWithRetry(currentDir, backupDir);
         await renameWithRetry(typePullingDir, currentDir);
         const pulledAt = Date.now();

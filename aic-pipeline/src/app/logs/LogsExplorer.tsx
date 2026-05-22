@@ -2333,7 +2333,8 @@ const EntryRow = memo(function EntryRow({
   onTimestampClick,
   fullscreen = false,
   showFullMessage = false,
-  highlighted = false,
+  selected = false,
+  activeMatch = false,
   isContextAnchor = false,
   rowIdx,
   matchCase = false,
@@ -2350,7 +2351,10 @@ const EntryRow = memo(function EntryRow({
   onTimestampClick?: (timestamp: string, source: string) => void;
   fullscreen?: boolean;
   showFullMessage?: boolean;
-  highlighted?: boolean;
+  /** User explicitly clicked this row — wins visually over an active match. */
+  selected?: boolean;
+  /** This row is the current keyword-highlight cursor (Next/Prev match). */
+  activeMatch?: boolean;
   isContextAnchor?: boolean;
   rowIdx?: number;
   matchCase?: boolean;
@@ -2379,11 +2383,17 @@ const EntryRow = memo(function EntryRow({
     const parts = text.split(regex);
     if (parts.length === 1) return <>{text}</>;
     const testRe = new RegExp(`^(?:${wrapped.join("|")})$`, matchCase ? "" : "i");
+    // Matches in the active-match row render with amber (the Next/Prev
+    // cursor row); matches in every other row render with the lighter
+    // yellow, matching the terminal/JSON viewers' visual scheme.
+    const markClass = activeMatch
+      ? "bg-amber-400 text-black rounded-sm px-0.5"
+      : "bg-yellow-200 text-inherit rounded-sm px-0.5";
     return (
       <>
         {parts.map((part, i) =>
           testRe.test(part) ? (
-            <mark key={i} className="bg-yellow-200 text-inherit rounded-sm px-0.5">{part}</mark>
+            <mark key={i} className={markClass}>{part}</mark>
           ) : (
             part
           )
@@ -2399,10 +2409,14 @@ const EntryRow = memo(function EntryRow({
         data-row-idx={rowIdx}
         className={cn(
           "cursor-pointer text-xs border-b border-slate-200 hover:bg-slate-100/60 transition-colors",
-          !expanded && !highlighted && !isContextAnchor && rowIdx != null && rowIdx % 2 === 0 && "bg-slate-100/60",
+          !expanded && !selected && !activeMatch && !isContextAnchor && rowIdx != null && rowIdx % 2 === 0 && "bg-slate-100/60",
           expanded && "bg-slate-50",
-          highlighted && "ring-1 ring-inset ring-sky-400 bg-sky-50",
-          isContextAnchor && !highlighted && "ring-1 ring-inset ring-violet-400 bg-violet-50",
+          // Selection (blue) wins over active-match (amber) and ctx anchor
+          // (violet) so the user always sees their explicitly-clicked row as
+          // the focus, matching terminal-view behavior.
+          selected && "ring-1 ring-inset ring-sky-400 bg-sky-50",
+          !selected && activeMatch && "ring-1 ring-inset ring-amber-300 bg-amber-50",
+          !selected && !activeMatch && isContextAnchor && "ring-1 ring-inset ring-violet-400 bg-violet-50",
         )}
       >
         <td className="px-3 py-2 font-mono text-slate-400 whitespace-nowrap align-top">
@@ -2750,6 +2764,12 @@ export function LogsExplorer({
       scrollAtBottomRef.current = false;
       setTableAtBottom(false);
     }
+    // Pin the table page so the page-tracking effect doesn't snap back to
+    // the latest page when new tail batches arrive — that snap-back would
+    // override the selectedEntryIdx scroll effect's setPage(targetPage) on
+    // a terminal/json -> table switch and leave the viewport on a
+    // different page than the one containing the selected row.
+    tableManualPagingRef.current = true;
     // Intentionally do NOT bump selectedScrollNonce — clicking should not move
     // the viewport. Scroll-to-selection only fires on view-mode switch.
   }, []);
@@ -3616,30 +3636,44 @@ export function LogsExplorer({
     // Make sure the right page is loaded so the row exists in the DOM.
     const targetPage = Math.floor(selectedEntryIdx / pageSize) + 1;
     if (targetPage !== page) setPage(targetPage);
+    // Double rAF: when switching view modes (e.g. terminal -> table) the
+    // table just mounted, and if setPage above just changed the page React
+    // hasn't committed yet. A single rAF can fire before the new page rows
+    // are in the DOM, so the querySelector returns null and no scroll
+    // happens — leaving the viewport on whatever the previous effect ran
+    // (such as the highlight cursor's match row). The second rAF waits one
+    // more frame, by which time the updated page has rendered.
     requestAnimationFrame(() => {
-      const container = scrollContainerRef.current;
-      const el = container?.querySelector(`[data-row-idx="${selectedEntryIdx}"]`) as HTMLElement | null;
-      if (container && el) {
-        lastProgrammaticScrollAtRef.current = Date.now();
-        // Manual scrollTop instead of element.scrollIntoView — the latter
-        // scrolls every ancestor (including the outer page), which visibly
-        // jumps the browser scrollbar. We only want the inner container.
-        const containerRect = container.getBoundingClientRect();
-        const rowRect = el.getBoundingClientRect();
-        const currentTop = rowRect.top - containerRect.top;
-        const desiredTop = (container.clientHeight - rowRect.height) / 2;
-        container.scrollTop += currentTop - desiredTop;
-        scrollAtBottomRef.current = false;
-        setTableAtBottom(false);
-      }
+      requestAnimationFrame(() => {
+        const container = scrollContainerRef.current;
+        const el = container?.querySelector(`[data-row-idx="${selectedEntryIdx}"]`) as HTMLElement | null;
+        if (container && el) {
+          lastProgrammaticScrollAtRef.current = Date.now();
+          // Manual scrollTop instead of element.scrollIntoView — the latter
+          // scrolls every ancestor (including the outer page), which visibly
+          // jumps the browser scrollbar. We only want the inner container.
+          const containerRect = container.getBoundingClientRect();
+          const rowRect = el.getBoundingClientRect();
+          const currentTop = rowRect.top - containerRect.top;
+          const desiredTop = (container.clientHeight - rowRect.height) / 2;
+          container.scrollTop += currentTop - desiredTop;
+          scrollAtBottomRef.current = false;
+          setTableAtBottom(false);
+        }
+      });
     });
     // viewMode is intentionally a dep so a switch to table re-fires the scroll.
     // `page` is intentionally NOT a dep: this effect calls setPage to bring
     // the selected row's page into view; including `page` would cause it to
     // immediately undo any manual Older/Newer pagination after a row has
     // been clicked/highlighted.
+    // `selectedEntryIdx` is intentionally NOT a dep either: a row click
+    // changes selectedEntryIdx without bumping selectedScrollNonce, and we
+    // explicitly don't want clicks to move the viewport (the user would
+    // see expand/collapse re-center the row). The effect still reads the
+    // latest selectedEntryIdx via closure when nonce or viewMode change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewMode, selectedScrollNonce, selectedEntryIdx, pageSize]);
+  }, [viewMode, selectedScrollNonce, pageSize]);
 
   // When the view mode changes and there's an active match (highlight cursor),
   // re-scroll to that match in the new view. Two reasons this is needed:
@@ -3652,6 +3686,11 @@ export function LogsExplorer({
   // highlight active, they care about the highlighted entry, not the tail.
   useEffect(() => {
     if (activeMatchIndex === null) return;
+    // User selection takes precedence over the highlight cursor on
+    // view-switch. If the user has clicked a row that isn't the current
+    // active match, defer to the selectedEntryIdx scroll effect above so
+    // the new view lands on what the user explicitly picked.
+    if (selectedEntryIdx !== null && selectedEntryIdx !== activeMatchIndex) return;
     // Pre-emptively pause Table-view auto-tail (see the selectedEntryIdx
     // effect above for the same rationale). For terminal/json the in-viewer
     // scroll-to-match effects clear their own atBottomRef.
@@ -4497,12 +4536,22 @@ export function LogsExplorer({
                 wrapLines={wrapLines}
                 dupeCounts={dupeCounts}
                 scrollRequest={
-                  // Match-nav scrolls take precedence over selection scrolls;
-                  // when no active match, fall back to selection-driven scroll
-                  // so view-mode switches and clicks both reveal the row.
-                  matchScrollRequest ?? (selectedEntryIdx !== null && selectedScrollNonce > 0
+                  // User selection wins over the highlight cursor when the
+                  // two differ — matches the precedence applied to the
+                  // table view's activeMatchIndex scroll effect, so a
+                  // view switch reveals what the user explicitly picked.
+                  // Otherwise match-nav scrolls take precedence over
+                  // selection scrolls; when no active match, fall back to
+                  // selection-driven scroll so view-mode switches and
+                  // clicks both reveal the row.
+                  (selectedEntryIdx !== null
+                    && activeMatchIndex !== null
+                    && selectedEntryIdx !== activeMatchIndex
+                    && selectedScrollNonce > 0)
                     ? { index: selectedEntryIdx, nonce: selectedScrollNonce + 1_000_000 }
-                    : null)
+                    : matchScrollRequest ?? (selectedEntryIdx !== null && selectedScrollNonce > 0
+                      ? { index: selectedEntryIdx, nonce: selectedScrollNonce + 1_000_000 }
+                      : null)
                 }
                 activeMatchIndex={activeMatchIndex}
                 matchCase={highlightMatchCase}
@@ -4586,7 +4635,8 @@ export function LogsExplorer({
                       onTimestampClick={onOpenContextTab}
                       fullscreen={fullscreen}
                       showFullMessage={showFullMessage}
-                      highlighted={selectedEntryIdx === globalIdx || activeMatchIndex === globalIdx}
+                      selected={selectedEntryIdx === globalIdx}
+                      activeMatch={activeMatchIndex === globalIdx}
                       isContextAnchor={contextAnchorDisplay === globalIdx}
                       rowIdx={globalIdx}
                       matchCase={highlightMatchCase}

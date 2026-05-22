@@ -91,7 +91,14 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
   }, [env]);
 
   const titleField = selectedType ? (titlePrefs[prefKey(env, selectedType)] || undefined) : undefined;
-  const { q, setQ, page, setPage, data, loading } = useSnapshotRecords(env, selectedType, titleField);
+  const {
+    q, setQ,
+    attr, setAttr,
+    op, setOp,
+    caseSensitive, setCaseSensitive,
+    page, setPage,
+    data, loading,
+  } = useSnapshotRecords(env, selectedType, titleField);
 
   // Most-recent pull timestamp across all snapshotted types for this env.
   const envLastPulledAt = useMemo(
@@ -229,13 +236,13 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
               </span>
             )}
           </label>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <input
               type="text"
               value={globalQ}
               onChange={(e) => setGlobalQ(e.target.value)}
               placeholder={globalRegex ? "Regex, e.g. ^alice\\d+" : "Substring to match anywhere in any record…"}
-              className="flex-1 text-sm rounded border border-slate-300 px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-sky-400"
+              className="flex-1 min-w-[200px] text-sm rounded border border-slate-300 px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-sky-400"
             />
             <label className="flex items-center gap-1 text-xs text-slate-600 cursor-pointer select-none">
               <input type="checkbox" checked={globalRegex} onChange={(e) => setGlobalRegex(e.target.checked)} className="accent-sky-600" />
@@ -346,37 +353,90 @@ export function BrowsePanel({ environments }: { environments: Environment[] }) {
 
           <div ref={splitContainerRef} className="flex flex-col lg:flex-row min-h-[500px] max-h-[calc(100vh-280px)]">
             <div style={{ flex: `0 0 ${splitPct}%` }} className="min-w-0 bg-white border border-slate-200 rounded-lg overflow-hidden flex flex-col">
-              <div className="px-3 py-2 border-b border-slate-100 flex items-center gap-2 flex-wrap">
-                <input
-                  type="text"
-                  value={q}
-                  onChange={(e) => { setQ(e.target.value); setPage(1); }}
-                  placeholder="Search anywhere in each record…"
-                  className="flex-1 min-w-[160px] text-xs rounded border border-slate-300 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-sky-400"
-                />
-                {data && data.fields.length > 0 && (
-                  <label className="flex items-center gap-1 text-[10px] text-slate-500">
-                    <span>Display:</span>
+              <div className="px-3 py-2 border-b border-slate-100 flex flex-col gap-1.5">
+                <div className="flex items-center gap-2 flex-wrap">
+                  {data && data.fields.length > 0 && (
                     <select
-                      value={titleField ?? ""}
-                      onChange={(e) => setTitleFieldForCurrent(e.target.value)}
-                      className="text-[11px] rounded border border-slate-300 bg-white px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-sky-400"
-                      title="Attribute used as the row title"
+                      value={attr}
+                      onChange={(e) => { setAttr(e.target.value); setPage(1); }}
+                      className="text-xs rounded border border-slate-300 bg-white px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-sky-400 font-mono"
+                      title="Restrict the search to one attribute (or any attribute)"
                     >
-                      <option value="">default</option>
+                      <option value="">any attribute</option>
                       {data.fields.map((f) => (
                         <option key={f} value={f}>{f}</option>
                       ))}
                     </select>
-                  </label>
-                )}
-                {exportUrl && (
-                  <>
-                    <a href={exportUrl("json")} className="text-[11px] text-sky-600 hover:underline">JSON</a>
-                    <span className="text-slate-300">·</span>
-                    <a href={exportUrl("csv")} className="text-[11px] text-sky-600 hover:underline">CSV</a>
-                  </>
-                )}
+                  )}
+                  <select
+                    value={op}
+                    onChange={(e) => { setOp(e.target.value as typeof op); setPage(1); }}
+                    disabled={!attr}
+                    className="text-xs rounded border border-slate-300 bg-white px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-sky-400 disabled:opacity-50"
+                    title={attr ? "Comparison operator" : "Pick an attribute to enable"}
+                  >
+                    <option value="contains">includes</option>
+                    <option value="equals">equals</option>
+                    <option value="startsWith">starts with</option>
+                    <option value="endsWith">ends with</option>
+                    <option value="regex">regex</option>
+                  </select>
+                  <input
+                    type="text"
+                    value={q}
+                    onChange={(e) => { setQ(e.target.value); setPage(1); }}
+                    placeholder={attr
+                      ? (op === "regex" ? `Regex for ${attr}…` : `Value for ${attr}…`)
+                      : "Search anywhere in each record…"}
+                    className="flex-1 min-w-[140px] text-xs rounded border border-slate-300 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-sky-400"
+                  />
+                  {attr && (
+                    <label className="flex items-center gap-1 text-[11px] text-slate-600 cursor-pointer select-none" title="Case sensitive">
+                      <input
+                        type="checkbox"
+                        checked={caseSensitive}
+                        onChange={(e) => setCaseSensitive(e.target.checked)}
+                        className="accent-sky-600"
+                      />
+                      Aa
+                    </label>
+                  )}
+                  {(q || attr) && (
+                    <button
+                      type="button"
+                      onClick={() => { setQ(""); setAttr(""); setPage(1); }}
+                      className="text-xs text-slate-400 hover:text-slate-600"
+                      title="Clear filter"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {data && data.fields.length > 0 && (
+                    <label className="flex items-center gap-1 text-[10px] text-slate-500">
+                      <span>Display:</span>
+                      <select
+                        value={titleField ?? ""}
+                        onChange={(e) => setTitleFieldForCurrent(e.target.value)}
+                        className="text-[11px] rounded border border-slate-300 bg-white px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-sky-400"
+                        title="Attribute used as the row title"
+                      >
+                        <option value="">default</option>
+                        {data.fields.map((f) => (
+                          <option key={f} value={f}>{f}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  {exportUrl && (
+                    <>
+                      <a href={exportUrl("json")} className="text-[11px] text-sky-600 hover:underline">JSON</a>
+                      <span className="text-slate-300">·</span>
+                      <a href={exportUrl("csv")} className="text-[11px] text-sky-600 hover:underline">CSV</a>
+                    </>
+                  )}
+                </div>
               </div>
               <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
                 {loading && !data && <div className="p-4 text-xs text-slate-400">Loading…</div>}
