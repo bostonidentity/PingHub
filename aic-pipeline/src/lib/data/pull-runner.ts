@@ -8,12 +8,12 @@ import { NDJSON_FILE } from "./ndjson-format";
 import { openIndexDb } from "./index-db";
 import { buildIndexFromNDJson } from "./index-builder";
 import { evictCache } from "./snapshot-fs";
+import { flattenForIndex } from "./flatten-fields";
 import type Database from "better-sqlite3";
 
 const MAX_RETRIES = 5;
 const DEFAULT_RETRY_DELAY_MS = 3000;
 const DEFAULT_PAGE_SIZE = 50000;
-const INDEX_FIELD_MAX_LEN = 200;
 
 /**
  * Heap-pressure auto-suspend threshold (fraction of V8's heap_size_limit).
@@ -48,17 +48,6 @@ function isHeapUnderPressure(fraction: number): boolean {
 
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/** Extract short scalar fields from a record for the browse index. */
-function pickIndexFields(record: Record<string, unknown>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(record)) {
-    if (k.startsWith("_") && k !== "_id") continue;
-    if (typeof v === "string" && v.length <= INDEX_FIELD_MAX_LEN) out[k] = v;
-    else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
-  }
-  return out;
-}
 
 /** Recursively extract all `_ref` values matching `managed/{type}/{id}` from a record. */
 function extractRefs(obj: unknown): string[] {
@@ -424,7 +413,7 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
               if (seenIds && seenIds.has(id)) continue; // dedupe on resume
               const lineStr = JSON.stringify(item);
               const lineLen = Buffer.byteLength(lineStr, "utf-8");
-              const fields = pickIndexFields(item);
+              const fields = flattenForIndex(item);
               pageRows.push({
                 id,
                 ord: nextOrd,
@@ -578,7 +567,7 @@ export async function runPull(opts: RunPullOpts): Promise<void> {
         // Rebuild SQLite from the now-canonical data.ndjson. Cheap because reading
         // is sequential and inserts go in one transaction. Also covers the resume
         // case where rebuilt-but-not-inserted rows existed at the start of the run.
-        await buildIndexFromNDJson(currentDir, pickIndexFields);
+        await buildIndexFromNDJson(currentDir, flattenForIndex);
         // Mirror manifest pulledAt into meta for parity.
         const finalDb = openIndexDb(currentDir);
         finalDb.prepare("INSERT OR REPLACE INTO meta(key,value) VALUES ('pulledAt', ?)").run(String(pulledAt));

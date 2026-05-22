@@ -6,6 +6,8 @@ import type Database from "better-sqlite3";
 import type { DisplayFields, SnapshotType, SnapshotRecordPage } from "./types";
 import { NDJSON_FILE } from "./ndjson-format";
 import { openIndexDb } from "./index-db";
+import { buildIndexFromNDJson } from "./index-builder";
+import { flattenForIndex, attrMatchesPath, collapseArrayIndices } from "./flatten-fields";
 
 function managedDataDir(envsRoot: string, env: string): string {
   return path.join(envsRoot, env, "managed-data");
@@ -48,8 +50,25 @@ async function loadCache(dir: string): Promise<TypeCache> {
       cache.delete(dir);
     }
 
-    const db = openIndexDb(dir);
-    // Derive field list from a sample of fields_json — same shape as before.
+    let db = openIndexDb(dir);
+
+    // Lazy auto-rebuild: openIndexDb() drops the records table when it detects
+    // a stale schemaVersion. If the table is empty but data.ndjson exists,
+    // rebuild from the canonical source so callers get a populated index
+    // without forcing a tenant re-pull.
+    const rowCount = (db.prepare("SELECT COUNT(*) AS c FROM records").get() as { c: number }).c;
+    if (rowCount === 0 && existsSync(path.join(dir, NDJSON_FILE))) {
+      // Close before rebuild so buildIndexFromNDJson can open its own handle
+      // without contention on Windows file locks.
+      try { db.close(); } catch { /* ignore */ }
+      await buildIndexFromNDJson(dir, flattenForIndex);
+      db = openIndexDb(dir);
+    }
+
+    // Derive the displayable field list from a sample of fields_json.
+    // Flattened paths can include array indices (e.g. `mail.0`, `mail.1`); the
+    // UI dropdown collapses those to a single `mail` option since the attr
+    // filter matches by prefix.
     const sampleRows = db.prepare(
       "SELECT fields_json FROM records ORDER BY ord LIMIT ?",
     ).all(FIELD_SAMPLE_SIZE) as { fields_json: string }[];
@@ -57,7 +76,8 @@ async function loadCache(dir: string): Promise<TypeCache> {
     for (const row of sampleRows) {
       try {
         for (const k of Object.keys(JSON.parse(row.fields_json) as Record<string, unknown>)) {
-          fieldSet.add(k);
+          const collapsed = collapseArrayIndices(k);
+          if (collapsed) fieldSet.add(collapsed);
         }
       } catch { /* skip malformed */ }
     }
@@ -160,8 +180,15 @@ export async function listRecords(
   const start = (opts.page - 1) * opts.limit;
 
   // Attribute-scoped filter: when set, ignore the cross-field LIKE path and
-  // walk rows applying the operator to that attribute's value only. We use
-  // SQLite's iterator so we don't materialize the whole table at once.
+  // walk rows applying the operator to that attribute's value(s) only.
+  //
+  // `attr` is matched against the flattened `fields_json` paths via
+  // `attrMatchesPath` (exact / prefix / last-segment, case-insensitive). A
+  // record matches if *any* path matching the attr has a value the operator
+  // accepts — so attr="mail" tests all `mail.N` elements, attr="givenName"
+  // tests every `*.givenName` anywhere in the tree, etc.
+  //
+  // We use SQLite's iterator so we don't materialize the whole table at once.
   const attrName = opts.attr?.trim();
   if (attrName && opts.q.trim()) {
     const cs = !!opts.caseSensitive;
@@ -193,10 +220,12 @@ export async function listRecords(
       let f: Record<string, string>;
       try { f = JSON.parse(r.fields_json) as Record<string, string>; }
       catch { continue; }
-      const key = findKeyCI(f, attrName);
-      if (!key) continue;
-      const val = String(f[key] ?? "");
-      if (testFn(val)) matches.push(r);
+      let matched = false;
+      for (const key of Object.keys(f)) {
+        if (!attrMatchesPath(attrName, key)) continue;
+        if (testFn(String(f[key] ?? ""))) { matched = true; break; }
+      }
+      if (matched) matches.push(r);
     }
     const total = matches.length;
     const pageRows = matches.slice(start, start + opts.limit);

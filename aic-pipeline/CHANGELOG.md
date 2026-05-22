@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7.3] - 2026-05-22
+
+### Added
+
+- **Data > Pull: pagination for the activity list.** The "Active & recent jobs" list now paginates 10 at a time with Newer/Older buttons, a "Page X of Y" indicator, and a range counter in the header. Page resets when the environment changes and clamps if the job count shrinks.
+
+### Fixed
+
+- **Browse: attribute search now reaches nested, array, and relationship values.** The per-type SQLite index used to project only top-level scalars into `fields_json`, so picking an attribute like `profile.givenName`, `mail` (array), or `manager._ref` from the dropdown returned zero matches even though Global search (which streams `data.ndjson`) found them. Replaced `pickIndexFields` with a shared `flattenForIndex` helper that recursively walks the record producing dotted paths (`profile.givenName`, `profile.address.city`, `mail.0`, `manager._ref`) and keeps all `_*` keys at every depth. The attribute filter in `listRecords` now matches against every flat path with three rules (exact path, `attr.` prefix, or last-segment leaf) — and against each path's array-index-collapsed form too, so a dropdown pick like `content.myAppsDescription.en` matches the stored path `content.0.myAppsDescription.en`. The fields dropdown collapses array indices (`mail.0`, `mail.1` -> `mail`) so the list stays readable.
+- **Browse: long descriptions are now searchable.** The per-leaf index cap was raised from 200 to 10 000 characters. Realistic content like dashboard widget descriptions, translated UI copy, and instructions was silently dropped from `fields_json` and therefore invisible to the attribute filter (e.g. searching `government` on `alpha_kyid_dashboardapplicationwidget.content.myAppsDescription.en` returned nothing despite a clear match in `data.ndjson`).
+- **Browse: SQLite index auto-rebuilds on schema upgrade.** Bumped `SCHEMA_VERSION` to 4 and added a `meta` table; `openIndexDb` drops the stale `records` table on version mismatch *and* when it detects a v1 layout (records table present but no `meta.schemaVersion` row — the case that initially shipped silently stamped as v2 instead of being rebuilt). `loadCache` lazily rebuilds the index from the existing `data.ndjson` on first access — no re-pull required.
+
 ## [0.2.7.2] - 2026-05-22
 
 ### Added
