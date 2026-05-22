@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7.2] - 2026-05-22
+
+### Added
+
+- **Browse: per-type attribute + operator filter.** New attribute dropdown (sourced from the type's sampled fields), operator dropdown (includes, equals, starts with, ends with, regex), and a case-sensitive toggle next to the per-type record search input. Leaving the attribute blank preserves the existing whole-record substring behavior. `attr` / `op` / `caseSensitive` are threaded through `useSnapshotRecords` and the `/api/data/records/[env]/[type]` route; `listRecords` does a per-row scan against just the named field (case-insensitive key match) when `attr` is set, falling back to the original SQLite LIKE search otherwise.
+
+### Fixed
+
+- **Pull: release snapshot-fs SQLite handle before rename swap.** On Windows, the Browse panel's cached better-sqlite3 connection on a type's `index.sqlite` kept the directory locked, causing `EPERM: operation not permitted, rename` when the next pull tried to swap `currentDir` -> `.prev-<job>-<type>`. Calling `evictCache(currentDir)` right before `renameWithRetry` releases that handle so the atomic swap succeeds.
+- **Logs Table view: selection vs match precedence and viewport stability.** `EntryRow` now splits `highlighted` into separate `selected` (sky) and `activeMatch` (amber) props so the user's clicked row stays visually distinct from the keyword-match cursor, with selection winning. Keyword matches in the active-match row render with `bg-amber-400` to match the terminal/JSON viewers; non-active rows stay `bg-yellow-200`. Dropped `selectedEntryIdx` from the scroll-to-selection effect deps so expanding/collapsing a row no longer re-centers the viewport (the effect now fires only on view-mode switch, as intended).
+- **Logs Terminal view: prefer selection over match cursor on view switch.** When `selectedEntryIdx` and `matchScrollRequest` differ, the terminal view now reveals the user's selection instead of the keyword cursor.
+
 ## [0.2.7.1] - 2026-05-18
 
 ### Fixed
