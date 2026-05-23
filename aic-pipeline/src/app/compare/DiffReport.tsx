@@ -40,13 +40,13 @@ function clientDiff(aText: string, bText: string): DiffLine[] {
   const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
   for (let i = 1; i <= m; i++)
     for (let j = 1; j <= n; j++)
-      dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1]+1 : Math.max(dp[i-1][j], dp[i][j-1]);
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
   const lines: DiffLine[] = [];
   let i = m, j = n;
   while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && a[i-1] === b[j-1]) { lines.unshift({ type: "context", content: a[i-1] }); i--; j--; }
-    else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j])) { lines.unshift({ type: "added", content: b[j-1] }); j--; }
-    else { lines.unshift({ type: "removed", content: a[i-1] }); i--; }
+    if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) { lines.unshift({ type: "context", content: a[i - 1] }); i--; j--; }
+    else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) { lines.unshift({ type: "added", content: b[j - 1] }); j--; }
+    else { lines.unshift({ type: "removed", content: a[i - 1] }); i--; }
   }
   return lines;
 }
@@ -227,7 +227,7 @@ function DiffViewer({ lines, fullscreen, wrap }: { lines: DiffLine[]; fullscreen
   let leftNo = 0, rightNo = 0;
   const lineNums: Array<{ left: number | null; right: number | null }> = lines.map((l) => {
     if (l.type === "removed") { leftNo++; return { left: leftNo, right: null }; }
-    if (l.type === "added")   { rightNo++; return { left: null, right: rightNo }; }
+    if (l.type === "added") { rightNo++; return { left: null, right: rightNo }; }
     leftNo++; rightNo++;
     return { left: leftNo, right: rightNo };
   });
@@ -237,63 +237,63 @@ function DiffViewer({ lines, fullscreen, wrap }: { lines: DiffLine[]; fullscreen
   return (
     <div className={cn("flex bg-slate-950 overflow-hidden", fullscreen ? "flex-1 min-h-0" : "max-h-[600px]")}>
       <div ref={scrollRef} className="flex-1 overflow-x-auto overflow-y-auto text-[11px] font-mono leading-5">
-      <table className="min-w-full border-collapse">
-        <tbody>
-          {hunks.map((item, hi) => {
-            if (item.type === "ellipsis") {
-              const si = item.startIdx;
-              lineIdx += item.count;
+        <table className="min-w-full border-collapse">
+          <tbody>
+            {hunks.map((item, hi) => {
+              if (item.type === "ellipsis") {
+                const si = item.startIdx;
+                lineIdx += item.count;
+                return (
+                  <tr key={`e-${hi}`} className="bg-slate-900">
+                    <td colSpan={4} className="py-0.5 px-3 text-center">
+                      <button
+                        onClick={() => setExpanded((prev) => { const s = new Set(prev); s.has(si) ? s.delete(si) : s.add(si); return s; })}
+                        className="text-sky-500 hover:text-sky-300 text-[10px]"
+                      >
+                        {expanded.has(si)
+                          ? "▲ collapse"
+                          : `▼ ${item.count} unchanged line${item.count !== 1 ? "s" : ""}`}
+                      </button>
+                      {expanded.has(si) && lines.slice(si, si + item.count).map((l, j) => {
+                        const { left, right } = lineNums[si + j];
+                        return (
+                          <div key={j} className="text-left flex">
+                            <span className="select-none text-slate-600 text-right w-10 border-r border-slate-800 px-2">{left}</span>
+                            <span className="select-none text-slate-600 text-right w-10 border-r border-slate-800 px-2">{right}</span>
+                            <span className="select-none w-4 px-1 text-slate-600"> </span>
+                            <span
+                              className={cn("px-2 text-slate-500", wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre")}
+                              dangerouslySetInnerHTML={{ __html: highlightLine(l.content) }}
+                            />
+                          </div>
+                        );
+                      })}
+                    </td>
+                  </tr>
+                );
+              }
+
+              const l = item as DiffLine;
+              const { left, right } = lineNums[lineIdx++];
+              const bg = l.type === "added" ? "bg-emerald-950" : l.type === "removed" ? "bg-red-950" : "";
+              const pfxColor = l.type === "added" ? "text-emerald-400" : l.type === "removed" ? "text-red-400" : "text-slate-600";
+              const textColor = l.type === "added" ? "text-emerald-300" : l.type === "removed" ? "text-red-300" : "text-slate-400";
+              const prefix = l.type === "added" ? "+" : l.type === "removed" ? "-" : " ";
+
               return (
-                <tr key={`e-${hi}`} className="bg-slate-900">
-                  <td colSpan={4} className="py-0.5 px-3 text-center">
-                    <button
-                      onClick={() => setExpanded((prev) => { const s = new Set(prev); s.has(si) ? s.delete(si) : s.add(si); return s; })}
-                      className="text-sky-500 hover:text-sky-300 text-[10px]"
-                    >
-                      {expanded.has(si)
-                        ? "▲ collapse"
-                        : `▼ ${item.count} unchanged line${item.count !== 1 ? "s" : ""}`}
-                    </button>
-                    {expanded.has(si) && lines.slice(si, si + item.count).map((l, j) => {
-                      const { left, right } = lineNums[si + j];
-                      return (
-                        <div key={j} className="text-left flex">
-                          <span className="select-none text-slate-600 text-right w-10 border-r border-slate-800 px-2">{left}</span>
-                          <span className="select-none text-slate-600 text-right w-10 border-r border-slate-800 px-2">{right}</span>
-                          <span className="select-none w-4 px-1 text-slate-600"> </span>
-                          <span
-                            className={cn("px-2 text-slate-500", wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre")}
-                            dangerouslySetInnerHTML={{ __html: highlightLine(l.content) }}
-                          />
-                        </div>
-                      );
-                    })}
-                  </td>
+                <tr key={`l-${hi}`} className={bg}>
+                  <td className="select-none text-slate-600 text-right px-2 py-0 w-10 border-r border-slate-800">{left ?? ""}</td>
+                  <td className="select-none text-slate-600 text-right px-2 py-0 w-10 border-r border-slate-800">{right ?? ""}</td>
+                  <td className={cn("px-1 py-0 select-none w-4", pfxColor)}>{prefix}</td>
+                  <td
+                    className={cn("px-2 py-0", wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre", textColor)}
+                    dangerouslySetInnerHTML={{ __html: highlightLine(l.content) }}
+                  />
                 </tr>
               );
-            }
-
-            const l = item as DiffLine;
-            const { left, right } = lineNums[lineIdx++];
-            const bg = l.type === "added" ? "bg-emerald-950" : l.type === "removed" ? "bg-red-950" : "";
-            const pfxColor = l.type === "added" ? "text-emerald-400" : l.type === "removed" ? "text-red-400" : "text-slate-600";
-            const textColor = l.type === "added" ? "text-emerald-300" : l.type === "removed" ? "text-red-300" : "text-slate-400";
-            const prefix = l.type === "added" ? "+" : l.type === "removed" ? "-" : " ";
-
-            return (
-              <tr key={`l-${hi}`} className={bg}>
-                <td className="select-none text-slate-600 text-right px-2 py-0 w-10 border-r border-slate-800">{left ?? ""}</td>
-                <td className="select-none text-slate-600 text-right px-2 py-0 w-10 border-r border-slate-800">{right ?? ""}</td>
-                <td className={cn("px-1 py-0 select-none w-4", pfxColor)}>{prefix}</td>
-                <td
-                  className={cn("px-2 py-0", wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre", textColor)}
-                  dangerouslySetInnerHTML={{ __html: highlightLine(l.content) }}
-                />
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+            })}
+          </tbody>
+        </table>
       </div>
       <DiffMinimap lines={lines} scrollRef={scrollRef} />
     </div>
@@ -345,9 +345,9 @@ function buildAlignedRows(diffLines: DiffLine[], mode: DiffMode): AlignedRow[] {
       const removed: string[] = [];
       const added: string[] = [];
       while (i < diffLines.length && diffLines[i].type === "removed") { removed.push(diffLines[i].content); i++; }
-      while (i < diffLines.length && diffLines[i].type === "added")   { added.push(diffLines[i].content);   i++; }
+      while (i < diffLines.length && diffLines[i].type === "added") { added.push(diffLines[i].content); i++; }
 
-      const leftCol  = mode === "dry-run" ? added   : removed;
+      const leftCol = mode === "dry-run" ? added : removed;
       const rightCol = mode === "dry-run" ? removed : added;
 
       const len = Math.max(leftCol.length, rightCol.length);
@@ -357,9 +357,9 @@ function buildAlignedRows(diffLines: DiffLine[], mode: DiffMode): AlignedRow[] {
         if (hasL) leftNo++;
         if (hasR) rightNo++;
         rows.push({
-          leftContent:  hasL ? leftCol[j]  : undefined,
+          leftContent: hasL ? leftCol[j] : undefined,
           rightContent: hasR ? rightCol[j] : undefined,
-          leftNo:  hasL ? leftNo  : undefined,
+          leftNo: hasL ? leftNo : undefined,
           rightNo: hasR ? rightNo : undefined,
           type: hasL && hasR ? "changed" : hasL ? "leftOnly" : "rightOnly",
         });
@@ -394,18 +394,18 @@ function SideBySideViewer({
   const sourceContent = mode === "dry-run" ? remoteContent : localContent;
   const targetContent = mode === "dry-run" ? localContent : remoteContent;
   const alignedRows = diffLines && diffLines.length > 0 ? buildAlignedRows(diffLines, mode) : null;
-  const leftScrollRef  = useRef<HTMLDivElement>(null);
+  const leftScrollRef = useRef<HTMLDivElement>(null);
   const rightScrollRef = useRef<HTMLDivElement>(null);
 
   // Sync scroll: whichever pane the user scrolls, mirror to the other
   useEffect(() => {
-    const left  = leftScrollRef.current;
+    const left = leftScrollRef.current;
     const right = rightScrollRef.current;
     if (!left || !right) return;
     let syncing = false;
-    function onLeft()  { if (syncing) return; syncing = true; right!.scrollTop = left!.scrollTop;  syncing = false; }
-    function onRight() { if (syncing) return; syncing = true; left!.scrollTop  = right!.scrollTop; syncing = false; }
-    left.addEventListener("scroll",  onLeft,  { passive: true });
+    function onLeft() { if (syncing) return; syncing = true; right!.scrollTop = left!.scrollTop; syncing = false; }
+    function onRight() { if (syncing) return; syncing = true; left!.scrollTop = right!.scrollTop; syncing = false; }
+    left.addEventListener("scroll", onLeft, { passive: true });
     right.addEventListener("scroll", onRight, { passive: true });
     return () => { left.removeEventListener("scroll", onLeft); right.removeEventListener("scroll", onRight); };
   }, []);
@@ -454,31 +454,31 @@ type PaneStyle = {
 const PANE_STYLES: Record<DiffMode, PaneStyle> = {
   compare: {
     bg: {
-      context:   { left: "",              right: ""              },
-      leftOnly:  { left: "bg-red-950",    right: "bg-slate-900"  },
-      rightOnly: { left: "bg-slate-900",  right: "bg-emerald-950"},
-      changed:   { left: "bg-red-950",    right: "bg-emerald-950"},
+      context: { left: "", right: "" },
+      leftOnly: { left: "bg-red-950", right: "bg-slate-900" },
+      rightOnly: { left: "bg-slate-900", right: "bg-emerald-950" },
+      changed: { left: "bg-red-950", right: "bg-emerald-950" },
     },
     text: {
-      context:   { left: "text-slate-400",  right: "text-slate-400"  },
-      leftOnly:  { left: "text-red-300",    right: "text-slate-600"  },
-      rightOnly: { left: "text-slate-600",  right: "text-emerald-300"},
-      changed:   { left: "text-red-300",    right: "text-emerald-300"},
+      context: { left: "text-slate-400", right: "text-slate-400" },
+      leftOnly: { left: "text-red-300", right: "text-slate-600" },
+      rightOnly: { left: "text-slate-600", right: "text-emerald-300" },
+      changed: { left: "text-red-300", right: "text-emerald-300" },
     },
     prefix: { left: "-", right: "+" },
   },
   "dry-run": {
     bg: {
-      context:   { left: "",                right: ""                },
-      leftOnly:  { left: "bg-emerald-950",  right: "bg-slate-900"    },
-      rightOnly: { left: "bg-slate-900",    right: "bg-red-950"      },
-      changed:   { left: "bg-emerald-950",  right: "bg-red-950"      },
+      context: { left: "", right: "" },
+      leftOnly: { left: "bg-emerald-950", right: "bg-slate-900" },
+      rightOnly: { left: "bg-slate-900", right: "bg-red-950" },
+      changed: { left: "bg-emerald-950", right: "bg-red-950" },
     },
     text: {
-      context:   { left: "text-slate-400",    right: "text-slate-400"  },
-      leftOnly:  { left: "text-emerald-300",  right: "text-slate-600"  },
-      rightOnly: { left: "text-slate-600",    right: "text-red-300"    },
-      changed:   { left: "text-emerald-300",  right: "text-red-300"    },
+      context: { left: "text-slate-400", right: "text-slate-400" },
+      leftOnly: { left: "text-emerald-300", right: "text-slate-600" },
+      rightOnly: { left: "text-slate-600", right: "text-red-300" },
+      changed: { left: "text-emerald-300", right: "text-red-300" },
     },
     prefix: { left: "+", right: "-" },
   },
@@ -508,14 +508,14 @@ function FilePane({
           <table className="min-w-full border-collapse">
             <tbody>
               {rows.map((row, i) => {
-                const lineNo   = side === "left" ? row.leftNo  : row.rightNo;
+                const lineNo = side === "left" ? row.leftNo : row.rightNo;
                 const lineText = side === "left" ? row.leftContent : row.rightContent;
-                const bg   = style.bg[row.type][side];
+                const bg = style.bg[row.type][side];
                 const text = style.text[row.type][side];
                 const hasContent = side === "left" ? row.leftContent !== undefined : row.rightContent !== undefined;
                 const prefix = row.type === "context" ? " "
                   : hasContent ? style.prefix[side]
-                  : " ";
+                    : " ";
                 const pfxColor = prefix === "-" ? "text-red-500" : prefix === "+" ? "text-emerald-400" : "text-slate-600";
                 return (
                   <tr key={i} className={bg}>
@@ -607,10 +607,10 @@ function resolveDisplayName(file: FileDiff): { name: string; detail: string } {
 type ViewMode = "diff" | "files";
 
 const STATUS_STYLES: Record<FileDiff["status"], { badge: string; icon: string }> = {
-  added:     { badge: "bg-emerald-100 text-emerald-700 border border-emerald-200", icon: "A" },
-  removed:   { badge: "bg-red-100 text-red-700 border border-red-200",             icon: "D" },
-  modified:  { badge: "bg-amber-100 text-amber-700 border border-amber-200",        icon: "M" },
-  unchanged: { badge: "bg-slate-100 text-slate-500 border border-slate-200",        icon: "=" },
+  added: { badge: "bg-emerald-100 text-emerald-700 border border-emerald-200", icon: "A" },
+  removed: { badge: "bg-red-100 text-red-700 border border-red-200", icon: "D" },
+  modified: { badge: "bg-amber-100 text-amber-700 border border-amber-200", icon: "M" },
+  unchanged: { badge: "bg-slate-100 text-slate-500 border border-slate-200", icon: "=" },
 };
 
 /** Auth scripts (under scripts-content/) and endpoint script files look
@@ -635,25 +635,25 @@ function FileRow({ file, sourceLabel, targetLabel, extraActions, checked, onTogg
   // "decoded" so the diff operates on human-readable values.
   const [esvMode] = useEsvDisplayMode();
   const esvDecode = isEsvPath(file.relativePath) && esvMode === "decoded";
-  const baseLocal  = esvDecode && file.localContent  != null ? decodeEsvContent(file.localContent)  : file.localContent;
+  const baseLocal = esvDecode && file.localContent != null ? decodeEsvContent(file.localContent) : file.localContent;
   const baseRemote = esvDecode && file.remoteContent != null ? decodeEsvContent(file.remoteContent) : file.remoteContent;
 
   // When format is on, pretty-print both sides and recompute diffLines client-side
-  const fmtLocal    = format && baseLocal  != null ? formatContent(baseLocal,  file.relativePath) : baseLocal;
-  const fmtRemote   = format && baseRemote != null ? formatContent(baseRemote, file.relativePath) : baseRemote;
+  const fmtLocal = format && baseLocal != null ? formatContent(baseLocal, file.relativePath) : baseLocal;
+  const fmtRemote = format && baseRemote != null ? formatContent(baseRemote, file.relativePath) : baseRemote;
   const fmtDiffLines: DiffLine[] | undefined = useMemo(() => {
     if (!format && !esvDecode) return file.diffLines;
     if (fmtLocal != null && fmtRemote != null) return clientDiff(fmtLocal, fmtRemote);
-    if (fmtRemote != null) return fmtRemote.split("\n").map((c) => ({ type: "added"   as const, content: c }));
-    if (fmtLocal  != null) return fmtLocal.split("\n").map((c)  => ({ type: "removed" as const, content: c }));
+    if (fmtRemote != null) return fmtRemote.split("\n").map((c) => ({ type: "added" as const, content: c }));
+    if (fmtLocal != null) return fmtLocal.split("\n").map((c) => ({ type: "removed" as const, content: c }));
     return file.diffLines;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [format, esvDecode, fmtLocal, fmtRemote]);
   const s = STATUS_STYLES[file.status];
   const hasDiff = !!file.diffLines?.length;
   const hasContent = file.localContent !== undefined || file.remoteContent !== undefined;
 
-  const added   = file.linesAdded   ?? 0;
+  const added = file.linesAdded ?? 0;
   const removed = file.linesRemoved ?? 0;
 
   const { name: displayName, detail: displayDetail } = resolveDisplayName(file);
@@ -686,7 +686,7 @@ function FileRow({ file, sourceLabel, targetLabel, extraActions, checked, onTogg
           </span>
           {(added > 0 || removed > 0) && (
             <span className="shrink-0 flex items-center gap-1.5 text-xs font-mono">
-              {added   > 0 && <span className="text-emerald-400">+{added}</span>}
+              {added > 0 && <span className="text-emerald-400">+{added}</span>}
               {removed > 0 && <span className="text-red-400">−{removed}</span>}
             </span>
           )}
@@ -777,7 +777,7 @@ function FileRow({ file, sourceLabel, targetLabel, extraActions, checked, onTogg
 
         {(added > 0 || removed > 0) && (
           <span className="shrink-0 flex items-center gap-1.5 text-[10px] font-mono">
-            {added   > 0 && <span className="text-emerald-600">+{added}</span>}
+            {added > 0 && <span className="text-emerald-600">+{added}</span>}
             {removed > 0 && <span className="text-red-500">−{removed}</span>}
           </span>
         )}
@@ -988,9 +988,9 @@ function groupByScope(files: FileDiff[]): ScopeGroup[] {
 
   return Array.from(map.entries())
     .map(([scope, scopeFiles]) => {
-      const fileAdded     = scopeFiles.filter((f) => f.status === "added").length;
-      const fileModified  = scopeFiles.filter((f) => f.status === "modified").length;
-      const fileRemoved   = scopeFiles.filter((f) => f.status === "removed").length;
+      const fileAdded = scopeFiles.filter((f) => f.status === "added").length;
+      const fileModified = scopeFiles.filter((f) => f.status === "modified").length;
+      const fileRemoved = scopeFiles.filter((f) => f.status === "removed").length;
       const fileUnchanged = scopeFiles.filter((f) => f.status === "unchanged").length;
 
       // For dir-based scopes, compute item-level counts (dedup by item directory).
@@ -1052,7 +1052,7 @@ function Pagination({
 
   if (total === 0) return null;
   const start = page * pageSize + 1;
-  const end   = Math.min((page + 1) * pageSize, total);
+  const end = Math.min((page + 1) * pageSize, total);
 
   function commitPageInput() {
     const n = parseInt(inputVal, 10);
@@ -1171,10 +1171,10 @@ function StatusGroup({
 // ── Journey tree view ────────────────────────────────────────────────────────
 
 const JOURNEY_STATUS_STYLES: Record<string, { dot: string; badge: string; label: string }> = {
-  modified:  { dot: "bg-amber-400",   badge: "bg-amber-100 text-amber-700 border-amber-200", label: "M" },
-  added:     { dot: "bg-emerald-400", badge: "bg-emerald-100 text-emerald-700 border-emerald-200", label: "A" },
-  removed:   { dot: "bg-red-400",     badge: "bg-red-100 text-red-700 border-red-200", label: "D" },
-  unchanged: { dot: "bg-slate-300",   badge: "bg-slate-100 text-slate-500 border-slate-200", label: "—" },
+  modified: { dot: "bg-amber-400", badge: "bg-amber-100 text-amber-700 border-amber-200", label: "M" },
+  added: { dot: "bg-emerald-400", badge: "bg-emerald-100 text-emerald-700 border-emerald-200", label: "A" },
+  removed: { dot: "bg-red-400", badge: "bg-red-100 text-red-700 border-red-200", label: "D" },
+  unchanged: { dot: "bg-slate-300", badge: "bg-slate-100 text-slate-500 border-slate-200", label: "—" },
 };
 
 function findScriptFiles(files: FileDiff[], uuid: string, name: string): FileDiff[] {
@@ -1221,6 +1221,7 @@ async function findNodeIdForScript(
 }
 
 type ScriptUsageRef = { journey: string; nodeName: string; nodeType: string; nodeUuid: string; env: string };
+type ScriptImporterRef = { scriptName: string; scriptUuid: string; scriptType: string; env: string };
 
 function JourneyScriptRow({ sc, files, sourceLabel, targetLabel, journeyName, nodeInfos, sourceEnv, targetEnv, onViewInJourney }: {
   sc: JourneyScript;
@@ -1233,11 +1234,11 @@ function JourneyScriptRow({ sc, files, sourceLabel, targetLabel, journeyName, no
   targetEnv: string;
   onViewInJourney: (nodeId: string | null) => void;
 }) {
-  const [open, setOpen]             = useState(false);
-  const [finding, setFinding]       = useState(false);
-  const [usageOpen, setUsageOpen]   = useState(false);
+  const [open, setOpen] = useState(false);
+  const [finding, setFinding] = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false);
   const [usageLoading, setUsageLoading] = useState(false);
-  const [usageData, setUsageData]   = useState<ScriptUsageRef[] | null>(null);
+  const [usageData, setUsageData] = useState<ScriptUsageRef[] | null>(null);
 
   const ss = JOURNEY_STATUS_STYLES[sc.status] ?? JOURNEY_STATUS_STYLES.unchanged;
   const scriptFiles = useMemo(() => findScriptFiles(files, sc.uuid, sc.name), [files, sc.uuid, sc.name]);
@@ -1851,7 +1852,7 @@ function FilePreviewModal({ env, path, line, onClose }: { env: string; path: str
 
   const handleCopy = () => {
     if (!content) return;
-    navigator.clipboard.writeText(content).catch(() => {});
+    navigator.clipboard.writeText(content).catch(() => { });
   };
 
   return (
@@ -2025,10 +2026,11 @@ function ScriptScopeFileRow({ file, sourceLabel, targetLabel, sourceEnv, targetE
   fileTasks?: PromotionTask[];
   onRemoveFromTask?: (task: PromotionTask, path: string) => void;
 }) {
-  const [usageOpen, setUsageOpen]       = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false);
   const [usageLoading, setUsageLoading] = useState(false);
-  const [usageData, setUsageData]       = useState<ScriptUsageRef[] | null>(null);
-  const [graphTarget, setGraphTarget]   = useState<{ journeyName: string; nodeUuid: string } | null>(null);
+  const [usageData, setUsageData] = useState<ScriptUsageRef[] | null>(null);
+  const [usageScripts, setUsageScripts] = useState<ScriptImporterRef[] | null>(null);
+  const [graphTarget, setGraphTarget] = useState<{ journeyName: string; nodeUuid: string } | null>(null);
 
   // Extract UUID from config file path, or script name from content file path.
   // Config files (scripts-config/<uuid>.json) are skipped by the diff builder by default,
@@ -2061,24 +2063,37 @@ function ScriptScopeFileRow({ file, sourceLabel, targetLabel, sourceEnv, targetE
     try {
       const envs = [...new Set([sourceEnv, targetEnv].filter(Boolean))];
       const results = await Promise.all(
-        envs.map((env) => {
+        envs.map(async (env) => {
           const params = new URLSearchParams({ env });
           if (uuid) params.set("scriptId", uuid);
           else if (scriptName) params.set("scriptName", scriptName);
-          else return Promise.resolve([] as ScriptUsageRef[]);
-          return fetch(`/api/analyze/script-usage?${params}`)
-            .then((r) => r.json())
-            .then((d) => (d.usedBy ?? []).map((u: Omit<ScriptUsageRef, "env">) => ({ ...u, env })))
-            .catch(() => [] as ScriptUsageRef[]);
+          else return { refs: [] as ScriptUsageRef[], imps: [] as ScriptImporterRef[] };
+          try {
+            const r = await fetch(`/api/analyze/script-usage?${params}`);
+            const d = await r.json();
+            return {
+              refs: (d.usedBy ?? []).map((u: Omit<ScriptUsageRef, "env">) => ({ ...u, env })),
+              imps: (d.usedByScripts ?? []).map((u: Omit<ScriptImporterRef, "env">) => ({ ...u, env })),
+            };
+          } catch {
+            return { refs: [] as ScriptUsageRef[], imps: [] as ScriptImporterRef[] };
+          }
         })
       );
-      const seen = new Set<string>();
+      const seenJ = new Set<string>();
       const merged: ScriptUsageRef[] = [];
-      for (const ref of results.flat()) {
+      for (const ref of results.flatMap((r) => r.refs)) {
         const key = `${ref.journey}::${ref.nodeUuid}`;
-        if (!seen.has(key)) { seen.add(key); merged.push(ref); }
+        if (!seenJ.has(key)) { seenJ.add(key); merged.push(ref); }
+      }
+      const seenS = new Set<string>();
+      const mergedImps: ScriptImporterRef[] = [];
+      for (const ref of results.flatMap((r) => r.imps)) {
+        const key = `${ref.scriptUuid || ref.scriptName}::${ref.scriptType}`;
+        if (!seenS.has(key)) { seenS.add(key); mergedImps.push(ref); }
       }
       setUsageData(merged);
+      setUsageScripts(mergedImps);
     } finally {
       setUsageLoading(false);
     }
@@ -2120,31 +2135,52 @@ function ScriptScopeFileRow({ file, sourceLabel, targetLabel, sourceEnv, targetE
         <div className="mx-1 mb-1 px-2.5 py-2 rounded bg-violet-50 border border-violet-100 text-xs">
           {usageLoading ? (
             <p className="text-slate-400">Searching…</p>
-          ) : !usageData || usageData.length === 0 ? (
-            <p className="text-slate-400 italic">Not used in any journey.</p>
+          ) : (!usageData || usageData.length === 0) && (!usageScripts || usageScripts.length === 0) ? (
+            <p className="text-slate-400 italic">Not used in any journey or script.</p>
           ) : (
-            <div className="space-y-1">
-              <p className="text-[10px] text-violet-600 font-semibold uppercase tracking-wide mb-1">
-                Used in {usageData.length} {usageData.length === 1 ? "place" : "places"}
-              </p>
-              {usageData.map((ref, i) => (
-                <div key={i} className="flex items-center gap-2 text-[11px]">
-                  <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" />
-                  <button
-                    type="button"
-                    className="text-violet-700 font-medium hover:underline text-left"
-                    onClick={() => setGraphTarget({ journeyName: ref.journey, nodeUuid: ref.nodeUuid })}
-                  >
-                    {ref.journey}
-                  </button>
-                  <span className="text-slate-400">→</span>
-                  <span className="text-slate-600">{ref.nodeName}</span>
-                  <span className="text-[10px] text-slate-400 font-mono">{ref.nodeType}</span>
-                  {ref.env && (
-                    <span className="text-[9px] text-violet-500 bg-violet-100 px-1 rounded">{ref.env}</span>
-                  )}
+            <div className="space-y-2">
+              {usageData && usageData.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-[10px] text-violet-600 font-semibold uppercase tracking-wide mb-1">
+                    Used in {usageData.length} journey {usageData.length === 1 ? "node" : "nodes"}
+                  </p>
+                  {usageData.map((ref, i) => (
+                    <div key={i} className="flex items-center gap-2 text-[11px]">
+                      <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" />
+                      <button
+                        type="button"
+                        className="text-violet-700 font-medium hover:underline text-left"
+                        onClick={() => setGraphTarget({ journeyName: ref.journey, nodeUuid: ref.nodeUuid })}
+                      >
+                        {ref.journey}
+                      </button>
+                      <span className="text-slate-400">→</span>
+                      <span className="text-slate-600">{ref.nodeName}</span>
+                      <span className="text-[10px] text-slate-400 font-mono">{ref.nodeType}</span>
+                      {ref.env && (
+                        <span className="text-[9px] text-violet-500 bg-violet-100 px-1 rounded">{ref.env}</span>
+                      )}
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
+              {usageScripts && usageScripts.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-[10px] text-emerald-700 font-semibold uppercase tracking-wide mb-1">
+                    Imported by {usageScripts.length} {usageScripts.length === 1 ? "script" : "scripts"}
+                  </p>
+                  {usageScripts.map((ref, i) => (
+                    <div key={i} className="flex items-center gap-2 text-[11px]">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                      <span className="text-emerald-700 font-medium">{ref.scriptName}</span>
+                      <span className="text-[10px] text-slate-400 font-mono">{ref.scriptType}</span>
+                      {ref.env && (
+                        <span className="text-[9px] text-emerald-600 bg-emerald-100 px-1 rounded">{ref.env}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -2196,8 +2232,8 @@ function WorkflowGroupRow({
 }) {
   const [graphOpen, setGraphOpen] = useState(false);
 
-  const added    = changedFiles.filter((f) => f.status === "added").length;
-  const removed  = changedFiles.filter((f) => f.status === "removed").length;
+  const added = changedFiles.filter((f) => f.status === "added").length;
+  const removed = changedFiles.filter((f) => f.status === "removed").length;
   const modified = changedFiles.filter((f) => f.status === "modified").length;
 
   const workflowDiffFiles = useMemo(
@@ -2225,8 +2261,8 @@ function WorkflowGroupRow({
         {/* Diff badges */}
         <div className="flex items-center gap-1 text-[9px] font-mono shrink-0">
           {modified > 0 && <span className="px-1 py-0.5 rounded bg-amber-100 text-amber-700">{modified} modified</span>}
-          {added    > 0 && <span className="px-1 py-0.5 rounded bg-emerald-100 text-emerald-700">{added} added</span>}
-          {removed  > 0 && <span className="px-1 py-0.5 rounded bg-red-100 text-red-700">{removed} removed</span>}
+          {added > 0 && <span className="px-1 py-0.5 rounded bg-emerald-100 text-emerald-700">{added} added</span>}
+          {removed > 0 && <span className="px-1 py-0.5 rounded bg-red-100 text-red-700">{removed} removed</span>}
         </div>
         {/* Graph button */}
         <button
@@ -2293,8 +2329,8 @@ function AllFilesModalScopeSection({
         <div className="flex items-center gap-2 text-[10px] font-mono shrink-0">
           <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{group.itemCount} total</span>
           {group.itemModified > 0 && <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{group.itemModified} modified</span>}
-          {group.itemAdded > 0    && <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">{group.itemAdded} added</span>}
-          {group.itemRemoved > 0  && <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-700">{group.itemRemoved} removed</span>}
+          {group.itemAdded > 0 && <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">{group.itemAdded} added</span>}
+          {group.itemRemoved > 0 && <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-700">{group.itemRemoved} removed</span>}
           {group.itemUnchanged > 0 && <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{group.itemUnchanged} unchanged</span>}
         </div>
         <span className="text-slate-400 text-xs shrink-0">{open ? "▲" : "▼"}</span>
@@ -2305,10 +2341,10 @@ function AllFilesModalScopeSection({
           <div className="px-3 pt-3 pb-2 flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
             <div className="flex rounded border border-slate-300 overflow-hidden text-[10px] shrink-0">
               {([
-                { value: "all"       as const, label: `All (${group.files.length})` },
-                { value: "modified"  as const, label: `Modified (${group.modified})` },
-                { value: "added"     as const, label: `Added (${group.added})` },
-                { value: "removed"   as const, label: `Removed (${group.removed})` },
+                { value: "all" as const, label: `All (${group.files.length})` },
+                { value: "modified" as const, label: `Modified (${group.modified})` },
+                { value: "added" as const, label: `Added (${group.added})` },
+                { value: "removed" as const, label: `Removed (${group.removed})` },
                 { value: "unchanged" as const, label: `Unchanged (${group.unchanged})` },
               ]).map((f) => (
                 <button
@@ -2935,10 +2971,10 @@ function ScopeSection({
                 {/* Status filter pills */}
                 <div className="flex rounded border border-slate-300 overflow-hidden text-[10px] shrink-0">
                   {([
-                    { value: "all"      as const, label: `All (${hideUnchanged ? totalChanged : group.files.length})` },
+                    { value: "all" as const, label: `All (${hideUnchanged ? totalChanged : group.files.length})` },
                     { value: "modified" as const, label: `Modified (${group.modified})` },
-                    { value: "added"    as const, label: `Added (${group.added})` },
-                    { value: "removed"  as const, label: `Removed (${group.removed})` },
+                    { value: "added" as const, label: `Added (${group.added})` },
+                    { value: "removed" as const, label: `Removed (${group.removed})` },
                   ]).map((f) => (
                     <button
                       key={f.value}
@@ -3322,289 +3358,289 @@ export function DiffReport({ report, tasks = [], mode = "compare", dryRunMode, s
 
   return (
     <DiffModeContext.Provider value={effectiveMode}>
-    <div className="card overflow-hidden">
-      {/* Header */}
-      <div className="px-5 py-4 border-b border-slate-100 space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-slate-800">
-            <span className="font-mono">{sourceLabel}</span>
-            <span className="mx-1.5 text-slate-400">→</span>
-            <span className="font-mono">{targetLabel}</span>
-          </h2>
-          <span className="text-xs text-slate-400">{new Date(report.generatedAt).toLocaleString()}</span>
-        </div>
-
-        {/* Stats cards */}
-        <div className="flex flex-wrap gap-3">
-          <Stat count={itemSummary.modified}  label="Modified"  color="text-amber-700"   bg="bg-amber-50" />
-          <Stat count={itemSummary.added}     label="Added"     color="text-emerald-700" bg="bg-emerald-50" />
-          <Stat count={itemSummary.removed}   label="Removed"   color="text-rose-700"    bg="bg-rose-50" />
-          <Stat count={itemSummary.unchanged} label="Unchanged" color="text-slate-500"   bg="bg-slate-50" />
-          <div className="ml-auto flex items-center gap-3 self-center">
-            <span className="text-xs text-slate-400">
-              {totalItems} item{totalItems !== 1 ? "s" : ""} · {scopeGroups.length} scope{scopeGroups.length !== 1 ? "s" : ""}
-            </span>
-            <button
-              type="button"
-              onClick={() => setAllFilesModalOpen(true)}
-              className="px-2.5 py-1 text-xs font-medium rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 hover:border-slate-400 transition-colors"
-            >
-              View all
-            </button>
-          </div>
-        </div>
-
-        {/* Filters (always visible) */}
-        <div className="flex flex-wrap items-center gap-4 pt-3 border-t border-slate-100 mt-2">
-          <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={hideUnchanged}
-              onChange={(e) => setHideUnchanged(e.target.checked)}
-              className="accent-sky-600"
-            />
-            Hide unchanged files
-          </label>
-          <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={hideMetadata}
-              onChange={(e) => setHideMetadata(e.target.checked)}
-              className="accent-sky-600"
-            />
-            Hide metadata files
-          </label>
-          <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer select-none" title="Filter ESV variables/secrets to those actually referenced in the source environment">
-            <input
-              type="checkbox"
-              checked={onlyUsedEsvs}
-              onChange={(e) => setOnlyUsedEsvs(e.target.checked)}
-              className="accent-sky-600"
-            />
-            Only used ESVs
-            {usedEsvsLoading && <span className="text-[10px] text-slate-400">loading…</span>}
-          </label>
-
-          <div className="flex items-center gap-1.5 text-xs text-slate-500">
-            <span>ESV values:</span>
-            <EsvDisplayToggle mode={esvMode} onChange={setEsvMode} />
+      <div className="card overflow-hidden">
+        {/* Header */}
+        <div className="px-5 py-4 border-b border-slate-100 space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-slate-800">
+              <span className="font-mono">{sourceLabel}</span>
+              <span className="mx-1.5 text-slate-400">→</span>
+              <span className="font-mono">{targetLabel}</span>
+            </h2>
+            <span className="text-xs text-slate-400">{new Date(report.generatedAt).toLocaleString()}</span>
           </div>
 
-          <div className="flex items-center gap-1.5">
-            <svg className="w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" />
-            </svg>
-            <input
-              type="text"
-              value={scopeSearch}
-              onChange={(e) => setScopeSearch(e.target.value)}
-              placeholder="Filter scopes…"
-              className="text-xs px-2 py-1 rounded border border-slate-300 focus:outline-none focus:ring-2 focus:ring-sky-500 w-44"
-            />
-            {scopeSearch && (
+          {/* Stats cards */}
+          <div className="flex flex-wrap gap-3">
+            <Stat count={itemSummary.modified} label="Modified" color="text-amber-700" bg="bg-amber-50" />
+            <Stat count={itemSummary.added} label="Added" color="text-emerald-700" bg="bg-emerald-50" />
+            <Stat count={itemSummary.removed} label="Removed" color="text-rose-700" bg="bg-rose-50" />
+            <Stat count={itemSummary.unchanged} label="Unchanged" color="text-slate-500" bg="bg-slate-50" />
+            <div className="ml-auto flex items-center gap-3 self-center">
+              <span className="text-xs text-slate-400">
+                {totalItems} item{totalItems !== 1 ? "s" : ""} · {scopeGroups.length} scope{scopeGroups.length !== 1 ? "s" : ""}
+              </span>
               <button
                 type="button"
-                onClick={() => setScopeSearch("")}
-                className="text-slate-400 hover:text-slate-600 text-xs"
-                title="Clear scope filter"
+                onClick={() => setAllFilesModalOpen(true)}
+                className="px-2.5 py-1 text-xs font-medium rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 hover:border-slate-400 transition-colors"
               >
-                ✕
+                View all
               </button>
-            )}
+            </div>
           </div>
 
-        </div>
-      </div>
+          {/* Filters (always visible) */}
+          <div className="flex flex-wrap items-center gap-4 pt-3 border-t border-slate-100 mt-2">
+            <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={hideUnchanged}
+                onChange={(e) => setHideUnchanged(e.target.checked)}
+                className="accent-sky-600"
+              />
+              Hide unchanged files
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={hideMetadata}
+                onChange={(e) => setHideMetadata(e.target.checked)}
+                className="accent-sky-600"
+              />
+              Hide metadata files
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer select-none" title="Filter ESV variables/secrets to those actually referenced in the source environment">
+              <input
+                type="checkbox"
+                checked={onlyUsedEsvs}
+                onChange={(e) => setOnlyUsedEsvs(e.target.checked)}
+                className="accent-sky-600"
+              />
+              Only used ESVs
+              {usedEsvsLoading && <span className="text-[10px] text-slate-400">loading…</span>}
+            </label>
 
-      {/* Scope sections */}
-      <div className="p-5 space-y-3">
-        {changedCount === 0 && itemSummary.unchanged === 0 ? (
-          <p className="text-sm text-slate-500 text-center py-4">
-            No files to display.
-          </p>
-        ) : (
-          <>
-            {/* Journey tree (shown first if available) — only when journeys
+            <div className="flex items-center gap-1.5 text-xs text-slate-500">
+              <span>ESV values:</span>
+              <EsvDisplayToggle mode={esvMode} onChange={setEsvMode} />
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <svg className="w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" />
+              </svg>
+              <input
+                type="text"
+                value={scopeSearch}
+                onChange={(e) => setScopeSearch(e.target.value)}
+                placeholder="Filter scopes…"
+                className="text-xs px-2 py-1 rounded border border-slate-300 focus:outline-none focus:ring-2 focus:ring-sky-500 w-44"
+              />
+              {scopeSearch && (
+                <button
+                  type="button"
+                  onClick={() => setScopeSearch("")}
+                  className="text-slate-400 hover:text-slate-600 text-xs"
+                  title="Clear scope filter"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+          </div>
+        </div>
+
+        {/* Scope sections */}
+        <div className="p-5 space-y-3">
+          {changedCount === 0 && itemSummary.unchanged === 0 ? (
+            <p className="text-sm text-slate-500 text-center py-4">
+              No files to display.
+            </p>
+          ) : (
+            <>
+              {/* Journey tree (shown first if available) — only when journeys
                 was an actually-selected scope for this compare run. If the
                 user didn't include journeys in their scope selection, suppress
                 the tree even if the backend populated it. */}
-            {journeysVisible && report.journeyTree && report.journeyTree.length > 0 && scopeGroups.some((g) => g.scope === "journeys") && (
-              <JourneyTreeSection tree={report.journeyTree} forceOpen={allOpen} forceSeq={allOpenSeq} files={files} sourceLabel={sourceLabel} targetLabel={targetLabel} sourceEnv={report.source.environment} targetEnv={report.target.environment} selectedPaths={selectedPaths} onTogglePath={togglePath} hideUnchanged={hideUnchanged} />
-            )}
-
-            {/* Non-journey scope sections (journeys are shown above in the tree) */}
-            {visibleScopeGroups.length === 0 && scopeSearch && (
-              <p className="text-sm text-slate-400 text-center py-4">No scopes match &ldquo;{scopeSearch}&rdquo;.</p>
-            )}
-            {visibleScopeGroups.map((group) => (
-              <ScopeSection
-                key={group.scope}
-                group={group}
-                sourceLabel={sourceLabel}
-                targetLabel={targetLabel}
-                forceOpen={allOpen}
-                forceSeq={allOpenSeq}
-                sourceEnv={report.source.environment}
-                targetEnv={report.target.environment}
-                allFiles={report.files}
-                selectedPaths={selectedPaths}
-                onTogglePath={togglePath}
-                hideUnchanged={hideUnchanged}
-                hideMetadata={hideMetadata}
-                eligibleTasks={eligibleTasks}
-                onRemoveFromTask={handleRemoveFromTask}
-              />
-            ))}
-          </>
-        )}
-        {!hideUnchanged && itemSummary.unchanged > 0 && (
-          <p className="text-xs text-slate-400 text-center pt-2">
-            {itemSummary.unchanged} item{itemSummary.unchanged !== 1 ? "s" : ""} unchanged
-          </p>
-        )}
-      </div>
-
-      {allFilesModalOpen && (
-        <AllFilesModal
-          scopeGroups={scopeGroups}
-          sourceLabel={sourceLabel}
-          targetLabel={targetLabel}
-          sourceEnv={report.source.environment}
-          targetEnv={report.target.environment}
-          allFiles={report.files}
-          selectedPaths={selectedPaths}
-          onTogglePath={togglePath}
-          onClose={() => setAllFilesModalOpen(false)}
-        />
-      )}
-
-      {/* Task drawer */}
-      {drawerOpen && (
-        <TaskItemsDrawer
-          eligibleTasks={eligibleTasks}
-          selectedPaths={selectedPaths}
-          onClose={() => setDrawerOpen(false)}
-          onUnselect={(path) => togglePath(path)}
-          onClearSelection={() => setSelectedPaths(new Set())}
-          onAddSelectedToTask={(task) => handleAddToTask(task)}
-          onRemoveItemFromTask={(task, path) => handleRemoveFromTask(task, path)}
-          onRemoveScopeFromTask={(task, scope) => {
-            const next = task.items.filter((s) => s.scope !== scope);
-            handleRemoveFromTask(task, next);
-          }}
-          onRemoveBulkFromTask={(task, paths) => {
-            let items = task.items;
-            for (const p of paths) items = removeItemFromTaskItems(p, items);
-            handleRemoveFromTask(task, items);
-          }}
-          onClearTask={(task) => handleRemoveFromTask(task, [])}
-        />
-      )}
-
-      {/* Floating action bar */}
-      {(selectedCount > 0 || addSuccess || addError) && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2">
-          {addSuccess && (
-            <div className="bg-emerald-600 text-white rounded-full shadow-lg px-4 py-2 text-xs font-medium whitespace-nowrap">
-              ✓ Added to &quot;{addSuccess}&quot;
-            </div>
-          )}
-          {addError && (
-            <div className="bg-white border border-rose-200 rounded-xl shadow-xl px-4 py-3 text-xs text-slate-700 max-w-lg">
-              <div className="flex items-start gap-2">
-                <svg className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M4.93 19h14.14c1.54 0 2.5-1.67 1.73-3L13.73 4a2 2 0 00-3.46 0L3.2 16c-.77 1.33.19 3 1.73 3z" />
-                </svg>
-                <div className="flex-1 min-w-0">
-                  <div className="font-semibold text-rose-700 mb-1">
-                    Can&apos;t add {addError.missing.length} item{addError.missing.length === 1 ? "" : "s"} to &quot;{addError.task}&quot;
-                  </div>
-                  <div className="text-slate-500 mb-2">
-                    The following don&apos;t exist on the task&apos;s source ({report.source.environment}):
-                  </div>
-                  <ul className="font-mono text-[11px] text-slate-700 space-y-0.5 max-h-40 overflow-y-auto pr-2">
-                    {addError.missing.map((p) => (
-                      <li key={p} className="truncate" title={p}>• {p}</li>
-                    ))}
-                  </ul>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setAddError(null)}
-                  aria-label="Dismiss"
-                  className="text-slate-400 hover:text-slate-600 shrink-0 -mt-0.5 -mr-1 text-lg leading-none"
-                >
-                  ×
-                </button>
-              </div>
-            </div>
-          )}
-          {selectedCount > 0 && (
-            <div className="bg-white border border-slate-200 rounded-full shadow-lg px-3 py-2 flex items-center gap-3 text-xs">
-              <span className="text-slate-700 font-medium whitespace-nowrap">
-                {selectedCount} item{selectedCount !== 1 ? "s" : ""} selected
-                {selectedScopeCount > 1 && <span className="text-slate-400"> · {selectedScopeCount} scopes</span>}
-              </span>
-
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); setTaskDropdownOpen((o) => !o); }}
-                  disabled={addingToTask || eligibleTasks.length === 0}
-                  className="flex items-center gap-1 px-3 py-1 bg-sky-600 text-white rounded-full text-xs font-medium hover:bg-sky-700 disabled:opacity-50 transition-colors whitespace-nowrap"
-                >
-                  {addingToTask ? "Adding…" : "Add to task"}
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-                {taskDropdownOpen && (
-                  <div
-                    onClick={(e) => e.stopPropagation()}
-                    className="absolute bottom-full mb-1.5 left-0 bg-white border border-slate-200 rounded-lg shadow-xl min-w-[200px] py-1 z-50"
-                  >
-                    {eligibleTasks.length === 0 ? (
-                      <p className="px-3 py-2 text-xs text-slate-400 italic">No matching tasks</p>
-                    ) : eligibleTasks.map((t) => (
-                      <button
-                        key={t.id}
-                        type="button"
-                        onClick={() => handleAddToTask(t)}
-                        className="w-full text-left px-3 py-2 text-xs hover:bg-slate-50 transition-colors"
-                      >
-                        <span className="font-medium text-slate-700">{t.name}</span>
-                        {t.items.length > 0 && (
-                          <span className="ml-1.5 text-slate-400">({t.items.length} scope{t.items.length !== 1 ? "s" : ""})</span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              {eligibleTasks.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setDrawerOpen(true)}
-                  className="flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors whitespace-nowrap"
-                >
-                  Manage items
-                </button>
+              {journeysVisible && report.journeyTree && report.journeyTree.length > 0 && scopeGroups.some((g) => g.scope === "journeys") && (
+                <JourneyTreeSection tree={report.journeyTree} forceOpen={allOpen} forceSeq={allOpenSeq} files={files} sourceLabel={sourceLabel} targetLabel={targetLabel} sourceEnv={report.source.environment} targetEnv={report.target.environment} selectedPaths={selectedPaths} onTogglePath={togglePath} hideUnchanged={hideUnchanged} />
               )}
-              <button
-                type="button"
-                onClick={() => setSelectedPaths(new Set())}
-                className="text-slate-400 hover:text-slate-600 transition-colors"
-                title="Clear selection"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
+
+              {/* Non-journey scope sections (journeys are shown above in the tree) */}
+              {visibleScopeGroups.length === 0 && scopeSearch && (
+                <p className="text-sm text-slate-400 text-center py-4">No scopes match &ldquo;{scopeSearch}&rdquo;.</p>
+              )}
+              {visibleScopeGroups.map((group) => (
+                <ScopeSection
+                  key={group.scope}
+                  group={group}
+                  sourceLabel={sourceLabel}
+                  targetLabel={targetLabel}
+                  forceOpen={allOpen}
+                  forceSeq={allOpenSeq}
+                  sourceEnv={report.source.environment}
+                  targetEnv={report.target.environment}
+                  allFiles={report.files}
+                  selectedPaths={selectedPaths}
+                  onTogglePath={togglePath}
+                  hideUnchanged={hideUnchanged}
+                  hideMetadata={hideMetadata}
+                  eligibleTasks={eligibleTasks}
+                  onRemoveFromTask={handleRemoveFromTask}
+                />
+              ))}
+            </>
+          )}
+          {!hideUnchanged && itemSummary.unchanged > 0 && (
+            <p className="text-xs text-slate-400 text-center pt-2">
+              {itemSummary.unchanged} item{itemSummary.unchanged !== 1 ? "s" : ""} unchanged
+            </p>
           )}
         </div>
-      )}
-    </div>
+
+        {allFilesModalOpen && (
+          <AllFilesModal
+            scopeGroups={scopeGroups}
+            sourceLabel={sourceLabel}
+            targetLabel={targetLabel}
+            sourceEnv={report.source.environment}
+            targetEnv={report.target.environment}
+            allFiles={report.files}
+            selectedPaths={selectedPaths}
+            onTogglePath={togglePath}
+            onClose={() => setAllFilesModalOpen(false)}
+          />
+        )}
+
+        {/* Task drawer */}
+        {drawerOpen && (
+          <TaskItemsDrawer
+            eligibleTasks={eligibleTasks}
+            selectedPaths={selectedPaths}
+            onClose={() => setDrawerOpen(false)}
+            onUnselect={(path) => togglePath(path)}
+            onClearSelection={() => setSelectedPaths(new Set())}
+            onAddSelectedToTask={(task) => handleAddToTask(task)}
+            onRemoveItemFromTask={(task, path) => handleRemoveFromTask(task, path)}
+            onRemoveScopeFromTask={(task, scope) => {
+              const next = task.items.filter((s) => s.scope !== scope);
+              handleRemoveFromTask(task, next);
+            }}
+            onRemoveBulkFromTask={(task, paths) => {
+              let items = task.items;
+              for (const p of paths) items = removeItemFromTaskItems(p, items);
+              handleRemoveFromTask(task, items);
+            }}
+            onClearTask={(task) => handleRemoveFromTask(task, [])}
+          />
+        )}
+
+        {/* Floating action bar */}
+        {(selectedCount > 0 || addSuccess || addError) && (
+          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2">
+            {addSuccess && (
+              <div className="bg-emerald-600 text-white rounded-full shadow-lg px-4 py-2 text-xs font-medium whitespace-nowrap">
+                ✓ Added to &quot;{addSuccess}&quot;
+              </div>
+            )}
+            {addError && (
+              <div className="bg-white border border-rose-200 rounded-xl shadow-xl px-4 py-3 text-xs text-slate-700 max-w-lg">
+                <div className="flex items-start gap-2">
+                  <svg className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M4.93 19h14.14c1.54 0 2.5-1.67 1.73-3L13.73 4a2 2 0 00-3.46 0L3.2 16c-.77 1.33.19 3 1.73 3z" />
+                  </svg>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-semibold text-rose-700 mb-1">
+                      Can&apos;t add {addError.missing.length} item{addError.missing.length === 1 ? "" : "s"} to &quot;{addError.task}&quot;
+                    </div>
+                    <div className="text-slate-500 mb-2">
+                      The following don&apos;t exist on the task&apos;s source ({report.source.environment}):
+                    </div>
+                    <ul className="font-mono text-[11px] text-slate-700 space-y-0.5 max-h-40 overflow-y-auto pr-2">
+                      {addError.missing.map((p) => (
+                        <li key={p} className="truncate" title={p}>• {p}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAddError(null)}
+                    aria-label="Dismiss"
+                    className="text-slate-400 hover:text-slate-600 shrink-0 -mt-0.5 -mr-1 text-lg leading-none"
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+            )}
+            {selectedCount > 0 && (
+              <div className="bg-white border border-slate-200 rounded-full shadow-lg px-3 py-2 flex items-center gap-3 text-xs">
+                <span className="text-slate-700 font-medium whitespace-nowrap">
+                  {selectedCount} item{selectedCount !== 1 ? "s" : ""} selected
+                  {selectedScopeCount > 1 && <span className="text-slate-400"> · {selectedScopeCount} scopes</span>}
+                </span>
+
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setTaskDropdownOpen((o) => !o); }}
+                    disabled={addingToTask || eligibleTasks.length === 0}
+                    className="flex items-center gap-1 px-3 py-1 bg-sky-600 text-white rounded-full text-xs font-medium hover:bg-sky-700 disabled:opacity-50 transition-colors whitespace-nowrap"
+                  >
+                    {addingToTask ? "Adding…" : "Add to task"}
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                  {taskDropdownOpen && (
+                    <div
+                      onClick={(e) => e.stopPropagation()}
+                      className="absolute bottom-full mb-1.5 left-0 bg-white border border-slate-200 rounded-lg shadow-xl min-w-[200px] py-1 z-50"
+                    >
+                      {eligibleTasks.length === 0 ? (
+                        <p className="px-3 py-2 text-xs text-slate-400 italic">No matching tasks</p>
+                      ) : eligibleTasks.map((t) => (
+                        <button
+                          key={t.id}
+                          type="button"
+                          onClick={() => handleAddToTask(t)}
+                          className="w-full text-left px-3 py-2 text-xs hover:bg-slate-50 transition-colors"
+                        >
+                          <span className="font-medium text-slate-700">{t.name}</span>
+                          {t.items.length > 0 && (
+                            <span className="ml-1.5 text-slate-400">({t.items.length} scope{t.items.length !== 1 ? "s" : ""})</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {eligibleTasks.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setDrawerOpen(true)}
+                    className="flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors whitespace-nowrap"
+                  >
+                    Manage items
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setSelectedPaths(new Set())}
+                  className="text-slate-400 hover:text-slate-600 transition-colors"
+                  title="Clear selection"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </DiffModeContext.Provider>
   );
 }

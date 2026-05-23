@@ -997,6 +997,7 @@ function SectionsView({
   const [col2Width, setCol2Width] = useState(224);
   const [usageOpen, setUsageOpen] = useState(false);
   const [usageData, setUsageData] = useState<{ journey: string; nodeName: string; nodeType: string; nodeUuid: string }[] | null>(null);
+  const [usageScripts, setUsageScripts] = useState<{ scriptName: string; scriptUuid: string; scriptType: string }[] | null>(null);
   const [usageLoading, setUsageLoading] = useState(false);
   const [journeyUsageData, setJourneyUsageData] = useState<{ journey: string; nodeName: string; nodeType: string; nodeUuid: string }[] | null>(null);
   const [endpointUsageData, setEndpointUsageData] = useState<EndpointUsageRef[] | null>(null);
@@ -1069,7 +1070,7 @@ function SectionsView({
   }, [environment, refreshListings]);
 
   // Reset usage panel when item changes
-  useEffect(() => { setUsageOpen(false); setUsageData(null); setEndpointUsageData(null); setJourneyUsageData(null); }, [selectedItem]);
+  useEffect(() => { setUsageOpen(false); setUsageData(null); setUsageScripts(null); setEndpointUsageData(null); setJourneyUsageData(null); }, [selectedItem]);
 
   // Track the file name + line to highlight after files load (deep-link flow).
   const pendingFileSelection = useRef<{ fileName?: string; line?: number; query?: string } | null>(null);
@@ -1125,8 +1126,8 @@ function SectionsView({
     setUsageLoading(true);
     fetch(`/api/analyze/script-usage?env=${encodeURIComponent(environment)}&scriptId=${encodeURIComponent(selectedItem.id.replace(".json", ""))}`)
       .then((r) => r.json())
-      .then((data) => setUsageData(data.usedBy ?? []))
-      .catch(() => setUsageData([]))
+      .then((data) => { setUsageData(data.usedBy ?? []); setUsageScripts(data.usedByScripts ?? []); })
+      .catch(() => { setUsageData([]); setUsageScripts([]); })
       .finally(() => setUsageLoading(false));
   }, [environment, selectedScope, selectedItem]);
 
@@ -1686,39 +1687,73 @@ function SectionsView({
               <div className="px-4 py-2.5 border-b border-slate-700 bg-slate-800 shrink-0 max-h-48 overflow-y-auto">
                 {usageLoading ? (
                   <p className="text-xs text-slate-400">Searching…</p>
-                ) : !usageData || usageData.length === 0 ? (
-                  <p className="text-xs text-slate-400 italic">Not used in any journey.</p>
+                ) : (!usageData || usageData.length === 0) && (!usageScripts || usageScripts.length === 0) ? (
+                  <p className="text-xs text-slate-400 italic">Not used in any journey or script.</p>
                 ) : (
-                  <div className="space-y-1">
-                    <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wide">
-                      Used in {usageData.length} {usageData.length === 1 ? "place" : "places"}
-                    </p>
-                    {usageData.map((ref, i) => (
-                      <div key={i} className="flex items-center gap-2 text-xs">
-                        <span className="w-2 h-2 rounded-full bg-sky-400 shrink-0" />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            // Navigate to the journey and focus on the script node
-                            const journeyItem = auditData
-                              .find((e) => e.scope === "journeys")
-                              ?.items.find((item: { id: string }) => item.id === ref.journey);
-                            if (journeyItem) {
-                              pendingFocusRef.current = ref.nodeUuid;
-                              setSelectedScope("journeys");
-                              setSelectedItem(journeyItem);
-                              setUsageOpen(false);
-                            }
-                          }}
-                          className="text-sky-400 hover:text-sky-300 hover:underline font-medium"
-                        >
-                          {ref.journey}
-                        </button>
-                        <span className="text-slate-500">→</span>
-                        <span className="text-slate-400">{ref.nodeName}</span>
-                        <span className="text-[10px] text-slate-500 font-mono">{ref.nodeType}</span>
+                  <div className="space-y-2">
+                    {usageData && usageData.length > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wide">
+                          Used in {usageData.length} journey {usageData.length === 1 ? "node" : "nodes"}
+                        </p>
+                        {usageData.map((ref, i) => (
+                          <div key={i} className="flex items-center gap-2 text-xs">
+                            <span className="w-2 h-2 rounded-full bg-sky-400 shrink-0" />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                // Navigate to the journey and focus on the script node
+                                const journeyItem = auditData
+                                  .find((e) => e.scope === "journeys")
+                                  ?.items.find((item: { id: string }) => item.id === ref.journey);
+                                if (journeyItem) {
+                                  pendingFocusRef.current = ref.nodeUuid;
+                                  setSelectedScope("journeys");
+                                  setSelectedItem(journeyItem);
+                                  setUsageOpen(false);
+                                }
+                              }}
+                              className="text-sky-400 hover:text-sky-300 hover:underline font-medium"
+                            >
+                              {ref.journey}
+                            </button>
+                            <span className="text-slate-500">→</span>
+                            <span className="text-slate-400">{ref.nodeName}</span>
+                            <span className="text-[10px] text-slate-500 font-mono">{ref.nodeType}</span>
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    )}
+                    {usageScripts && usageScripts.length > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wide">
+                          Imported by {usageScripts.length} {usageScripts.length === 1 ? "script" : "scripts"}
+                        </p>
+                        {usageScripts.map((ref, i) => (
+                          <div key={i} className="flex items-center gap-2 text-xs">
+                            <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const scriptsEntry = auditData.find((e) => e.scope === "scripts");
+                                const target = scriptsEntry?.items.find((item) => {
+                                  if (ref.scriptUuid && (item.id === `${ref.scriptUuid}.json` || item.id === ref.scriptUuid)) return true;
+                                  return item.label === ref.scriptName;
+                                });
+                                if (target) {
+                                  setSelectedItem(target);
+                                  setUsageOpen(false);
+                                }
+                              }}
+                              className="text-emerald-400 hover:text-emerald-300 hover:underline font-medium text-left"
+                            >
+                              {ref.scriptName}
+                            </button>
+                            <span className="text-[10px] text-slate-500 font-mono">{ref.scriptType}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
