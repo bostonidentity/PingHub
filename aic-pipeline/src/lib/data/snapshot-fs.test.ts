@@ -538,7 +538,7 @@ describe("listRecords — nested attribute search", () => {
   });
 
   it("finds a keyword inside a long description nested in an array (prod regression)", async () => {
-    // Mirrors the prod alpha_kyid_dashboardapplicationwidget record. The
+    // Mirrors the prod alpha_tenant_dashboardapplicationwidget record. The
     // user picks `content.myAppsDescription.en` from the dropdown (collapsed
     // form), the stored path is `content.0.myAppsDescription.en`, and the
     // value is a ~400-char description containing the search keyword.
