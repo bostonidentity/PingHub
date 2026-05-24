@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const MIGRATIONS: readonly { version: number; sql: string }[] = [
   {
@@ -42,6 +42,30 @@ export const MIGRATIONS: readonly { version: number; sql: string }[] = [
       );
 
       CREATE INDEX IF NOT EXISTS idx_op_history_env ON op_history(env_name, started_at DESC);
+    `
+  },
+  {
+    version: 3,
+    sql: `
+      CREATE TABLE IF NOT EXISTS promotion_tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        source_env TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS promotion_task_items (
+        task_id INTEGER NOT NULL,
+        realm TEXT NOT NULL,
+        resource_type TEXT NOT NULL,
+        resource_id TEXT NOT NULL,
+        PRIMARY KEY (task_id, realm, resource_type, resource_id),
+        FOREIGN KEY (task_id) REFERENCES promotion_tasks(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_promotion_tasks_status ON promotion_tasks(status, updated_at DESC);
     `
   }
 ] as const;
