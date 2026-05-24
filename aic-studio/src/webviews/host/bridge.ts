@@ -80,3 +80,71 @@ export const MonitorRefreshRequestSchema = z.object({
   kind: z.literal("monitor-refresh")
 });
 export type MonitorRefreshRequest = z.infer<typeof MonitorRefreshRequestSchema>;
+
+// Logs Query Webview — Host → Webview
+export const LogsOpenRequestSchema = z.object({
+  kind: z.literal("logs-open"),
+  envName: z.string(),
+  savedQuery: z.object({
+    id: z.number(),
+    name: z.string(),
+    source: z.string(),
+    filterExpr: z.string().optional()
+  }).optional()
+});
+export type LogsOpenRequest = z.infer<typeof LogsOpenRequestSchema>;
+
+export const LogsQueryResultEntrySchema = z.object({
+  timestamp: z.string(),
+  source: z.string(),
+  type: z.string(),
+  payload: z.record(z.unknown())
+});
+export type LogsQueryResultEntry = z.infer<typeof LogsQueryResultEntrySchema>;
+
+export const LogsQueryResponseSchema = z.union([
+  z.object({
+    kind: z.literal("logs-result"),
+    ok: z.literal(true),
+    entries: z.array(LogsQueryResultEntrySchema)
+  }),
+  z.object({
+    kind: z.literal("logs-result"),
+    ok: z.literal(false),
+    error: z.string()
+  })
+]);
+export type LogsQueryResponse = z.infer<typeof LogsQueryResponseSchema>;
+
+export const LogsSaveResponseSchema = z.union([
+  z.object({ kind: z.literal("logs-save-result"), ok: z.literal(true), id: z.number() }),
+  z.object({ kind: z.literal("logs-save-result"), ok: z.literal(false), error: z.string() })
+]);
+export type LogsSaveResponse = z.infer<typeof LogsSaveResponseSchema>;
+
+// Logs Query Webview — Webview → Host
+export const LogsRunQueryRequestSchema = z.object({
+  kind: z.literal("logs-run"),
+  envName: z.string(),
+  source: z.string(),
+  filterExpr: z.string().optional(),
+  pageSize: z.number().optional(),
+  beginTime: z.string().optional(),
+  endTime: z.string().optional()
+});
+export type LogsRunQueryRequest = z.infer<typeof LogsRunQueryRequestSchema>;
+
+export const LogsSaveQueryRequestSchema = z.object({
+  kind: z.literal("logs-save"),
+  envName: z.string(),
+  name: z.string(),
+  source: z.string(),
+  filterExpr: z.string().optional()
+});
+export type LogsSaveQueryRequest = z.infer<typeof LogsSaveQueryRequestSchema>;
+
+export const LogsWebviewMessageSchema = z.union([
+  LogsRunQueryRequestSchema,
+  LogsSaveQueryRequestSchema
+]);
+export type LogsWebviewMessage = z.infer<typeof LogsWebviewMessageSchema>;
