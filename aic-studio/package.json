@@ -293,7 +293,44 @@
           "description": "Auto-open the AIC Studio dashboard webview on activation."
         }
       }
-    }
+    },
+    "walkthroughs": [
+      {
+        "id": "aic-studio.gettingStarted",
+        "title": "Getting Started with AIC Studio",
+        "description": "Set up your first AIC environment and pull configs in under 2 minutes.",
+        "steps": [
+          {
+            "id": "addEnv",
+            "title": "Add an AIC environment",
+            "description": "Configure your tenant URL and service-account credentials.\n\nCredentials are stored in your OS keychain via VS Code SecretStorage.\n\n[Add environment](command:aic-studio.env.add)",
+            "media": { "markdown": "media/walkthrough/add-env.md" },
+            "completionEvents": ["onCommand:aic-studio.env.add"]
+          },
+          {
+            "id": "pull",
+            "title": "Pull from your environment",
+            "description": "Fetches all journeys and federation configs into a local snapshot.\n\n[Pull](command:aic-studio.sync.pull)",
+            "media": { "markdown": "media/walkthrough/pull.md" },
+            "completionEvents": ["onCommand:aic-studio.sync.pull"]
+          },
+          {
+            "id": "browse",
+            "title": "Browse the environment tree",
+            "description": "Click the PingHub icon in the activity bar. Expand your env to see realms, journeys, and federation configs. Click any journey to view it as a virtual document.",
+            "media": { "markdown": "media/walkthrough/browse.md" },
+            "completionEvents": ["onView:aic-studio.environments"]
+          },
+          {
+            "id": "promote",
+            "title": "Promote to another env",
+            "description": "Add journeys to a promotion task, then push them as a batch.\n\n[Open promotion tasks](command:workbench.view.extension.aic-studio)",
+            "media": { "markdown": "media/walkthrough/promote.md" },
+            "completionEvents": ["onCommand:aic-studio.promote.runTask"]
+          }
+        ]
+      }
+    ]
   },
   "scripts": {
     "build": "node esbuild.config.mjs",
