@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (M14 — legacy bundle import)
+
+- `AIC Studio: Import Environments from Legacy Bundle…` command (palette + Environments empty-state welcome)
+- Reads `pinghub-environments/v1` bundle JSON produced by the legacy aic-pipeline app
+- Supports plaintext, redacted, and AES-256-GCM passphrase-encrypted bundles (PBKDF2-SHA256, 200k iter)
+- Per-env skip / overwrite / rename conflict resolution via QuickPick
+- Maps `TENANT_BASE_URL` → `tenantUrl`, `SERVICE_ACCOUNT_ID` → `clientId`, `FRODO_USERNAME` → `username` (falls back to `SERVICE_ACCOUNT_ID` when username absent)
+- Imports secrets (`SERVICE_ACCOUNT_CLIENT_SECRET`, `FRODO_PASSWORD`, `LOG_API_KEY`, `LOG_API_SECRET`) to SecretStorage
+- Falls back to `log-api.json` companion file for log API credentials when not in `.env`
+- Maps unsupported legacy colors (purple/orange/teal/pink/indigo/gray) to `slate`
+- Normalizes invalid env names to satisfy `^[a-z0-9][a-z0-9-_]*$`
+- Records each imported env as an `import-legacy` row in op_history
+- New `updateEnvironment` helper for in-place env writes
+
 ## [1.0.0] - 2026-05-24
 
 ### Added (M11-M12 — dashboard + search)
