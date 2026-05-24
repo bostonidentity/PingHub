@@ -158,6 +158,10 @@
         "title": "AIC Studio: Acknowledge alert",
         "category": "AIC Studio"
       }
+      ,
+      { "command": "aic-studio.logs.openQueryEditor", "title": "AIC Studio: Open log query editor…", "category": "AIC Studio", "icon": "$(search)" },
+      { "command": "aic-studio.logs.runSavedQuery", "title": "AIC Studio: Run saved log query", "category": "AIC Studio" },
+      { "command": "aic-studio.logs.deleteSavedQuery", "title": "AIC Studio: Delete saved log query…", "category": "AIC Studio" }
     ],
     "menus": {
       "view/title": [
@@ -181,6 +185,8 @@
           "when": "view == aic-studio.monitors",
           "group": "navigation@2"
         }
+        ,
+        { "command": "aic-studio.logs.openQueryEditor", "when": "view == aic-studio.logs", "group": "navigation" }
       ],
       "view/item/context": [
         {
@@ -248,6 +254,9 @@
           "when": "viewItem == aic-studio.monitorAlert",
           "group": "inline"
         }
+        ,
+        { "command": "aic-studio.logs.openQueryEditor", "when": "viewItem == aic-studio.logsEnv", "group": "inline" },
+        { "command": "aic-studio.logs.deleteSavedQuery", "when": "viewItem == aic-studio.savedLogQuery", "group": "1_delete" }
       ]
     },
     "configuration": {
