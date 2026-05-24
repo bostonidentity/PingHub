@@ -148,3 +148,45 @@ export const LogsWebviewMessageSchema = z.union([
   LogsSaveQueryRequestSchema
 ]);
 export type LogsWebviewMessage = z.infer<typeof LogsWebviewMessageSchema>;
+
+// Analyze (Find Usage) Webview — shared types
+export const ResourceRefSchema = z.object({
+  realm: z.string(),
+  resourceType: z.enum(["journey", "script", "saml2", "OAuth2Client"]),
+  id: z.string()
+});
+export type ResourceRefMsg = z.infer<typeof ResourceRefSchema>;
+
+export const ReferenceMsgSchema = z.object({
+  source: ResourceRefSchema,
+  target: ResourceRefSchema,
+  detail: z.string().optional()
+});
+export type ReferenceMsg = z.infer<typeof ReferenceMsgSchema>;
+
+// Analyze — Host → Webview
+export const AnalyzeOpenRequestSchema = z.object({
+  kind: z.literal("analyze-open"),
+  envName: z.string(),
+  target: ResourceRefSchema
+});
+export type AnalyzeOpenRequest = z.infer<typeof AnalyzeOpenRequestSchema>;
+
+export const AnalyzeResultResponseSchema = z.object({
+  kind: z.literal("analyze-result"),
+  envName: z.string(),
+  target: ResourceRefSchema,
+  refs: z.array(ReferenceMsgSchema)
+});
+export type AnalyzeResultResponse = z.infer<typeof AnalyzeResultResponseSchema>;
+
+// Analyze — Webview → Host
+export const AnalyzeOpenReferenceRequestSchema = z.object({
+  kind: z.literal("analyze-open-reference"),
+  envName: z.string(),
+  ref: ResourceRefSchema
+});
+export type AnalyzeOpenReferenceRequest = z.infer<typeof AnalyzeOpenReferenceRequestSchema>;
+
+export const AnalyzeWebviewMessageSchema = AnalyzeOpenReferenceRequestSchema;
+export type AnalyzeWebviewMessage = z.infer<typeof AnalyzeWebviewMessageSchema>;
