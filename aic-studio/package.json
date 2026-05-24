@@ -164,6 +164,9 @@
       { "command": "aic-studio.logs.deleteSavedQuery", "title": "AIC Studio: Delete saved log query…", "category": "AIC Studio" }
       ,
       { "command": "aic-studio.analyze.findUsage", "title": "AIC Studio: Find usage", "category": "AIC Studio", "icon": "$(references)" }
+      ,
+      { "command": "aic-studio.view.openDashboard", "title": "AIC Studio: Open dashboard", "category": "AIC Studio", "icon": "$(dashboard)" },
+      { "command": "aic-studio.search.configs", "title": "AIC Studio: Search configs…", "category": "AIC Studio", "icon": "$(search)" }
     ],
     "menus": {
       "view/title": [
@@ -282,6 +285,12 @@
           "default": 15,
           "minimum": 1,
           "description": "How often (in minutes) to run background monitor checks for each environment."
+        }
+        ,
+        "aic-studio.autoOpenDashboard": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-open the AIC Studio dashboard webview on activation."
         }
       }
     }
