@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const MIGRATIONS: readonly { version: number; sql: string }[] = [
   {
@@ -72,6 +72,33 @@ export const MIGRATIONS: readonly { version: number; sql: string }[] = [
     version: 4,
     sql: `
       ALTER TABLE op_history ADD COLUMN target_env TEXT;
+    `
+  },
+  {
+    version: 5,
+    sql: `
+      CREATE TABLE IF NOT EXISTS monitor_checks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        env_name TEXT NOT NULL,
+        check_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        detail TEXT,
+        checked_at INTEGER NOT NULL,
+        days_remaining INTEGER
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_monitor_env_type ON monitor_checks(env_name, check_type, checked_at DESC);
+
+      CREATE TABLE IF NOT EXISTS monitor_alerts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        env_name TEXT NOT NULL,
+        check_type TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        message TEXT NOT NULL,
+        first_seen_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        acknowledged_at INTEGER
+      );
     `
   }
 ] as const;
