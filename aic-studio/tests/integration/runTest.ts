@@ -7,15 +7,13 @@ async function main(): Promise<void> {
   try {
     const extensionDevelopmentPath = path.resolve(__dirname, "../../..");
     const extensionTestsPath = path.resolve(__dirname, "./suite/index.js");
-    const userDataDir = path.join(os.tmpdir(), "vscode-test");
-    const vscodeDownloadPath = path.join(os.tmpdir(), "vscode");
+    const cachePath = path.join(os.tmpdir(), "vscode-cache");
 
     await runTests({
       extensionDevelopmentPath,
       extensionTestsPath,
-      launchArgs: ["--disable-extensions"],
-      userDataDir,
-      vscodeDownloadPath
+      launchArgs: ["--disable-extensions", `--user-data-dir=${path.join(os.tmpdir(), "vscode-data")}`],
+      cachePath
     });
   } catch (err) {
     console.error("Failed to run tests:", err);
