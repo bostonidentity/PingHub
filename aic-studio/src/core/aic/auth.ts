@@ -47,3 +47,31 @@ export async function fetchAccessToken(params: AuthParams): Promise<TokenRespons
     throw err;
   }
 }
+
+const GRACE_SECONDS = 30;
+
+export interface TokenCache {
+  get(): Promise<string>;
+  invalidate(): void;
+}
+
+export function createTokenCache(fetcher: () => Promise<TokenResponse>): TokenCache {
+  let token: string | undefined;
+  let expiresAtMs = 0;
+  return {
+    async get(): Promise<string> {
+      const now = Date.now();
+      if (token && now < expiresAtMs - GRACE_SECONDS * 1000) {
+        return token;
+      }
+      const fresh = await fetcher();
+      token = fresh.accessToken;
+      expiresAtMs = now + fresh.expiresInSeconds * 1000;
+      return token;
+    },
+    invalidate(): void {
+      token = undefined;
+      expiresAtMs = 0;
+    }
+  };
+}

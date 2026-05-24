@@ -48,3 +48,35 @@ describe("fetchAccessToken", () => {
     ).rejects.toThrow(/401|invalid_client/i);
   });
 });
+
+import { createTokenCache } from "./auth";
+
+describe("createTokenCache", () => {
+  it("calls the fetcher once and reuses the token until it nears expiry", async () => {
+    let calls = 0;
+    const fetcher = async () => {
+      calls += 1;
+      return {
+        accessToken: `t-${calls}`,
+        expiresInSeconds: 3600,
+        scope: "fr:am:*"
+      };
+    };
+    const cache = createTokenCache(fetcher);
+    expect(await cache.get()).toBe("t-1");
+    expect(await cache.get()).toBe("t-1");
+    expect(calls).toBe(1);
+  });
+
+  it("re-fetches when forced", async () => {
+    let calls = 0;
+    const fetcher = async () => {
+      calls += 1;
+      return { accessToken: `t-${calls}`, expiresInSeconds: 3600, scope: "fr:am:*" };
+    };
+    const cache = createTokenCache(fetcher);
+    await cache.get();
+    await cache.invalidate();
+    expect(await cache.get()).toBe("t-2");
+  });
+});
