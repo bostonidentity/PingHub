@@ -12,7 +12,7 @@ const extensionConfig = {
   platform: "node",
   format: "cjs",
   target: "node20",
-  external: ["vscode"],
+  external: ["vscode", "better-sqlite3"],
   sourcemap: !production,
   minify: production,
   logLevel: "info"
