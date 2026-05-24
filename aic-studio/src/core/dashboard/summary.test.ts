@@ -7,7 +7,7 @@ import type { Database } from "better-sqlite3";
 import { openDatabase } from "../db/connection";
 import { insertEnvironment } from "../db/environments";
 import { startOperation, finishOperation } from "../db/opHistory";
-import { listActiveAlerts, recordAlert } from "../db/monitorChecks";
+import { recordAlert } from "../db/monitorChecks";
 import { buildDashboardSummary } from "./summary";
 
 let db: Database;

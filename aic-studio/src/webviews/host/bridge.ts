@@ -190,3 +190,26 @@ export type AnalyzeOpenReferenceRequest = z.infer<typeof AnalyzeOpenReferenceReq
 
 export const AnalyzeWebviewMessageSchema = AnalyzeOpenReferenceRequestSchema;
 export type AnalyzeWebviewMessage = z.infer<typeof AnalyzeWebviewMessageSchema>;
+
+// Dashboard — Host → Webview
+export const DashboardEnvItemSchema = z.object({
+  envName: z.string(),
+  envLabel: z.string(),
+  lastPullAt: z.number().optional(),
+  snapshotCount: z.number(),
+  recentOpCount: z.number(),
+  hasMonitorAlerts: z.boolean()
+});
+export type DashboardEnvItem = z.infer<typeof DashboardEnvItemSchema>;
+
+export const DashboardSummaryResponseSchema = z.object({
+  kind: z.literal("dashboard-summary"),
+  envs: z.array(DashboardEnvItemSchema),
+  totalRecentOps: z.number(),
+  totalAlerts: z.number()
+});
+export type DashboardSummaryResponse = z.infer<typeof DashboardSummaryResponseSchema>;
+
+// Dashboard — Webview → Host
+export const DashboardRefreshRequestSchema = z.object({ kind: z.literal("dashboard-refresh") });
+export type DashboardRefreshRequest = z.infer<typeof DashboardRefreshRequestSchema>;
