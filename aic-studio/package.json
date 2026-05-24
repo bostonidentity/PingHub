@@ -140,6 +140,23 @@
         "title": "AIC Studio: Open federation editor",
         "category": "AIC Studio",
         "icon": "$(edit)"
+      },
+      {
+        "command": "aic-studio.monitor.pollNow",
+        "title": "AIC Studio: Poll monitors now",
+        "category": "AIC Studio",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "aic-studio.monitor.openDashboard",
+        "title": "AIC Studio: Open monitor dashboard",
+        "category": "AIC Studio",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "aic-studio.monitor.acknowledgeAlert",
+        "title": "AIC Studio: Acknowledge alert",
+        "category": "AIC Studio"
       }
     ],
     "menus": {
@@ -152,6 +169,16 @@
         {
           "command": "aic-studio.sync.pull",
           "when": "view == aic-studio.environments",
+          "group": "navigation@2"
+        },
+        {
+          "command": "aic-studio.monitor.pollNow",
+          "when": "view == aic-studio.monitors",
+          "group": "navigation@1"
+        },
+        {
+          "command": "aic-studio.monitor.openDashboard",
+          "when": "view == aic-studio.monitors",
           "group": "navigation@2"
         }
       ],
@@ -215,6 +242,11 @@
           "command": "aic-studio.promote.addToTask",
           "when": "viewItem == aic-studio.federationItem",
           "group": "2_promote"
+        },
+        {
+          "command": "aic-studio.monitor.acknowledgeAlert",
+          "when": "viewItem == aic-studio.monitorAlert",
+          "group": "inline"
         }
       ]
     },
@@ -225,6 +257,17 @@
           "type": "string",
           "default": "",
           "description": "Name of the currently active AIC environment."
+        },
+        "aic-studio.monitor.tlsThresholdDays": {
+          "type": "number",
+          "default": 30,
+          "description": "Days remaining before a TLS certificate is marked as a warning. Below 14 = error."
+        },
+        "aic-studio.monitor.pollIntervalMinutes": {
+          "type": "number",
+          "default": 15,
+          "minimum": 1,
+          "description": "How often (in minutes) to run background monitor checks for each environment."
         }
       }
     }
