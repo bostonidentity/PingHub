@@ -74,6 +74,11 @@
         "category": "AIC Studio"
       },
       {
+        "command": "aic-studio.env.importFromLegacy",
+        "title": "Import Environments from Legacy Bundle…",
+        "category": "AIC Studio"
+      },
+      {
         "command": "aic-studio.env.remove",
         "title": "AIC Studio: Remove environment…",
         "category": "AIC Studio"
@@ -167,6 +172,12 @@
       ,
       { "command": "aic-studio.view.openDashboard", "title": "AIC Studio: Open dashboard", "category": "AIC Studio", "icon": "$(dashboard)" },
       { "command": "aic-studio.search.configs", "title": "AIC Studio: Search configs…", "category": "AIC Studio", "icon": "$(search)" }
+    ],
+    "viewsWelcome": [
+      {
+        "view": "aic-studio.environments",
+        "contents": "No environments yet.\n[Add Environment](command:aic-studio.env.add)\n[Import from aic-pipeline](command:aic-studio.env.importFromLegacy)"
+      }
     ],
     "menus": {
       "view/title": [
