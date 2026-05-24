@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (M2 — pull, virtual docs, diff editor)
+
+- OAuth client_credentials auth against AIC (`/am/oauth2/realms/root/access_token`)
+- In-memory token cache with 30-second expiry grace
+- List realms + list/fetch journeys via direct AM REST API
+- `aic-studio.sync.pull` command pulls all journeys from all realms of an env
+- Snapshots written as flat JSON to `globalStorageUri/snapshots/<env>/<timestamp>/<realm>/journeys/<id>.json`
+- `op_history` SQLite table records each pull (schema migration v2)
+- Environments TreeView expands to show realms → Journeys (N) → individual journeys
+- Clicking a journey opens it as an `aic://` virtual document in the editor
+- `aic-studio.compare.withEnv` command opens the built-in `vscode.diff` between two envs
+- SourceControl provider registered per env (Changes group empty in M2; M3 populates it)
+- Status bar spinner during pull
+- 6 new integration tests (12 total); 35 new unit tests (54 total)
+
 ### Added (M1 — scaffold & environments)
 
 - Project scaffold: TypeScript, esbuild, vitest, @vscode/test-electron, ESLint
