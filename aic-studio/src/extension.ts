@@ -3,12 +3,17 @@ import * as vscode from "vscode";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { openDatabase } from "./core/db/connection";
+import { listEnvironments } from "./core/db/environments";
 import { makeStorage } from "./core/env/secrets";
 import { EnvironmentsTreeProvider } from "./providers/envTree";
 import {
-  monitorsTree,
   logsTree
 } from "./providers/placeholderTrees";
+import { MonitorsTreeProvider } from "./providers/monitorsTree";
+import { MonitorScheduler } from "./core/monitors/scheduler";
+import { MonitorAlertStatusBar } from "./status/monitorAlertStatusBar";
+import { MonitorDashboardHost } from "./webviews/host/monitorDashboardHost";
+import { registerMonitorCommands, checkOneEnv } from "./commands/monitor";
 import { HistoryTreeProvider } from "./providers/historyTree";
 import { registerHistoryCommands } from "./commands/history";
 import { PromotionTasksTreeProvider } from "./providers/promotionTasksTree";
@@ -43,13 +48,16 @@ export function activate(ctx: vscode.ExtensionContext): void {
     const envTree = new EnvironmentsTreeProvider(db, ctx.globalStorageUri.fsPath);
     const promotionTasksTreeProvider = new PromotionTasksTreeProvider(db);
     const historyTreeProvider = new HistoryTreeProvider(db);
+    const monitorsTreeProvider = new MonitorsTreeProvider(db);
+    const monitorAlertStatusBar = new MonitorAlertStatusBar(ctx, db);
+    const monitorDashboardHost = new MonitorDashboardHost({ ctx, db });
     const statusBar = new ActiveEnvStatusBar(ctx, db);
 
     ctx.subscriptions.push(
       vscode.window.registerTreeDataProvider("aic-studio.environments", envTree),
       vscode.window.registerTreeDataProvider("aic-studio.promotionTasks", promotionTasksTreeProvider),
       vscode.window.registerTreeDataProvider("aic-studio.history", historyTreeProvider),
-      vscode.window.registerTreeDataProvider("aic-studio.monitors", monitorsTree),
+      vscode.window.registerTreeDataProvider("aic-studio.monitors", monitorsTreeProvider),
       vscode.window.registerTreeDataProvider("aic-studio.logs", logsTree)
     );
 
@@ -71,6 +79,8 @@ export function activate(ctx: vscode.ExtensionContext): void {
         scmRegistry.syncFromDb();
         promotionTasksTreeProvider.refresh();
         historyTreeProvider.refresh();
+        monitorsTreeProvider.refresh();
+        monitorAlertStatusBar.refresh();
       }
     });
 
@@ -85,6 +95,8 @@ export function activate(ctx: vscode.ExtensionContext): void {
         scmRegistry.syncFromDb();
         promotionTasksTreeProvider.refresh();
         historyTreeProvider.refresh();
+        monitorsTreeProvider.refresh();
+        monitorAlertStatusBar.refresh();
       }
     });
 
@@ -101,6 +113,8 @@ export function activate(ctx: vscode.ExtensionContext): void {
         statusBar.refresh();
         scmRegistry.refreshChanges();
         historyTreeProvider.refresh();
+        monitorsTreeProvider.refresh();
+        monitorAlertStatusBar.refresh();
       }
     });
 
@@ -113,6 +127,8 @@ export function activate(ctx: vscode.ExtensionContext): void {
         statusBar.refresh();
         promotionTasksTreeProvider.refresh();
         historyTreeProvider.refresh();
+        monitorsTreeProvider.refresh();
+        monitorAlertStatusBar.refresh();
       }
     });
 
@@ -129,6 +145,34 @@ export function activate(ctx: vscode.ExtensionContext): void {
     });
 
     registerFederationCommands(ctx, federationHost);
+
+    registerMonitorCommands(ctx, {
+      db,
+      secrets,
+      onChange: () => {
+        monitorsTreeProvider.refresh();
+        monitorAlertStatusBar.refresh();
+        monitorDashboardHost.refresh();
+      },
+      openDashboard: () => monitorDashboardHost.open()
+    });
+
+    // Read poll interval from config (default 15 minutes)
+    const pollMinutes = vscode.workspace.getConfiguration("aic-studio").get<number>("monitor.pollIntervalMinutes") ?? 15;
+    const monitorScheduler = new MonitorScheduler({
+      intervalMs: pollMinutes * 60_000,
+      runOnce: async () => {
+        for (const env of listEnvironments(db)) {
+          await checkOneEnv({ db, secrets, onChange: () => {}, openDashboard: () => {} }, env.name);
+        }
+        monitorsTreeProvider.refresh();
+        monitorAlertStatusBar.refresh();
+        monitorDashboardHost.refresh();
+      }
+    });
+    monitorScheduler.start();
+    ctx.subscriptions.push({ dispose: () => monitorScheduler.stop() });
+    monitorAlertStatusBar.refresh();
 
     log("AIC Studio activated");
   } catch (err) {
