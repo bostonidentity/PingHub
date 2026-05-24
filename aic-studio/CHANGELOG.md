@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (M4-M6 — UI completions: compare extras, history, promotion tasks polish)
+
+- `aic-studio.compare.withRevision` — compare a journey against an older snapshot of the same env
+- `aic-studio.compare.pickEnvs` — palette command to compare any two envs / journey
+- HistoryTreeProvider populates the History sidebar (replaces M1 placeholder); grouped by day
+- `aic-studio.history.openDetails` opens a read-only document with full op metadata
+- Promotion Tasks tree adds an "Archived" expandable root
+- `aic-studio.promote.removeItem` and `aic-studio.promote.deleteTask` commands
+- `op_history` records `target_env` for push/promote (schema migration v4)
+- Snapshot helpers: `listAllSnapshotsForEnv`, `readJourneyFromSnapshot`
+- 7 new integration tests (26 total); ~5 new unit tests (~75 total)
+
 ### Added (M3 — push & promote)
 
 - `aic-studio.sync.push` command — right-click a journey, push to another env
