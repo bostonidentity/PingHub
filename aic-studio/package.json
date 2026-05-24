@@ -134,6 +134,12 @@
         "command": "aic-studio.promote.deleteTask",
         "title": "AIC Studio: Delete promotion task…",
         "category": "AIC Studio"
+      },
+      {
+        "command": "aic-studio.federation.openEditor",
+        "title": "AIC Studio: Open federation editor",
+        "category": "AIC Studio",
+        "icon": "$(edit)"
       }
     ],
     "menus": {
@@ -194,6 +200,21 @@
           "command": "aic-studio.promote.deleteTask",
           "when": "viewItem == aic-studio.promotionTask || viewItem == aic-studio.archivedTask",
           "group": "3_delete"
+        },
+        {
+          "command": "aic-studio.federation.openEditor",
+          "when": "viewItem == aic-studio.federationItem",
+          "group": "inline"
+        },
+        {
+          "command": "aic-studio.compare.withEnv",
+          "when": "viewItem == aic-studio.federationItem",
+          "group": "1_compare"
+        },
+        {
+          "command": "aic-studio.promote.addToTask",
+          "when": "viewItem == aic-studio.federationItem",
+          "group": "2_promote"
         }
       ]
     },
