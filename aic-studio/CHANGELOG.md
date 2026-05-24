@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (M11-M12 — dashboard + search)
+
+- Dashboard React webview shows env health summary, stats (envs, recent ops, active alerts), per-env cards
+- `aic-studio.view.openDashboard` command; auto-opens on activation unless `aic-studio.autoOpenDashboard = false`
+- `aic-studio.search.configs` QuickPick — search across envs, journeys, federation items, promotion tasks
+- 3 new integration tests (44 total); ~12 new unit tests (~160 total)
+- New setting: `aic-studio.autoOpenDashboard` (default true)
+
 ### Added (M10 — analyze / find usage)
 
 - Reference graph indexer walks the latest snapshot for an env and extracts cross-references from journey JSON
