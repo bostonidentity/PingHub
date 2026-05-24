@@ -22,6 +22,8 @@ import { EnvSourceControlRegistry } from "./providers/sourceControl";
 import { registerSyncCommands } from "./commands/sync";
 import { registerCompareCommands } from "./commands/compare";
 import { PullProgressStatusBar } from "./status/pullProgress";
+import { FederationEditorHost } from "./webviews/host/federationHost";
+import { registerFederationCommands } from "./commands/federation";
 
 export function activate(ctx: vscode.ExtensionContext): void {
   initLogger(ctx);
@@ -113,6 +115,20 @@ export function activate(ctx: vscode.ExtensionContext): void {
         historyTreeProvider.refresh();
       }
     });
+
+    const federationHost = new FederationEditorHost({
+      ctx,
+      db,
+      secrets,
+      globalStoragePath: ctx.globalStorageUri.fsPath,
+      onChange: () => {
+        envTree.refresh();
+        statusBar.refresh();
+        historyTreeProvider.refresh();
+      }
+    });
+
+    registerFederationCommands(ctx, federationHost);
 
     log("AIC Studio activated");
   } catch (err) {
