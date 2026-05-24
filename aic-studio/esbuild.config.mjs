@@ -43,12 +43,33 @@ const integrationTestConfig = {
   logLevel: "info"
 };
 
+/** @type {import('esbuild').BuildOptions} */
+const webviewUiConfig = {
+  entryPoints: [
+    "src/webviews/ui/federation-editor/main.tsx"
+  ],
+  bundle: true,
+  outdir: "out/webviews",
+  outbase: "src/webviews/ui",
+  entryNames: "[dir]/main",
+  platform: "browser",
+  format: "iife",
+  target: "es2022",
+  jsx: "automatic",
+  sourcemap: !production,
+  minify: production,
+  logLevel: "info",
+  loader: { ".css": "css" }
+};
+
 if (watch) {
   const ctx1 = await esbuild.context(extensionConfig);
   const ctx2 = await esbuild.context(integrationTestConfig);
-  await Promise.all([ctx1.watch(), ctx2.watch()]);
+  const ctx3 = await esbuild.context(webviewUiConfig);
+  await Promise.all([ctx1.watch(), ctx2.watch(), ctx3.watch()]);
   console.log("watching…");
 } else {
   await esbuild.build(extensionConfig);
   await esbuild.build(integrationTestConfig);
+  await esbuild.build(webviewUiConfig);
 }
