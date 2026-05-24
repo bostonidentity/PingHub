@@ -32,7 +32,8 @@ const integrationTestConfig = {
     "tests/integration/suite/promoteFlow.test.ts",
     "tests/integration/suite/historyView.test.ts",
     "tests/integration/suite/compareExtras.test.ts",
-    "tests/integration/suite/promotionTasksPolish.test.ts"
+    "tests/integration/suite/promotionTasksPolish.test.ts",
+    "tests/integration/suite/federation.test.ts"
   ],
   bundle: false,
   outdir: "out/tests/integration",
