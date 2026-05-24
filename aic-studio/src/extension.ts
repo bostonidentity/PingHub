@@ -6,10 +6,11 @@ import { openDatabase } from "./core/db/connection";
 import { makeStorage } from "./core/env/secrets";
 import { EnvironmentsTreeProvider } from "./providers/envTree";
 import {
-  historyTree,
   monitorsTree,
   logsTree
 } from "./providers/placeholderTrees";
+import { HistoryTreeProvider } from "./providers/historyTree";
+import { registerHistoryCommands } from "./commands/history";
 import { PromotionTasksTreeProvider } from "./providers/promotionTasksTree";
 import { registerPushCommands } from "./commands/push";
 import { registerPromoteCommands } from "./commands/promote";
@@ -39,12 +40,13 @@ export function activate(ctx: vscode.ExtensionContext): void {
 
     const envTree = new EnvironmentsTreeProvider(db, ctx.globalStorageUri.fsPath);
     const promotionTasksTreeProvider = new PromotionTasksTreeProvider(db);
+    const historyTreeProvider = new HistoryTreeProvider(db);
     const statusBar = new ActiveEnvStatusBar(ctx, db);
 
     ctx.subscriptions.push(
       vscode.window.registerTreeDataProvider("aic-studio.environments", envTree),
       vscode.window.registerTreeDataProvider("aic-studio.promotionTasks", promotionTasksTreeProvider),
-      vscode.window.registerTreeDataProvider("aic-studio.history", historyTree),
+      vscode.window.registerTreeDataProvider("aic-studio.history", historyTreeProvider),
       vscode.window.registerTreeDataProvider("aic-studio.monitors", monitorsTree),
       vscode.window.registerTreeDataProvider("aic-studio.logs", logsTree)
     );
@@ -66,6 +68,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
         statusBar.refresh();
         scmRegistry.syncFromDb();
         promotionTasksTreeProvider.refresh();
+        historyTreeProvider.refresh();
       }
     });
 
@@ -79,10 +82,13 @@ export function activate(ctx: vscode.ExtensionContext): void {
         statusBar.refresh();
         scmRegistry.syncFromDb();
         promotionTasksTreeProvider.refresh();
+        historyTreeProvider.refresh();
       }
     });
 
-    registerCompareCommands(ctx, { db });
+    registerCompareCommands(ctx, { db, globalStoragePath: ctx.globalStorageUri.fsPath });
+
+    registerHistoryCommands(ctx, { db });
 
     registerPushCommands(ctx, {
       db,
@@ -92,6 +98,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
         envTree.refresh();
         statusBar.refresh();
         scmRegistry.refreshChanges();
+        historyTreeProvider.refresh();
       }
     });
 
@@ -103,6 +110,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
         envTree.refresh();
         statusBar.refresh();
         promotionTasksTreeProvider.refresh();
+        historyTreeProvider.refresh();
       }
     });
 
