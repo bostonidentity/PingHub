@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const MIGRATIONS: readonly { version: number; sql: string }[] = [
   {
@@ -24,6 +24,24 @@ export const MIGRATIONS: readonly { version: number; sql: string }[] = [
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+    `
+  },
+  {
+    version: 2,
+    sql: `
+      CREATE TABLE IF NOT EXISTS op_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        env_name TEXT NOT NULL,
+        op_kind TEXT NOT NULL,
+        scope TEXT,
+        status TEXT NOT NULL,
+        message TEXT,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER,
+        snapshot_dir TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_op_history_env ON op_history(env_name, started_at DESC);
     `
   }
 ] as const;
