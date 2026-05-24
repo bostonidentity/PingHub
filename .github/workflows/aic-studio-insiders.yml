@@ -17,7 +17,6 @@ defaults:
 
 jobs:
   build:
-    if: false  # ← remove this line when ready to publish
     strategy:
       fail-fast: false
       matrix:
