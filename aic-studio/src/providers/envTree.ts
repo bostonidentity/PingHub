@@ -3,10 +3,10 @@ import * as vscode from "vscode";
 import type { Database } from "better-sqlite3";
 import { listEnvironments, getActiveEnvironment } from "../core/db/environments";
 import type { Environment } from "../core/env/types";
-import { listRealmsInLatest, listJourneysInLatest } from "../core/snapshots/reader";
-import { makeAicUri } from "./virtualDocs";
+import { listRealmsInLatest, listJourneysInLatest, listFederationTypesInLatest, listFederationIdsInLatest } from "../core/snapshots/reader";
+import { makeAicUri, makeAicFederationUri } from "./virtualDocs";
 
-type TreeNode = EnvNode | RealmNode | CategoryNode | JourneyNode;
+type TreeNode = EnvNode | RealmNode | CategoryNode | JourneyNode | FederationCategoryNode | FederationTypeNode | FederationItemNode;
 
 export class EnvNode extends vscode.TreeItem {
   constructor(public readonly env: Environment, isActive: boolean) {
@@ -62,6 +62,38 @@ export class JourneyNode extends vscode.TreeItem {
   }
 }
 
+export class FederationCategoryNode extends vscode.TreeItem {
+  constructor(public readonly envName: string, public readonly realm: string, count: number) {
+    super(`Federation (${count})`, vscode.TreeItemCollapsibleState.Collapsed);
+    this.id = `fed-cat:${envName}:${realm}`;
+    this.contextValue = "aic-studio.federationCategory";
+    this.iconPath = new vscode.ThemeIcon("link");
+  }
+}
+
+export class FederationTypeNode extends vscode.TreeItem {
+  constructor(public readonly envName: string, public readonly realm: string, public readonly type: string, count: number) {
+    super(`${type} (${count})`, vscode.TreeItemCollapsibleState.Collapsed);
+    this.id = `fed-type:${envName}:${realm}:${type}`;
+    this.contextValue = "aic-studio.federationType";
+    this.iconPath = new vscode.ThemeIcon("symbol-class");
+  }
+}
+
+export class FederationItemNode extends vscode.TreeItem {
+  constructor(public readonly envName: string, public readonly realm: string, public readonly fedType: string, public readonly itemId: string) {
+    super(itemId, vscode.TreeItemCollapsibleState.None);
+    this.id = `fed-item:${envName}:${realm}:${fedType}:${itemId}`;
+    this.contextValue = "aic-studio.federationItem";
+    this.iconPath = new vscode.ThemeIcon("file-code");
+    this.command = {
+      command: "vscode.open",
+      title: "Open",
+      arguments: [makeAicFederationUri(envName, realm, fedType, itemId)]
+    };
+  }
+}
+
 export class EnvironmentsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   private readonly _onDidChangeTreeData = new vscode.EventEmitter<TreeNode | undefined>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
@@ -87,12 +119,31 @@ export class EnvironmentsTreeProvider implements vscode.TreeDataProvider<TreeNod
       );
     }
     if (element instanceof RealmNode) {
-      const count = listJourneysInLatest(this.globalStoragePath, element.envName, element.realm).length;
-      return [new CategoryNode(element.envName, element.realm, "journeys", count)];
+      const jcount = listJourneysInLatest(this.globalStoragePath, element.envName, element.realm).length;
+      const fedTypes = listFederationTypesInLatest(this.globalStoragePath, element.envName, element.realm);
+      const fedCount = fedTypes.reduce(
+        (a, t) => a + listFederationIdsInLatest(this.globalStoragePath, element.envName, element.realm, t).length,
+        0
+      );
+      const nodes: TreeNode[] = [new CategoryNode(element.envName, element.realm, "journeys", jcount)];
+      if (fedTypes.length > 0) {
+        nodes.push(new FederationCategoryNode(element.envName, element.realm, fedCount));
+      }
+      return nodes;
     }
     if (element instanceof CategoryNode) {
       return listJourneysInLatest(this.globalStoragePath, element.envName, element.realm).map(
         (id) => new JourneyNode(element.envName, element.realm, id)
+      );
+    }
+    if (element instanceof FederationCategoryNode) {
+      return listFederationTypesInLatest(this.globalStoragePath, element.envName, element.realm).map(
+        (t) => new FederationTypeNode(element.envName, element.realm, t, listFederationIdsInLatest(this.globalStoragePath, element.envName, element.realm, t).length)
+      );
+    }
+    if (element instanceof FederationTypeNode) {
+      return listFederationIdsInLatest(this.globalStoragePath, element.envName, element.realm, element.type).map(
+        (id) => new FederationItemNode(element.envName, element.realm, element.type, id)
       );
     }
     return [];
