@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (M8 — monitors + dashboard)
+
+- Background polling: TLS certificate expiration, OAuth server ping, per env on a configurable interval
+- Two new SQLite tables: `monitor_checks` + `monitor_alerts` (schema migration v5)
+- `MonitorsTreeProvider` shows per-env health summary with severity icons (replaces M1 placeholder)
+- Status bar shows `$(warning) N alerts` when any unacknowledged alerts exist
+- `aic-studio.monitor.pollNow` / `openDashboard` / `acknowledgeAlert` commands
+- Monitor dashboard React webview with recharts (TLS days-remaining bar chart + status table)
+- New settings: `aic-studio.monitor.tlsThresholdDays` (default 30), `aic-studio.monitor.pollIntervalMinutes` (default 15)
+- 5 new integration tests (34 total); ~12 new unit tests (~120 total)
+
 ### Added (M7 — federation)
 
 - AIC federation REST helpers: list/fetch/put for SAML2 providers and OIDC clients (`/am/json/realms/<realm>/realm-config/federation/entityproviders/saml2` and `/agents/OAuth2Client`)
