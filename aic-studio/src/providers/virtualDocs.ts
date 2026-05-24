@@ -1,6 +1,9 @@
 // src/providers/virtualDocs.ts
 import * as vscode from "vscode";
 import { readJourneyFromLatest } from "../core/snapshots/reader";
+import { readJourneyFromSnapshot } from "../core/snapshots/reader";
+import { join } from "node:path";
+import { envSnapshotDir } from "../core/snapshots/paths";
 
 export const AIC_SCHEME = "aic";
 
@@ -41,6 +44,19 @@ export class AicDocumentContentProvider implements vscode.TextDocumentContentPro
     if (parsed.resourceType !== "journey") {
       return `// resource type '${parsed.resourceType}' not supported in M2`;
     }
+
+    // Check for ?rev=<stamp> query — read from that specific snapshot dir.
+    const revMatch = uri.query.match(/(?:^|&)rev=([^&]+)/);
+    if (revMatch) {
+      const stamp = decodeURIComponent(revMatch[1]);
+      const dir = join(envSnapshotDir(this.globalStoragePath, parsed.envName), stamp);
+      const body = readJourneyFromSnapshot(dir, parsed.realm, parsed.id);
+      if (!body) {
+        return `// no snapshot ${stamp} for ${parsed.envName}/${parsed.realm}/${parsed.id}`;
+      }
+      return JSON.stringify(body, null, 2);
+    }
+
     const body = readJourneyFromLatest(
       this.globalStoragePath,
       parsed.envName,
