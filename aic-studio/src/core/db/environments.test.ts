@@ -86,3 +86,36 @@ describe("removeEnvironment", () => {
     expect(() => removeEnvironment(db, "missing")).not.toThrow();
   });
 });
+
+import { setActiveEnvironment, getActiveEnvironment } from "./environments";
+
+describe("active environment", () => {
+  it("returns undefined when no active env set", () => {
+    expect(getActiveEnvironment(db)).toBeUndefined();
+  });
+
+  it("setActiveEnvironment + getActiveEnvironment round-trip", () => {
+    insertEnvironment(db, sample);
+    setActiveEnvironment(db, sample.name);
+    expect(getActiveEnvironment(db)).toBe(sample.name);
+  });
+
+  it("setActiveEnvironment overwrites prior value", () => {
+    insertEnvironment(db, sample);
+    insertEnvironment(db, { ...sample, name: "stage-tenant", label: "Stage" });
+    setActiveEnvironment(db, "prod-tenant");
+    setActiveEnvironment(db, "stage-tenant");
+    expect(getActiveEnvironment(db)).toBe("stage-tenant");
+  });
+
+  it("setActiveEnvironment(null) clears the value", () => {
+    insertEnvironment(db, sample);
+    setActiveEnvironment(db, sample.name);
+    setActiveEnvironment(db, null);
+    expect(getActiveEnvironment(db)).toBeUndefined();
+  });
+
+  it("rejects setting active to a non-existent env", () => {
+    expect(() => setActiveEnvironment(db, "missing")).toThrow(/no such environment/i);
+  });
+});

@@ -48,3 +48,25 @@ export function listEnvironments(db: Database): Environment[] {
 export function removeEnvironment(db: Database, name: string): void {
   db.prepare("DELETE FROM environments WHERE name = ?").run(name);
 }
+
+const ACTIVE_ENV_KEY = "active_environment";
+
+export function setActiveEnvironment(db: Database, name: string | null): void {
+  if (name === null) {
+    db.prepare("DELETE FROM app_state WHERE key = ?").run(ACTIVE_ENV_KEY);
+    return;
+  }
+  const exists = getEnvironmentByName(db, name);
+  if (!exists) {
+    throw new Error(`no such environment: ${name}`);
+  }
+  db.prepare(`
+    INSERT INTO app_state (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(ACTIVE_ENV_KEY, name);
+}
+
+export function getActiveEnvironment(db: Database): string | undefined {
+  const row = db.prepare("SELECT value FROM app_state WHERE key = ?").get(ACTIVE_ENV_KEY) as { value: string } | undefined;
+  return row?.value;
+}
