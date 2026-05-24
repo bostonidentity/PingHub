@@ -2,7 +2,7 @@
   "name": "aic-studio",
   "displayName": "AIC Studio for Ping Advanced Identity Cloud",
   "description": "Manage Ping AIC tenant configurations — pull, push, promote, and diff across environments.",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "publisher": "bostonidentity",
   "license": "Apache-2.0",
   "repository": {

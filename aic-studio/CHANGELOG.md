@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-05-24
+
 ### Added (M11-M12 — dashboard + search)
 
 - Dashboard React webview shows env health summary, stats (envs, recent ops, active alerts), per-env cards
