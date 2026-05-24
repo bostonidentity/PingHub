@@ -50,3 +50,32 @@ describe("createAuthedClient", () => {
     ).rejects.toThrow(/500/);
   });
 });
+
+describe("createAuthedClient.put", () => {
+  it("PUTs JSON body with Bearer header and returns response", async () => {
+    nock("https://prod.id.forgerock.io", {
+      reqheaders: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json"
+      }
+    })
+      .put("/am/json/x", { _id: "x", name: "new" })
+      .reply(200, { _id: "x", _rev: "2" });
+
+    const cache = { get: async () => "test-token", invalidate: () => {} };
+    const client = createAuthedClient(cache);
+    const res = await client.put("https://prod.id.forgerock.io/am/json/x", { _id: "x", name: "new" });
+    expect(res.data).toEqual({ _id: "x", _rev: "2" });
+  });
+
+  it("PUT retries once after 401", async () => {
+    nock("https://prod.id.forgerock.io").put("/am/json/x").reply(401, { error: "expired" });
+    nock("https://prod.id.forgerock.io").put("/am/json/x").reply(200, { ok: true });
+    let invalidateCalls = 0;
+    const cache = { get: async () => "t", invalidate: () => { invalidateCalls += 1; } };
+    const client = createAuthedClient(cache);
+    const res = await client.put("https://prod.id.forgerock.io/am/json/x", { a: 1 });
+    expect(res.data).toEqual({ ok: true });
+    expect(invalidateCalls).toBe(1);
+  });
+});
