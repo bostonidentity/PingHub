@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { tokenUrl, journeysListUrl, journeyDetailUrl, realmsListUrl } from "./urls";
+import { tokenUrl, journeysListUrl, journeyDetailUrl, realmsListUrl, samlProvidersListUrl, samlProviderDetailUrl, oidcClientsListUrl, oidcClientDetailUrl } from "./urls";
 
 describe("AIC URLs", () => {
   const base = "https://prod.id.forgerock.io";
@@ -27,6 +27,34 @@ describe("AIC URLs", () => {
   it("strips trailing slash on base", () => {
     expect(tokenUrl("https://prod.id.forgerock.io/")).toBe(
       "https://prod.id.forgerock.io/am/oauth2/realms/root/access_token"
+    );
+  });
+});
+
+describe("Federation URLs", () => {
+  const base = "https://prod.id.forgerock.io";
+
+  it("samlProvidersListUrl uses _queryFilter=true", () => {
+    expect(samlProvidersListUrl(base, "alpha")).toBe(
+      "https://prod.id.forgerock.io/am/json/realms/root/realms/alpha/realm-config/federation/entityproviders/saml2?_queryFilter=true"
+    );
+  });
+
+  it("samlProviderDetailUrl uses entity id", () => {
+    expect(samlProviderDetailUrl(base, "alpha", "sp-acme")).toBe(
+      "https://prod.id.forgerock.io/am/json/realms/root/realms/alpha/realm-config/federation/entityproviders/saml2/sp-acme"
+    );
+  });
+
+  it("oidcClientsListUrl points at realm-config oauth2 clients", () => {
+    expect(oidcClientsListUrl(base, "alpha")).toBe(
+      "https://prod.id.forgerock.io/am/json/realms/root/realms/alpha/realm-config/agents/OAuth2Client?_queryFilter=true"
+    );
+  });
+
+  it("oidcClientDetailUrl uses agent id", () => {
+    expect(oidcClientDetailUrl(base, "alpha", "my-client")).toBe(
+      "https://prod.id.forgerock.io/am/json/realms/root/realms/alpha/realm-config/agents/OAuth2Client/my-client"
     );
   });
 });
