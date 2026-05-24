@@ -1,0 +1,94 @@
+{
+  "name": "aic-studio",
+  "displayName": "AIC Studio for Ping Advanced Identity Cloud",
+  "description": "Manage Ping AIC tenant configurations — pull, push, promote, and diff across environments.",
+  "version": "0.1.0",
+  "publisher": "bostonidentity",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bostonidentity/PingHub.git",
+    "directory": "aic-studio"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Other"],
+  "keywords": ["ping", "aic", "identity cloud", "forgerock", "pinghub"],
+  "icon": "media/icon.png",
+  "main": "./out/extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aic-studio",
+          "title": "PingHub AIC Studio",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "aic-studio": [
+        { "id": "aic-studio.environments", "name": "Environments" },
+        { "id": "aic-studio.promotionTasks", "name": "Promotion Tasks" },
+        { "id": "aic-studio.history", "name": "History" },
+        { "id": "aic-studio.monitors", "name": "Monitors" },
+        { "id": "aic-studio.logs", "name": "Logs" }
+      ]
+    },
+    "commands": [
+      { "command": "aic-studio.env.add", "title": "AIC Studio: Add environment…", "category": "AIC Studio" },
+      { "command": "aic-studio.env.setActive", "title": "AIC Studio: Set active environment…", "category": "AIC Studio" },
+      { "command": "aic-studio.env.remove", "title": "AIC Studio: Remove environment…", "category": "AIC Studio" }
+    ],
+    "menus": {
+      "view/title": [
+        { "command": "aic-studio.env.add", "when": "view == aic-studio.environments", "group": "navigation" }
+      ]
+    },
+    "configuration": {
+      "title": "AIC Studio",
+      "properties": {
+        "aic-studio.activeEnvironment": {
+          "type": "string",
+          "default": "",
+          "description": "Name of the currently active AIC environment."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "node ./out/tests/integration/runTest.js",
+    "pretest:integration": "npm run build",
+    "package": "vsce package",
+    "vscode:prepublish": "npm run build"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "@vscode/test-electron": "^2.4.1",
+    "@vscode/vsce": "^3.0.0",
+    "electron-rebuild": "^3.2.9",
+    "esbuild": "^0.24.0",
+    "eslint": "^9.0.0",
+    "glob": "^11.0.0",
+    "mocha": "^10.7.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.10.0",
+    "zod": "^3.23.0"
+  }
+}
