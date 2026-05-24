@@ -34,7 +34,8 @@ const integrationTestConfig = {
     "tests/integration/suite/compareExtras.test.ts",
     "tests/integration/suite/promotionTasksPolish.test.ts",
     "tests/integration/suite/federation.test.ts",
-    "tests/integration/suite/monitors.test.ts"
+    "tests/integration/suite/monitors.test.ts",
+    "tests/integration/suite/logs.test.ts"
   ],
   bundle: false,
   outdir: "out/tests/integration",
