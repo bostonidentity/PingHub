@@ -47,7 +47,8 @@ const integrationTestConfig = {
 /** @type {import('esbuild').BuildOptions} */
 const webviewUiConfig = {
   entryPoints: [
-    "src/webviews/ui/federation-editor/main.tsx"
+    "src/webviews/ui/federation-editor/main.tsx",
+    "src/webviews/ui/monitor-dashboard/main.tsx"
   ],
   bundle: true,
   outdir: "out/webviews",

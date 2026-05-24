@@ -48,3 +48,35 @@ export type ReadyRequest = z.infer<typeof ReadyRequestSchema>;
 
 export const WebviewMessageSchema = z.union([SaveRequestSchema, ReadyRequestSchema]);
 export type WebviewMessage = z.infer<typeof WebviewMessageSchema>;
+
+// Monitor Dashboard — Host → Webview
+export const MonitorSummaryItemSchema = z.object({
+  envName: z.string(),
+  envLabel: z.string(),
+  tls: z.object({
+    status: z.string(),
+    daysRemaining: z.number().optional(),
+    detail: z.string().optional(),
+    checkedAt: z.number().optional()
+  }).optional(),
+  ping: z.object({
+    status: z.string(),
+    latencyMs: z.number().optional(),
+    detail: z.string().optional(),
+    checkedAt: z.number().optional()
+  }).optional(),
+  alertCount: z.number()
+});
+export type MonitorSummaryItem = z.infer<typeof MonitorSummaryItemSchema>;
+
+export const MonitorSummaryResponseSchema = z.object({
+  kind: z.literal("monitor-summary"),
+  items: z.array(MonitorSummaryItemSchema)
+});
+export type MonitorSummaryResponse = z.infer<typeof MonitorSummaryResponseSchema>;
+
+// Monitor Dashboard — Webview → Host
+export const MonitorRefreshRequestSchema = z.object({
+  kind: z.literal("monitor-refresh")
+});
+export type MonitorRefreshRequest = z.infer<typeof MonitorRefreshRequestSchema>;
