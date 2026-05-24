@@ -6,9 +6,10 @@ import { openDatabase } from "./core/db/connection";
 import { listEnvironments } from "./core/db/environments";
 import { makeStorage } from "./core/env/secrets";
 import { EnvironmentsTreeProvider } from "./providers/envTree";
-import {
-  logsTree
-} from "./providers/placeholderTrees";
+// (placeholderTrees no longer needed — all placeholders replaced)
+import { LogsTreeProvider } from "./providers/logsTree";
+import { LogsQueryHost } from "./webviews/host/logsQueryHost";
+import { registerLogsCommands } from "./commands/logs";
 import { MonitorsTreeProvider } from "./providers/monitorsTree";
 import { MonitorScheduler } from "./core/monitors/scheduler";
 import { MonitorAlertStatusBar } from "./status/monitorAlertStatusBar";
@@ -51,6 +52,15 @@ export function activate(ctx: vscode.ExtensionContext): void {
     const monitorsTreeProvider = new MonitorsTreeProvider(db);
     const monitorAlertStatusBar = new MonitorAlertStatusBar(ctx, db);
     const monitorDashboardHost = new MonitorDashboardHost({ ctx, db });
+    const logsTreeProvider = new LogsTreeProvider(db);
+    const logsQueryHost = new LogsQueryHost({
+      ctx,
+      db,
+      secrets,
+      onChange: () => {
+        logsTreeProvider.refresh();
+      }
+    });
     const statusBar = new ActiveEnvStatusBar(ctx, db);
 
     ctx.subscriptions.push(
@@ -58,7 +68,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
       vscode.window.registerTreeDataProvider("aic-studio.promotionTasks", promotionTasksTreeProvider),
       vscode.window.registerTreeDataProvider("aic-studio.history", historyTreeProvider),
       vscode.window.registerTreeDataProvider("aic-studio.monitors", monitorsTreeProvider),
-      vscode.window.registerTreeDataProvider("aic-studio.logs", logsTree)
+      vscode.window.registerTreeDataProvider("aic-studio.logs", logsTreeProvider)
     );
 
     const pullStatus = new PullProgressStatusBar(ctx);
@@ -81,6 +91,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
         historyTreeProvider.refresh();
         monitorsTreeProvider.refresh();
         monitorAlertStatusBar.refresh();
+        logsTreeProvider.refresh();
       }
     });
 
@@ -97,6 +108,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
         historyTreeProvider.refresh();
         monitorsTreeProvider.refresh();
         monitorAlertStatusBar.refresh();
+        logsTreeProvider.refresh();
       }
     });
 
@@ -155,6 +167,15 @@ export function activate(ctx: vscode.ExtensionContext): void {
         monitorDashboardHost.refresh();
       },
       openDashboard: () => monitorDashboardHost.open()
+    });
+
+    registerLogsCommands(ctx, {
+      db,
+      secrets,
+      onChange: () => {
+        logsTreeProvider.refresh();
+      },
+      openQueryEditor: (envName: string, savedQueryId?: number) => logsQueryHost.open(envName, savedQueryId)
     });
 
     // Read poll interval from config (default 15 minutes)
