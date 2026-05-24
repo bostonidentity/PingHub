@@ -14,6 +14,11 @@ import {
 import { ActiveEnvStatusBar } from "./status/activeEnvStatusBar";
 import { registerEnvCommands } from "./commands/env";
 import { initLogger, log, logError } from "./logging/output";
+import { AicDocumentContentProvider, AIC_SCHEME } from "./providers/virtualDocs";
+import { EnvSourceControlRegistry } from "./providers/sourceControl";
+import { registerSyncCommands } from "./commands/sync";
+import { registerCompareCommands } from "./commands/compare";
+import { PullProgressStatusBar } from "./status/pullProgress";
 
 export function activate(ctx: vscode.ExtensionContext): void {
   initLogger(ctx);
@@ -41,14 +46,38 @@ export function activate(ctx: vscode.ExtensionContext): void {
       vscode.window.registerTreeDataProvider("aic-studio.logs", logsTree)
     );
 
+    const pullStatus = new PullProgressStatusBar(ctx);
+    const scmRegistry = new EnvSourceControlRegistry(ctx, db);
+    scmRegistry.syncFromDb();
+
+    const contentProvider = new AicDocumentContentProvider(ctx.globalStorageUri.fsPath);
+    ctx.subscriptions.push(
+      vscode.workspace.registerTextDocumentContentProvider(AIC_SCHEME, contentProvider)
+    );
+
     registerEnvCommands(ctx, {
       db,
       secrets,
       onChange: () => {
         envTree.refresh();
         statusBar.refresh();
+        scmRegistry.syncFromDb();
       }
     });
+
+    registerSyncCommands(ctx, {
+      db,
+      secrets,
+      globalStoragePath: ctx.globalStorageUri.fsPath,
+      pullStatus,
+      onChange: () => {
+        envTree.refresh();
+        statusBar.refresh();
+        scmRegistry.syncFromDb();
+      }
+    });
+
+    registerCompareCommands(ctx, { db });
 
     log("AIC Studio activated");
   } catch (err) {
