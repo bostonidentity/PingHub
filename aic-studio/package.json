@@ -78,13 +78,42 @@
         "title": "AIC Studio: Remove environment…",
         "category": "AIC Studio"
       }
+      ,
+      {
+        "command": "aic-studio.sync.pull",
+        "title": "AIC Studio: Pull from environment",
+        "category": "AIC Studio",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "aic-studio.compare.withEnv",
+        "title": "AIC Studio: Compare with environment…",
+        "category": "AIC Studio"
+      }
     ],
     "menus": {
       "view/title": [
         {
           "command": "aic-studio.env.add",
           "when": "view == aic-studio.environments",
-          "group": "navigation"
+          "group": "navigation@1"
+        },
+        {
+          "command": "aic-studio.sync.pull",
+          "when": "view == aic-studio.environments",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "aic-studio.sync.pull",
+          "when": "viewItem == aic-studio.env",
+          "group": "inline"
+        },
+        {
+          "command": "aic-studio.compare.withEnv",
+          "when": "viewItem == aic-studio.journey",
+          "group": "1_compare"
         }
       ]
     },
