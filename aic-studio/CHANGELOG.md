@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (M7 — federation)
+
+- AIC federation REST helpers: list/fetch/put for SAML2 providers and OIDC clients (`/am/json/realms/<realm>/realm-config/federation/entityproviders/saml2` and `/agents/OAuth2Client`)
+- `pullAllJourneys` now also pulls federation items alongside journeys
+- Snapshot layout extended: `<snap>/<realm>/federation/<type>/<id>.json`
+- `aic://<env>/<realm>/federation/<type>/<id>` virtual documents (read-only)
+- Environments TreeView shows "Federation (N)" → per-type → per-item under each realm
+- `aic-studio.federation.openEditor` command opens a React-based webview panel
+- Federation items support right-click compare + add-to-promotion-task (same as journeys)
+- `pushPromotionTask` routes `federation/saml2` and `federation/OAuth2Client` items
+- Save-from-editor flow deferred to M7.1; current editor is a JSON textarea with the snapshot loaded
+- 3 new integration tests (29 total); ~20 new unit tests (~108 total)
+
 ### Added (M4-M6 — UI completions: compare extras, history, promotion tasks polish)
 
 - `aic-studio.compare.withRevision` — compare a journey against an older snapshot of the same env
