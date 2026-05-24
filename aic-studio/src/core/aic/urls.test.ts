@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { tokenUrl, journeysListUrl, journeyDetailUrl, realmsListUrl, samlProvidersListUrl, samlProviderDetailUrl, oidcClientsListUrl, oidcClientDetailUrl } from "./urls";
+import { tokenUrl, journeysListUrl, journeyDetailUrl, realmsListUrl, samlProvidersListUrl, samlProviderDetailUrl, oidcClientsListUrl, oidcClientDetailUrl, logsQueryUrl } from "./urls";
 
 describe("AIC URLs", () => {
   const base = "https://prod.id.forgerock.io";
@@ -55,6 +55,45 @@ describe("Federation URLs", () => {
   it("oidcClientDetailUrl uses agent id", () => {
     expect(oidcClientDetailUrl(base, "alpha", "my-client")).toBe(
       "https://prod.id.forgerock.io/am/json/realms/root/realms/alpha/realm-config/agents/OAuth2Client/my-client"
+    );
+  });
+});
+
+describe("Logs URL builder", () => {
+  const base = "https://prod.id.forgerock.io";
+
+  it("logsQueryUrl includes source and default pageSize=100", () => {
+    expect(logsQueryUrl(base, { source: "am-everything" })).toBe(
+      "https://prod.id.forgerock.io/monitoring/logs?source=am-everything&_pageSize=100"
+    );
+  });
+
+  it("logsQueryUrl includes filterExpr when provided", () => {
+    const url = logsQueryUrl(base, {
+      source: "am-everything",
+      filterExpr: `eventName eq "AM-LOGIN-FAILED"`
+    });
+    expect(url).toContain("source=am-everything");
+    expect(url).toContain("_pageSize=100");
+    // URLSearchParams URL-encodes spaces as +, quotes as %22
+    expect(url).toContain("_queryFilter=eventName+eq+%22AM-LOGIN-FAILED%22");
+  });
+
+  it("logsQueryUrl includes beginTime + endTime when provided", () => {
+    const url = logsQueryUrl(base, {
+      source: "am",
+      beginTime: "2026-05-24T00:00:00Z",
+      endTime: "2026-05-24T23:59:59Z",
+      pageSize: 500
+    });
+    expect(url).toContain("_pageSize=500");
+    expect(url).toContain("beginTime=2026-05-24T00%3A00%3A00Z");
+    expect(url).toContain("endTime=2026-05-24T23%3A59%3A59Z");
+  });
+
+  it("logsQueryUrl strips trailing slash on base", () => {
+    expect(logsQueryUrl("https://prod.id.forgerock.io/", { source: "am" })).toBe(
+      "https://prod.id.forgerock.io/monitoring/logs?source=am&_pageSize=100"
     );
   });
 });

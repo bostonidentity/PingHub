@@ -33,3 +33,18 @@ export function oidcClientsListUrl(tenantUrl: string, realm: string): string {
 export function oidcClientDetailUrl(tenantUrl: string, realm: string, id: string): string {
   return `${trimSlash(tenantUrl)}/am/json/realms/root/realms/${realm}/realm-config/agents/OAuth2Client/${id}`;
 }
+
+export function logsQueryUrl(tenantUrl: string, params: {
+  source: string;
+  filterExpr?: string;
+  pageSize?: number;
+  beginTime?: string;
+  endTime?: string;
+}): string {
+  const q = new URLSearchParams({ source: params.source });
+  q.set("_pageSize", String(params.pageSize ?? 100));
+  if (params.filterExpr) q.set("_queryFilter", params.filterExpr);
+  if (params.beginTime) q.set("beginTime", params.beginTime);
+  if (params.endTime) q.set("endTime", params.endTime);
+  return `${trimSlash(tenantUrl)}/monitoring/logs?${q.toString()}`;
+}
