@@ -1274,18 +1274,19 @@ function SectionsView({
 
   const activeFile = files?.[activeTab];
 
-  // ── Versions / Compare for non-journey/non-workflow scopes ──────────────
+  // ── Versions / Compare for non-workflow scopes ─────────────────────────
   // SectionsView is the default Browse view; we wire the same Versions
-  // dropdown + Compare mode that TreeView has, but only for scopes where the
-  // active file is text (journeys/iga-workflows render visual graphs, so we
-  // skip them here and let TreeView handle those for now).
-  const showVersionUi = selectedScope !== "journeys" && selectedScope !== "iga-workflows";
+  // dropdown + Compare mode that TreeView has. Journeys reuse the Versions
+  // picker so users can view the journey graph at any historical commit
+  // (iga-workflows still rely on ItemComparePanel because they're
+  // multi-file with no single primary file to swap).
+  const showVersionUi = selectedScope !== "iga-workflows";
   const versionUi = useVersionPicker({
     environment,
     filePath: activeFile?.relPath ?? null,
     fileName: activeFile?.name ?? "",
     workingContent: activeFile?.content ?? null,
-    theme: "dark",
+    theme: selectedScope === "journeys" ? "light" : "dark",
     renderBody: (mode) => {
       if (!activeFile) return null;
       if (mode.kind === "compare") {
@@ -1305,6 +1306,24 @@ function SectionsView({
         return <div className="flex items-center justify-center h-full text-sm text-slate-500">Loading version…</div>;
       }
       const content = mode.content ?? "";
+      // Journey scope: render the journey graph from the picked content.
+      // Node-detail fetches still target the working tree, so the graph
+      // shape (nodes + connections) reflects the chosen sha while inner
+      // details (scripts, inner journeys) mirror current state.
+      if (selectedScope === "journeys") {
+        return (
+          <div className="h-full">
+            <JourneyGraph
+              key={`${selectedItem?.id ?? ""}:${mode.viewingSha ?? "current"}`}
+              json={content}
+              fitViewKey={fullscreen ? 1 : 0}
+              environment={environment}
+              journeyId={selectedItem?.id}
+              focusNodeId={mode.viewingSha ? undefined : focusNodeId}
+            />
+          </div>
+        );
+      }
       const lower = activeFile.name.toLowerCase();
       const isJson = lower.endsWith(".json");
       const isScript = lower.endsWith(".js") || lower.endsWith(".groovy");
@@ -1937,9 +1956,12 @@ function SectionsView({
                 </div>
               )}
               {!fileLoading && activeFile && selectedScope === "journeys" && (
-                <div className="h-full">
-                  <JourneyGraph json={activeFile.content} fitViewKey={fullscreen ? 1 : 0} environment={environment} journeyId={selectedItem?.id} focusNodeId={focusNodeId} />
-                </div>
+                <>
+                  {versionUi.banner}
+                  <div className="flex-1 min-h-0 overflow-hidden">
+                    {versionUi.bodyNode}
+                  </div>
+                </>
               )}
               {!fileLoading && files && files.length > 0 && selectedScope === "iga-workflows" && (
                 <div className="h-full">
