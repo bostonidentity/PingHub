@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const MIGRATIONS: readonly { version: number; sql: string }[] = [
   {
@@ -66,6 +66,12 @@ export const MIGRATIONS: readonly { version: number; sql: string }[] = [
       );
 
       CREATE INDEX IF NOT EXISTS idx_promotion_tasks_status ON promotion_tasks(status, updated_at DESC);
+    `
+  },
+  {
+    version: 4,
+    sql: `
+      ALTER TABLE op_history ADD COLUMN target_env TEXT;
     `
   }
 ] as const;
