@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (M3 — push & promote)
+
+- `aic-studio.sync.push` command — right-click a journey, push to another env
+- Promotion tasks (`promotion_tasks` table, schema migration v3) — group journeys, push as a batch
+- `aic-studio.promote.addToTask` / `runTask` / `archiveTask` commands
+- Promotion Tasks sidebar view becomes functional (replaces M1 placeholder)
+- SCM Changes group populated from snapshot diff (latest pull vs previous pull)
+- AIC client gains `put()` method; `putJourney()` core helper
+- `pushPromotionTask` orchestrates multi-item push with continue-on-failure
+- `op_history` records every push + promote operation
+- 5 new integration tests (19 total); ~13 new unit tests
+
 ### Added (M2 — pull, virtual docs, diff editor)
 
 - OAuth client_credentials auth against AIC (`/am/oauth2/realms/root/access_token`)
