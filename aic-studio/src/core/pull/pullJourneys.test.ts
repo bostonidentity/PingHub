@@ -2,10 +2,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import nock from "nock";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { existsSync as existsSyncFed } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pullAllJourneys } from "./pullJourneys";
-import { latestSnapshotDir, journeyFile } from "../snapshots/paths";
+import { latestSnapshotDir, journeyFile, federationFile } from "../snapshots/paths";
 
 let storage: string;
 const tenant = "https://prod.id.forgerock.io";
@@ -37,6 +38,9 @@ describe("pullAllJourneys", () => {
     nock(tenant)
       .get("/am/json/realms/root/realms/alpha/realm-config/authentication/authenticationtrees/Register")
       .reply(200, { _id: "Register", entryNodeId: "b" });
+    nock(tenant)
+      .get(/saml2\?_queryFilter=true/).reply(200, { result: [], resultCount: 0 })
+      .get(/OAuth2Client\?_queryFilter=true/).reply(200, { result: [], resultCount: 0 });
 
     const cache = { get: async () => "token", invalidate: () => {} };
     const result = await pullAllJourneys({
@@ -70,5 +74,23 @@ describe("pullAllJourneys", () => {
     expect(result.realmCount).toBe(0);
     expect(result.journeyCount).toBe(0);
     expect(latestSnapshotDir(storage, "prod")).toBeDefined();
+  });
+});
+
+describe("pullAllJourneys with federation co-pull", () => {
+  it("also pulls federation when realms have SAML + OIDC", async () => {
+    nock(tenant)
+      .get("/am/json/global-config/realms?_queryFilter=true")
+      .reply(200, { result: [{ _id: "alpha-id", name: "alpha", parentPath: "/" }], resultCount: 1 })
+      .get(/authenticationtrees\?_queryFilter=true/).reply(200, { result: [], resultCount: 0 })
+      .get(/saml2\?_queryFilter=true/).reply(200, { result: [{ _id: "sp" }], resultCount: 1 })
+      .get(/saml2\/sp$/).reply(200, { _id: "sp" })
+      .get(/OAuth2Client\?_queryFilter=true/).reply(200, { result: [], resultCount: 0 });
+
+    const cache = { get: async () => "t", invalidate: () => {} };
+    const result = await pullAllJourneys({
+      tenantUrl: tenant, tokenCache: cache, envName: "prod", globalStoragePath: storage
+    });
+    expect(existsSyncFed(federationFile(result.snapshotDir, "alpha", "saml2", "sp"))).toBe(true);
   });
 });

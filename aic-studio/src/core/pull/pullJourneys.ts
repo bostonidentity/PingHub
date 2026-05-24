@@ -6,6 +6,7 @@ import { listRealms } from "../aic/realms";
 import { listJourneys, fetchJourney } from "../aic/journeys";
 import { envSnapshotDir, isoStamp } from "../snapshots/paths";
 import { writeJourney } from "../snapshots/writer";
+import { pullAllFederation } from "./pullFederation";
 
 export interface PullParams {
   tenantUrl: string;
@@ -36,6 +37,15 @@ export async function pullAllJourneys(params: PullParams): Promise<PullResult> {
       journeyCount += 1;
     }
   }
+
+  await pullAllFederation({
+    tenantUrl: params.tenantUrl,
+    tokenCache: params.tokenCache,
+    envName: params.envName,
+    globalStoragePath: params.globalStoragePath,
+    realms,
+    snapshotDir
+  });
 
   return { snapshotDir, realmCount: realms.length, journeyCount };
 }
