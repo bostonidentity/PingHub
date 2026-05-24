@@ -6,11 +6,13 @@ import { openDatabase } from "./core/db/connection";
 import { makeStorage } from "./core/env/secrets";
 import { EnvironmentsTreeProvider } from "./providers/envTree";
 import {
-  promotionTasksTree,
   historyTree,
   monitorsTree,
   logsTree
 } from "./providers/placeholderTrees";
+import { PromotionTasksTreeProvider } from "./providers/promotionTasksTree";
+import { registerPushCommands } from "./commands/push";
+import { registerPromoteCommands } from "./commands/promote";
 import { ActiveEnvStatusBar } from "./status/activeEnvStatusBar";
 import { registerEnvCommands } from "./commands/env";
 import { initLogger, log, logError } from "./logging/output";
@@ -36,11 +38,12 @@ export function activate(ctx: vscode.ExtensionContext): void {
     });
 
     const envTree = new EnvironmentsTreeProvider(db, ctx.globalStorageUri.fsPath);
+    const promotionTasksTreeProvider = new PromotionTasksTreeProvider(db);
     const statusBar = new ActiveEnvStatusBar(ctx, db);
 
     ctx.subscriptions.push(
       vscode.window.registerTreeDataProvider("aic-studio.environments", envTree),
-      vscode.window.registerTreeDataProvider("aic-studio.promotionTasks", promotionTasksTree),
+      vscode.window.registerTreeDataProvider("aic-studio.promotionTasks", promotionTasksTreeProvider),
       vscode.window.registerTreeDataProvider("aic-studio.history", historyTree),
       vscode.window.registerTreeDataProvider("aic-studio.monitors", monitorsTree),
       vscode.window.registerTreeDataProvider("aic-studio.logs", logsTree)
@@ -62,6 +65,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
         envTree.refresh();
         statusBar.refresh();
         scmRegistry.syncFromDb();
+        promotionTasksTreeProvider.refresh();
       }
     });
 
@@ -74,10 +78,33 @@ export function activate(ctx: vscode.ExtensionContext): void {
         envTree.refresh();
         statusBar.refresh();
         scmRegistry.syncFromDb();
+        promotionTasksTreeProvider.refresh();
       }
     });
 
     registerCompareCommands(ctx, { db });
+
+    registerPushCommands(ctx, {
+      db,
+      secrets,
+      globalStoragePath: ctx.globalStorageUri.fsPath,
+      onChange: () => {
+        envTree.refresh();
+        statusBar.refresh();
+        scmRegistry.refreshChanges();
+      }
+    });
+
+    registerPromoteCommands(ctx, {
+      db,
+      secrets,
+      globalStoragePath: ctx.globalStorageUri.fsPath,
+      onChange: () => {
+        envTree.refresh();
+        statusBar.refresh();
+        promotionTasksTreeProvider.refresh();
+      }
+    });
 
     log("AIC Studio activated");
   } catch (err) {
