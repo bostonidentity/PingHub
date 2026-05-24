@@ -32,6 +32,9 @@ import { FederationEditorHost } from "./webviews/host/federationHost";
 import { registerFederationCommands } from "./commands/federation";
 import { AnalyzeHost } from "./webviews/host/analyzeHost";
 import { registerAnalyzeCommands } from "./commands/analyze";
+import { DashboardHost } from "./webviews/host/dashboardHost";
+import { registerDashboardCommands } from "./commands/dashboard";
+import { registerSearchCommands } from "./commands/search";
 
 export function activate(ctx: vscode.ExtensionContext): void {
   initLogger(ctx);
@@ -82,6 +85,18 @@ export function activate(ctx: vscode.ExtensionContext): void {
       vscode.workspace.registerTextDocumentContentProvider(AIC_SCHEME, contentProvider)
     );
 
+    const dashboardHost = new DashboardHost({
+      ctx,
+      db,
+      globalStoragePath: ctx.globalStorageUri.fsPath
+    });
+    registerDashboardCommands(ctx, dashboardHost);
+
+    registerSearchCommands(ctx, {
+      db,
+      globalStoragePath: ctx.globalStorageUri.fsPath
+    });
+
     registerEnvCommands(ctx, {
       db,
       secrets,
@@ -94,6 +109,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
         monitorsTreeProvider.refresh();
         monitorAlertStatusBar.refresh();
         logsTreeProvider.refresh();
+        dashboardHost.refresh();
       }
     });
 
@@ -111,6 +127,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
         monitorsTreeProvider.refresh();
         monitorAlertStatusBar.refresh();
         logsTreeProvider.refresh();
+        dashboardHost.refresh();
       }
     });
 
@@ -129,6 +146,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
         historyTreeProvider.refresh();
         monitorsTreeProvider.refresh();
         monitorAlertStatusBar.refresh();
+        dashboardHost.refresh();
       }
     });
 
@@ -143,6 +161,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
         historyTreeProvider.refresh();
         monitorsTreeProvider.refresh();
         monitorAlertStatusBar.refresh();
+        dashboardHost.refresh();
       }
     });
 
@@ -167,6 +186,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
         monitorsTreeProvider.refresh();
         monitorAlertStatusBar.refresh();
         monitorDashboardHost.refresh();
+        dashboardHost.refresh();
       },
       openDashboard: () => monitorDashboardHost.open()
     });
@@ -199,6 +219,12 @@ export function activate(ctx: vscode.ExtensionContext): void {
     monitorScheduler.start();
     ctx.subscriptions.push({ dispose: () => monitorScheduler.stop() });
     monitorAlertStatusBar.refresh();
+
+    const autoOpen = vscode.workspace.getConfiguration("aic-studio").get<boolean>("autoOpenDashboard");
+    if (autoOpen !== false) {
+      // Default true unless user explicitly disabled
+      void vscode.commands.executeCommand("aic-studio.view.openDashboard");
+    }
 
     log("AIC Studio activated");
   } catch (err) {
