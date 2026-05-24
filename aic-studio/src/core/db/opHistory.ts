@@ -7,6 +7,7 @@ export interface StartOpInput {
   opKind: string;
   scope?: string;
   snapshotDir?: string;
+  targetEnv?: string;
 }
 
 export interface OpRow {
@@ -19,6 +20,7 @@ export interface OpRow {
   startedAt: number;
   finishedAt?: number;
   snapshotDir?: string;
+  targetEnv?: string;
 }
 
 interface RawRow {
@@ -31,6 +33,7 @@ interface RawRow {
   started_at: number;
   finished_at: number | null;
   snapshot_dir: string | null;
+  target_env: string | null;
 }
 
 function rowToOp(r: RawRow): OpRow {
@@ -43,16 +46,24 @@ function rowToOp(r: RawRow): OpRow {
     message: r.message ?? undefined,
     startedAt: r.started_at,
     finishedAt: r.finished_at ?? undefined,
-    snapshotDir: r.snapshot_dir ?? undefined
+    snapshotDir: r.snapshot_dir ?? undefined,
+    targetEnv: r.target_env ?? undefined
   };
 }
 
 export function startOperation(db: Database, input: StartOpInput): number {
   const now = Date.now();
   const info = db.prepare(`
-    INSERT INTO op_history (env_name, op_kind, scope, status, started_at, snapshot_dir)
-    VALUES (?, ?, ?, 'running', ?, ?)
-  `).run(input.envName, input.opKind, input.scope ?? null, now, input.snapshotDir ?? null);
+    INSERT INTO op_history (env_name, op_kind, scope, status, started_at, snapshot_dir, target_env)
+    VALUES (?, ?, ?, 'running', ?, ?, ?)
+  `).run(
+    input.envName,
+    input.opKind,
+    input.scope ?? null,
+    now,
+    input.snapshotDir ?? null,
+    input.targetEnv ?? null
+  );
   return Number(info.lastInsertRowid);
 }
 

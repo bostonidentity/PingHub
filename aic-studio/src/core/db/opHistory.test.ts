@@ -59,3 +59,18 @@ describe("op_history", () => {
     expect(listOperations(db, "stage")).toHaveLength(1);
   });
 });
+
+describe("op_history targetEnv", () => {
+  it("startOperation accepts targetEnv and round-trips it", () => {
+    const id = startOperation(db, { envName: "prod", opKind: "push", targetEnv: "stage" });
+    const ops = listOperations(db, "prod");
+    expect(ops[0].id).toBe(id);
+    expect(ops[0].targetEnv).toBe("stage");
+  });
+
+  it("targetEnv is optional", () => {
+    startOperation(db, { envName: "prod", opKind: "pull" });
+    const ops = listOperations(db, "prod");
+    expect(ops[0].targetEnv).toBeUndefined();
+  });
+});
