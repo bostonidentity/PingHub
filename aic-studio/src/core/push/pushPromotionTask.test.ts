@@ -86,4 +86,26 @@ describe("pushPromotionTask", () => {
     });
     expect(summary.skippedCount).toBe(1);
   });
+
+  it("routes federation items through pushFederationFromSnapshot", async () => {
+    seed("prod", "2026-05-24T10-00-00Z", "alpha", "Login", { _id: "Login" });
+    // Also seed federation
+    const fedDir = join(storage, "snapshots", "prod", "2026-05-24T10-00-00Z", "alpha", "federation", "saml2");
+    mkdirSync(fedDir, { recursive: true });
+    writeFileSync(join(fedDir, "sp.json"), JSON.stringify({ _id: "sp" }));
+    nock("https://stage.id.forgerock.io")
+      .put(/authenticationtrees\/Login$/).reply(200, { _id: "Login" })
+      .put(/saml2\/sp$/).reply(200, { _id: "sp" });
+    const cache = { get: async () => "t", invalidate: () => {} };
+    const summary = await pushPromotionTask({
+      globalStoragePath: storage, sourceEnvName: "prod",
+      targetTenantUrl: "https://stage.id.forgerock.io", targetTokenCache: cache,
+      items: [
+        { realm: "alpha", resourceType: "journey", resourceId: "Login" },
+        { realm: "alpha", resourceType: "federation/saml2", resourceId: "sp" }
+      ]
+    });
+    expect(summary.successCount).toBe(2);
+    expect(summary.skippedCount).toBe(0);
+  });
 });
