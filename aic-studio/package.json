@@ -77,8 +77,7 @@
         "command": "aic-studio.env.remove",
         "title": "AIC Studio: Remove environment…",
         "category": "AIC Studio"
-      }
-      ,
+      },
       {
         "command": "aic-studio.sync.pull",
         "title": "AIC Studio: Pull from environment",
@@ -110,13 +109,32 @@
         "command": "aic-studio.promote.archiveTask",
         "title": "AIC Studio: Archive promotion task…",
         "category": "AIC Studio"
+      },
+      {
+        "command": "aic-studio.compare.withRevision",
+        "title": "AIC Studio: Compare with revision…",
+        "category": "AIC Studio"
+      },
+      {
+        "command": "aic-studio.compare.pickEnvs",
+        "title": "AIC Studio: Compare envs (pick two)…",
+        "category": "AIC Studio"
+      },
+      {
+        "command": "aic-studio.history.openDetails",
+        "title": "AIC Studio: Show operation details",
+        "category": "AIC Studio"
+      },
+      {
+        "command": "aic-studio.promote.removeItem",
+        "title": "AIC Studio: Remove item from promotion task",
+        "category": "AIC Studio"
+      },
+      {
+        "command": "aic-studio.promote.deleteTask",
+        "title": "AIC Studio: Delete promotion task…",
+        "category": "AIC Studio"
       }
-      ,
-      { "command": "aic-studio.compare.withRevision", "title": "AIC Studio: Compare with revision…", "category": "AIC Studio" },
-      { "command": "aic-studio.compare.pickEnvs", "title": "AIC Studio: Compare envs (pick two)…", "category": "AIC Studio" },
-      { "command": "aic-studio.history.openDetails", "title": "AIC Studio: Show operation details", "category": "AIC Studio" },
-      { "command": "aic-studio.promote.removeItem", "title": "AIC Studio: Remove item from promotion task", "category": "AIC Studio" },
-      { "command": "aic-studio.promote.deleteTask", "title": "AIC Studio: Delete promotion task…", "category": "AIC Studio" }
     ],
     "menus": {
       "view/title": [
@@ -161,11 +179,22 @@
           "command": "aic-studio.promote.archiveTask",
           "when": "viewItem == aic-studio.promotionTask",
           "group": "2_archive"
+        },
+        {
+          "command": "aic-studio.compare.withRevision",
+          "when": "viewItem == aic-studio.journey",
+          "group": "1_compare"
+        },
+        {
+          "command": "aic-studio.promote.removeItem",
+          "when": "viewItem == aic-studio.promotionTaskItem",
+          "group": "inline"
+        },
+        {
+          "command": "aic-studio.promote.deleteTask",
+          "when": "viewItem == aic-studio.promotionTask || viewItem == aic-studio.archivedTask",
+          "group": "3_delete"
         }
-        ,
-        { "command": "aic-studio.compare.withRevision", "when": "viewItem == aic-studio.journey", "group": "1_compare" },
-        { "command": "aic-studio.promote.removeItem", "when": "viewItem == aic-studio.promotionTaskItem", "group": "inline" },
-        { "command": "aic-studio.promote.deleteTask", "when": "viewItem == aic-studio.promotionTask || viewItem == aic-studio.archivedTask", "group": "3_delete" }
       ]
     },
     "configuration": {
@@ -195,6 +224,8 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.0.0",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
     "@types/vscode": "^1.90.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
@@ -211,8 +242,11 @@
     "vitest": "^2.0.0"
   },
   "dependencies": {
+    "@vscode/webview-ui-toolkit": "^1.4.0",
     "axios": "^1.16.1",
     "better-sqlite3": "^12.10.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
     "zod": "^3.23.0"
   }
 }
