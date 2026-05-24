@@ -10,6 +10,11 @@ export interface TlsCheckResult {
   error?: string;
 }
 
+function cnToString(cn: string | string[] | undefined): string {
+  if (!cn) return "";
+  return Array.isArray(cn) ? cn.join(", ") : cn;
+}
+
 export function checkTls(host: string, port = 443, timeoutMs = 5000): Promise<TlsCheckResult> {
   return new Promise((resolve) => {
     const socket = connect(
@@ -22,8 +27,8 @@ export function checkTls(host: string, port = 443, timeoutMs = 5000): Promise<Tl
         resolve({
           ok: true,
           daysRemaining,
-          subject: cert.subject?.CN ?? "",
-          issuer: cert.issuer?.CN ?? "",
+          subject: cnToString(cert.subject?.CN),
+          issuer: cnToString(cert.issuer?.CN),
           validTo
         });
       }
