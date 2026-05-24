@@ -39,3 +39,12 @@ export function getEnvironmentByName(db: Database, name: string): Environment | 
   const row = db.prepare("SELECT * FROM environments WHERE name = ?").get(name) as Row | undefined;
   return row ? rowToEnvironment(row) : undefined;
 }
+
+export function listEnvironments(db: Database): Environment[] {
+  const rows = db.prepare("SELECT * FROM environments ORDER BY name ASC").all() as Row[];
+  return rows.map(rowToEnvironment);
+}
+
+export function removeEnvironment(db: Database, name: string): void {
+  db.prepare("DELETE FROM environments WHERE name = ?").run(name);
+}

@@ -57,3 +57,32 @@ describe("getEnvironmentByName", () => {
     expect(getEnvironmentByName(db, "missing")).toBeUndefined();
   });
 });
+
+import { listEnvironments, removeEnvironment } from "./environments";
+
+describe("listEnvironments", () => {
+  it("returns empty array when no envs", () => {
+    expect(listEnvironments(db)).toEqual([]);
+  });
+
+  it("returns envs sorted by name", () => {
+    insertEnvironment(db, { ...sample, name: "zeta", label: "Zeta" });
+    insertEnvironment(db, { ...sample, name: "alpha", label: "Alpha" });
+    insertEnvironment(db, { ...sample, name: "mu", label: "Mu" });
+    const envs = listEnvironments(db);
+    expect(envs.map((e) => e.name)).toEqual(["alpha", "mu", "zeta"]);
+  });
+});
+
+describe("removeEnvironment", () => {
+  it("removes the named env", () => {
+    insertEnvironment(db, sample);
+    expect(getEnvironmentByName(db, sample.name)).toBeDefined();
+    removeEnvironment(db, sample.name);
+    expect(getEnvironmentByName(db, sample.name)).toBeUndefined();
+  });
+
+  it("is a no-op for unknown name", () => {
+    expect(() => removeEnvironment(db, "missing")).not.toThrow();
+  });
+});
