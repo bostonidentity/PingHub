@@ -1,7 +1,7 @@
 // src/core/aic/journeys.test.ts
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import nock from "nock";
-import { listJourneys, fetchJourney } from "./journeys";
+import { listJourneys, fetchJourney, putJourney } from "./journeys";
 
 const cache = { get: async () => "test-token", invalidate: () => {} };
 
@@ -44,5 +44,22 @@ describe("fetchJourney", () => {
     const j = await fetchJourney("https://prod.id.forgerock.io", "alpha", "Login", cache);
     expect(j._id).toBe("Login");
     expect(j.entryNodeId).toBe("abc");
+  });
+});
+
+describe("putJourney", () => {
+  it("PUTs the body to the journey detail URL and returns the response body", async () => {
+    nock("https://prod.id.forgerock.io")
+      .put(/authenticationtrees\/Login$/, { _id: "Login", entryNodeId: "z" })
+      .reply(200, { _id: "Login", _rev: "2" });
+
+    const res = await putJourney(
+      "https://prod.id.forgerock.io",
+      "alpha",
+      "Login",
+      { _id: "Login", entryNodeId: "z" },
+      cache
+    );
+    expect(res).toEqual({ _id: "Login", _rev: "2" });
   });
 });

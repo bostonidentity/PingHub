@@ -28,3 +28,15 @@ export async function fetchJourney(
   const res = await client.get<Record<string, unknown>>(journeyDetailUrl(tenantUrl, realm, id));
   return res.data;
 }
+
+export async function putJourney(
+  tenantUrl: string,
+  realm: string,
+  id: string,
+  body: Record<string, unknown>,
+  cache: TokenCache
+): Promise<Record<string, unknown>> {
+  const client = createAuthedClient(cache);
+  const res = await client.put<Record<string, unknown>>(journeyDetailUrl(tenantUrl, realm, id), body);
+  return res.data;
+}
