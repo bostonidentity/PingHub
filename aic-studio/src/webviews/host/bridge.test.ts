@@ -2,8 +2,7 @@
 import { describe, it, expect } from "vitest";
 import {
   OpenRequestSchema, LoadResponseSchema, SaveRequestSchema, SaveResponseSchema,
-  type OpenRequest, type LoadResponse, type SaveRequest, type SaveResponse,
-  type HostMessage, type WebviewMessage
+  type OpenRequest, type LoadResponse, type SaveRequest, type SaveResponse
 } from "./bridge";
 
 describe("Bridge schemas", () => {
