@@ -13,11 +13,21 @@
   "engines": {
     "vscode": "^1.90.0"
   },
-  "categories": ["Other"],
-  "keywords": ["ping", "aic", "identity cloud", "forgerock", "pinghub"],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "ping",
+    "aic",
+    "identity cloud",
+    "forgerock",
+    "pinghub"
+  ],
   "icon": "media/icon.png",
   "main": "./out/extension.js",
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -30,21 +40,52 @@
     },
     "views": {
       "aic-studio": [
-        { "id": "aic-studio.environments", "name": "Environments" },
-        { "id": "aic-studio.promotionTasks", "name": "Promotion Tasks" },
-        { "id": "aic-studio.history", "name": "History" },
-        { "id": "aic-studio.monitors", "name": "Monitors" },
-        { "id": "aic-studio.logs", "name": "Logs" }
+        {
+          "id": "aic-studio.environments",
+          "name": "Environments"
+        },
+        {
+          "id": "aic-studio.promotionTasks",
+          "name": "Promotion Tasks"
+        },
+        {
+          "id": "aic-studio.history",
+          "name": "History"
+        },
+        {
+          "id": "aic-studio.monitors",
+          "name": "Monitors"
+        },
+        {
+          "id": "aic-studio.logs",
+          "name": "Logs"
+        }
       ]
     },
     "commands": [
-      { "command": "aic-studio.env.add", "title": "AIC Studio: Add environment…", "category": "AIC Studio" },
-      { "command": "aic-studio.env.setActive", "title": "AIC Studio: Set active environment…", "category": "AIC Studio" },
-      { "command": "aic-studio.env.remove", "title": "AIC Studio: Remove environment…", "category": "AIC Studio" }
+      {
+        "command": "aic-studio.env.add",
+        "title": "AIC Studio: Add environment…",
+        "category": "AIC Studio"
+      },
+      {
+        "command": "aic-studio.env.setActive",
+        "title": "AIC Studio: Set active environment…",
+        "category": "AIC Studio"
+      },
+      {
+        "command": "aic-studio.env.remove",
+        "title": "AIC Studio: Remove environment…",
+        "category": "AIC Studio"
+      }
     ],
     "menus": {
       "view/title": [
-        { "command": "aic-studio.env.add", "when": "view == aic-studio.environments", "group": "navigation" }
+        {
+          "command": "aic-studio.env.add",
+          "when": "view == aic-studio.environments",
+          "group": "navigation"
+        }
       ]
     },
     "configuration": {
@@ -77,6 +118,7 @@
     "@types/vscode": "^1.90.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
+    "@vitest/coverage-v8": "^2.1.9",
     "@vscode/test-electron": "^2.4.1",
     "@vscode/vsce": "^3.0.0",
     "electron-rebuild": "^3.2.9",

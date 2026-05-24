@@ -18,13 +18,13 @@ suite("Env CRUD (command surface)", () => {
 
   test("env.setActive command does not reject when no envs exist", async () => {
     await assert.doesNotReject(
-      vscode.commands.executeCommand("aic-studio.env.setActive")
+      Promise.resolve(vscode.commands.executeCommand("aic-studio.env.setActive"))
     );
   });
 
   test("env.remove command does not reject when no envs exist", async () => {
     await assert.doesNotReject(
-      vscode.commands.executeCommand("aic-studio.env.remove")
+      Promise.resolve(vscode.commands.executeCommand("aic-studio.env.remove"))
     );
   });
 
@@ -32,7 +32,7 @@ suite("Env CRUD (command surface)", () => {
     // Indirectly verify via the views API — if the view container didn't
     // register, opening it would error out.
     await assert.doesNotReject(
-      vscode.commands.executeCommand("workbench.view.extension.aic-studio")
+      Promise.resolve(vscode.commands.executeCommand("workbench.view.extension.aic-studio"))
     );
   });
 });

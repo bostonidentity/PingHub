@@ -35,7 +35,7 @@ jobs:
           cache: npm
           cache-dependency-path: aic-studio/package-lock.json
       - run: npm ci
-      - run: npx electron-rebuild -m node_modules/better-sqlite3
+      - run: npx electron-rebuild --force -m node_modules/better-sqlite3
         continue-on-error: true
       - run: npm run build
       - name: Stamp insiders version
