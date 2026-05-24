@@ -87,3 +87,15 @@ export function listItemsInTask(db: Database, taskId: number): TaskItem[] {
   `).all(taskId) as TaskItem[];
   return rows;
 }
+
+export function deletePromotionTask(db: Database, id: number): void {
+  // ON DELETE CASCADE handles items
+  db.prepare("DELETE FROM promotion_tasks WHERE id = ?").run(id);
+}
+
+export function listArchivedTasks(db: Database): PromotionTaskRow[] {
+  const rows = db.prepare(`
+    SELECT * FROM promotion_tasks WHERE status = 'archived' ORDER BY updated_at DESC
+  `).all() as RawTaskRow[];
+  return rows.map(rowToTask);
+}

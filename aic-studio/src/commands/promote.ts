@@ -18,7 +18,7 @@ import { createTokenCache, fetchAccessToken } from "../core/aic/auth";
 import { pushPromotionTask } from "../core/push/pushPromotionTask";
 import { startOperation, finishOperation } from "../core/db/opHistory";
 import type { JourneyNode } from "../providers/envTree";
-import type { TaskNode } from "../providers/promotionTasksTree";
+import { ItemNode, type TaskNode } from "../providers/promotionTasksTree";
 import { log, logError } from "../logging/output";
 
 type Deps = {
@@ -38,6 +38,12 @@ export function registerPromoteCommands(ctx: vscode.ExtensionContext, deps: Deps
     ),
     vscode.commands.registerCommand("aic-studio.promote.archiveTask", (node?: TaskNode) =>
       archiveTaskCommand(deps, node)
+    ),
+    vscode.commands.registerCommand("aic-studio.promote.removeItem", (node?: ItemNode) =>
+      removeItemCommand(deps, node)
+    ),
+    vscode.commands.registerCommand("aic-studio.promote.deleteTask", (node?: TaskNode) =>
+      deleteTaskCommand(deps, node)
     )
   );
 }
@@ -214,4 +220,30 @@ async function archiveTaskCommand(deps: Deps, node?: TaskNode): Promise<void> {
   log(`promote.archiveTask: ${taskId} (${taskName})`);
   deps.onChange();
   void vscode.window.showInformationMessage(`Archived "${taskName}"`);
+}
+
+async function removeItemCommand(deps: Deps, node?: ItemNode): Promise<void> {
+  if (!node) {
+    void vscode.window.showInformationMessage("Right-click an item inside a promotion task to remove it.");
+    return;
+  }
+  const { removeItemFromTask } = await import("../core/db/promotionTasks.js");
+  removeItemFromTask(deps.db, node.taskId, node.item);
+  deps.onChange();
+}
+
+async function deleteTaskCommand(deps: Deps, node?: TaskNode): Promise<void> {
+  const { deletePromotionTask } = await import("../core/db/promotionTasks.js");
+  if (!node) {
+    void vscode.window.showInformationMessage("Right-click a promotion task to delete it.");
+    return;
+  }
+  const confirm = await vscode.window.showWarningMessage(
+    `Delete promotion task "${node.task.name}" permanently? Item entries are also deleted.`,
+    { modal: true },
+    "Delete"
+  );
+  if (confirm !== "Delete") return;
+  deletePromotionTask(deps.db, node.task.id);
+  deps.onChange();
 }

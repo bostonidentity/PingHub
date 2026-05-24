@@ -14,6 +14,7 @@ import {
   setTaskStatus,
   getTask
 } from "./promotionTasks";
+import { deletePromotionTask, listArchivedTasks } from "./promotionTasks";
 
 let db: Database;
 let tmp: string;
@@ -57,5 +58,23 @@ describe("promotion_tasks", () => {
     expect(listActiveTasks(db)).toHaveLength(1);
     setTaskStatus(db, id, "archived");
     expect(listActiveTasks(db)).toHaveLength(0);
+  });
+});
+
+describe("promotion_tasks deletion + archived listing", () => {
+  it("deletePromotionTask removes task + cascades item rows", () => {
+    const id = createPromotionTask(db, { name: "t", sourceEnv: "prod" });
+    addItemToTask(db, id, { realm: "alpha", resourceType: "journey", resourceId: "Login" });
+    deletePromotionTask(db, id);
+    expect(getTask(db, id)).toBeUndefined();
+    expect(listItemsInTask(db, id)).toHaveLength(0);
+  });
+
+  it("listArchivedTasks returns only 'archived' tasks", () => {
+    const _a = createPromotionTask(db, { name: "active", sourceEnv: "prod" });
+    void _a;
+    const b = createPromotionTask(db, { name: "archived", sourceEnv: "prod" });
+    setTaskStatus(db, b, "archived");
+    expect(listArchivedTasks(db).map((t) => t.id)).toEqual([b]);
   });
 });
