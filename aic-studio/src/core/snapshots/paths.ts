@@ -37,3 +37,7 @@ export function listAllSnapshotsForEnv(globalStoragePath: string, envName: strin
     .reverse()
     .map((n) => join(dir, n));
 }
+
+export function federationFile(snapshotDir: string, realm: string, type: string, id: string): string {
+  return join(snapshotDir, realm, "federation", type, `${id}.json`);
+}

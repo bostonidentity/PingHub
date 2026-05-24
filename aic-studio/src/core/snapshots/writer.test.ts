@@ -25,3 +25,12 @@ describe("writeJourney", () => {
     expect(existsSync(join(snapDir, "alpha", "journeys", "L.json"))).toBe(true);
   });
 });
+
+import { writeFederation } from "./writer";
+import { federationFile } from "./paths";
+
+it("writeFederation writes JSON to realm/federation/<type>/<id>.json", () => {
+  const snapDir = join(root, "2026-05-24T15-30-00Z");
+  writeFederation(snapDir, "alpha", "saml2", "sp-acme", { _id: "sp-acme", x: 1 });
+  expect(existsSync(federationFile(snapDir, "alpha", "saml2", "sp-acme"))).toBe(true);
+});

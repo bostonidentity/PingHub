@@ -70,3 +70,11 @@ describe("listAllSnapshotsForEnv", () => {
     }
   });
 });
+
+import { federationFile } from "./paths";
+
+it("federationFile is realm/federation/<type>/<id>.json", () => {
+  expect(federationFile("/snap/2026-05-24T15-30-00Z", "alpha", "saml2", "sp-acme")).toBe(
+    "/snap/2026-05-24T15-30-00Z/alpha/federation/saml2/sp-acme.json"
+  );
+});

@@ -58,3 +58,26 @@ describe("readJourneyFromSnapshot", () => {
     expect(readJourneyFromSnapshot(dir, "alpha", "Missing")).toBeUndefined();
   });
 });
+
+import { readFederationFromLatest, listFederationTypesInLatest, listFederationIdsInLatest } from "./reader";
+
+it("readFederationFromLatest reads from latest snapshot", () => {
+  const dir = join(root, "snapshots", "prod", "2026-05-24T15-30-00Z", "alpha", "federation", "saml2");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "sp-acme.json"), JSON.stringify({ _id: "sp-acme", entityID: "acme" }));
+  expect(readFederationFromLatest(root, "prod", "alpha", "saml2", "sp-acme")).toEqual({ _id: "sp-acme", entityID: "acme" });
+});
+
+it("listFederationTypesInLatest returns directory names under realm/federation/", () => {
+  mkdirSync(join(root, "snapshots", "prod", "2026-05-24T15-30-00Z", "alpha", "federation", "saml2"), { recursive: true });
+  mkdirSync(join(root, "snapshots", "prod", "2026-05-24T15-30-00Z", "alpha", "federation", "oidc"), { recursive: true });
+  expect(listFederationTypesInLatest(root, "prod", "alpha").sort()).toEqual(["oidc", "saml2"]);
+});
+
+it("listFederationIdsInLatest lists JSON files in type dir", () => {
+  const d = join(root, "snapshots", "prod", "2026-05-24T15-30-00Z", "alpha", "federation", "saml2");
+  mkdirSync(d, { recursive: true });
+  writeFileSync(join(d, "sp-acme.json"), "{}");
+  writeFileSync(join(d, "idp-okta.json"), "{}");
+  expect(listFederationIdsInLatest(root, "prod", "alpha", "saml2").sort()).toEqual(["idp-okta", "sp-acme"]);
+});
