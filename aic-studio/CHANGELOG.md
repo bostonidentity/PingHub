@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (M9 — logs query)
+
+- AIC monitoring/logs REST helper with `x-api-key` + `x-api-secret` auth
+- `saved_log_queries` SQLite table + CRUD (schema migration v6)
+- LogsTreeProvider populates the Logs sidebar (replaces M1 placeholder)
+- `aic-studio.logs.openQueryEditor` / `runSavedQuery` / `deleteSavedQuery` commands
+- Logs query React webview: source picker (am-everything, am-authentication, am-access, idm-everything…), date range, filter expression, virtualizable results table
+- First-time API credential prompt for envs that don't yet have log-api-key + log-api-secret
+- 5 new integration tests (39 total); ~9 new unit tests (~132 total)
+
 ### Added (M8 — monitors + dashboard)
 
 - Background polling: TLS certificate expiration, OAuth server ping, per env on a configurable interval
