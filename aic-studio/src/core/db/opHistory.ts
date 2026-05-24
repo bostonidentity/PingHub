@@ -2,9 +2,11 @@ import type { Database } from "better-sqlite3";
 
 export type OpStatus = "running" | "success" | "failure";
 
+export type OpKind = "pull" | "push" | "promote" | "import-legacy";
+
 export interface StartOpInput {
   envName: string;
-  opKind: string;
+  opKind: OpKind;
   scope?: string;
   snapshotDir?: string;
   targetEnv?: string;
@@ -13,7 +15,7 @@ export interface StartOpInput {
 export interface OpRow {
   id: number;
   envName: string;
-  opKind: string;
+  opKind: OpKind;
   scope?: string;
   status: OpStatus;
   message?: string;
@@ -40,7 +42,7 @@ function rowToOp(r: RawRow): OpRow {
   return {
     id: r.id,
     envName: r.env_name,
-    opKind: r.op_kind,
+    opKind: r.op_kind as OpKind,
     scope: r.scope ?? undefined,
     status: r.status as OpStatus,
     message: r.message ?? undefined,
