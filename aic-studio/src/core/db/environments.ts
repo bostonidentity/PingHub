@@ -35,6 +35,17 @@ export function insertEnvironment(db: Database, input: NewEnvironment): void {
   `).run(parsed.name, parsed.label, parsed.tenantUrl, parsed.username, parsed.clientId, parsed.color, now, now);
 }
 
+export function updateEnvironment(db: Database, input: NewEnvironment): void {
+  const parsed = NewEnvironmentSchema.parse(input);
+  const now = Date.now();
+  const r = db.prepare(`
+    UPDATE environments
+       SET label = ?, tenant_url = ?, username = ?, client_id = ?, color = ?, updated_at = ?
+     WHERE name = ?
+  `).run(parsed.label, parsed.tenantUrl, parsed.username, parsed.clientId, parsed.color, now, parsed.name);
+  if (r.changes === 0) throw new Error(`no such environment: ${parsed.name}`);
+}
+
 export function getEnvironmentByName(db: Database, name: string): Environment | undefined {
   const row = db.prepare("SELECT * FROM environments WHERE name = ?").get(name) as Row | undefined;
   return row ? rowToEnvironment(row) : undefined;

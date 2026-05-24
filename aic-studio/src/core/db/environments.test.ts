@@ -58,7 +58,7 @@ describe("getEnvironmentByName", () => {
   });
 });
 
-import { listEnvironments, removeEnvironment } from "./environments";
+import { listEnvironments, removeEnvironment, updateEnvironment } from "./environments";
 
 describe("listEnvironments", () => {
   it("returns empty array when no envs", () => {
@@ -117,5 +117,24 @@ describe("active environment", () => {
 
   it("rejects setting active to a non-existent env", () => {
     expect(() => setActiveEnvironment(db, "missing")).toThrow(/no such environment/i);
+  });
+});
+
+describe("updateEnvironment", () => {
+  it("updates an existing env in place", () => {
+    insertEnvironment(db, { name: "dev", label: "Old", tenantUrl: "https://a", username: "u", clientId: "c", color: "slate" });
+    updateEnvironment(db, { name: "dev", label: "New", tenantUrl: "https://b", username: "u2", clientId: "c2", color: "green" });
+    const got = getEnvironmentByName(db, "dev");
+    expect(got!.label).toBe("New");
+    expect(got!.tenantUrl).toBe("https://b");
+    expect(got!.username).toBe("u2");
+    expect(got!.clientId).toBe("c2");
+    expect(got!.color).toBe("green");
+  });
+
+  it("throws when env does not exist", () => {
+    expect(() =>
+      updateEnvironment(db, { name: "missing", label: "L", tenantUrl: "https://x", username: "u", clientId: "c", color: "slate" })
+    ).toThrow(/no such environment/);
   });
 });
