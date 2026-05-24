@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (M10 — analyze / find usage)
+
+- Reference graph indexer walks the latest snapshot for an env and extracts cross-references from journey JSON
+- Journey reference walker covers ScriptedDecisionNode (script refs), InnerTreeEvaluatorNode (journey refs), Saml2Node (saml2 refs), SocialProviderHandlerNode/OAuth2Node (OAuth2Client refs)
+- `findUsage(globalStoragePath, envName, target)` filters the graph by target ResourceRef
+- `aic-studio.analyze.findUsage` command (right-click a journey or federation item in the Environments tree)
+- Analyze React webview with grouped reference table, filter input, and click-to-open links
+- 2 new integration tests (41 total); ~12 new unit tests (~148 total)
+
 ### Added (M9 — logs query)
 
 - AIC monitoring/logs REST helper with `x-api-key` + `x-api-secret` auth
