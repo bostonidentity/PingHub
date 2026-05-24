@@ -26,3 +26,14 @@ export function latestSnapshotDir(globalStoragePath: string, envName: string): s
     .sort((a, b) => b.mtimeMs - a.mtimeMs);
   return entries.length > 0 ? join(dir, entries[0].name) : undefined;
 }
+
+export function listAllSnapshotsForEnv(globalStoragePath: string, envName: string): string[] {
+  const dir = envSnapshotDir(globalStoragePath, envName);
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort()
+    .reverse()
+    .map((n) => join(dir, n));
+}

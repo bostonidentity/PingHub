@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { snapshotRoot, envSnapshotDir, latestSnapshotDir, journeyFile, isoStamp } from "./paths";
+import { snapshotRoot, envSnapshotDir, latestSnapshotDir, journeyFile, isoStamp, listAllSnapshotsForEnv } from "./paths";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,6 +35,36 @@ describe("snapshot path helpers", () => {
       mkdirSync(a);
       mkdirSync(b);
       expect(latestSnapshotDir(root, "prod")).toBe(b);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("listAllSnapshotsForEnv", () => {
+  it("returns all snapshot dirs newest-first (by name desc)", () => {
+    const root = mkdtempSync(join(tmpdir(), "snap-list-"));
+    try {
+      const envDir = join(root, "snapshots", "prod");
+      mkdirSync(envDir, { recursive: true });
+      mkdirSync(join(envDir, "2026-05-24T10-00-00Z"));
+      mkdirSync(join(envDir, "2026-05-24T12-00-00Z"));
+      mkdirSync(join(envDir, "2026-05-24T15-00-00Z"));
+      const all = listAllSnapshotsForEnv(root, "prod");
+      expect(all.map((p) => p.split("/").pop())).toEqual([
+        "2026-05-24T15-00-00Z",
+        "2026-05-24T12-00-00Z",
+        "2026-05-24T10-00-00Z"
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns [] when env has no snapshots", () => {
+    const root = mkdtempSync(join(tmpdir(), "snap-list-empty-"));
+    try {
+      expect(listAllSnapshotsForEnv(root, "prod")).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

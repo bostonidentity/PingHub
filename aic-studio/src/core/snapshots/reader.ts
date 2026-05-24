@@ -36,3 +36,13 @@ export function listJourneysInLatest(
     .filter((e) => e.isFile() && e.name.endsWith(".json"))
     .map((e) => e.name.replace(/\.json$/, ""));
 }
+
+export function readJourneyFromSnapshot(
+  snapshotDir: string,
+  realm: string,
+  id: string
+): Record<string, unknown> | undefined {
+  const file = journeyFile(snapshotDir, realm, id);
+  if (!existsSync(file)) return undefined;
+  return JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+}

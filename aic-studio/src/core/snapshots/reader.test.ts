@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readJourneyFromLatest, listRealmsInLatest, listJourneysInLatest } from "./reader";
+import { readJourneyFromLatest, listRealmsInLatest, listJourneysInLatest, readJourneyFromSnapshot } from "./reader";
 
 let root: string;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "snap-reader-")); });
@@ -40,5 +40,21 @@ describe("snapshot reader", () => {
   it("returns [] when realm directory missing", () => {
     seed("prod", "2026-05-24T15-30-00Z", "alpha", { L: {} });
     expect(listJourneysInLatest(root, "prod", "missing")).toEqual([]);
+  });
+});
+
+describe("readJourneyFromSnapshot", () => {
+  it("reads journey from a specific snapshot dir (not the latest)", () => {
+    seed("prod", "2026-05-24T10-00-00Z", "alpha", { Login: { _id: "Login", v: 1 } });
+    seed("prod", "2026-05-24T12-00-00Z", "alpha", { Login: { _id: "Login", v: 2 } });
+    const olderDir = join(root, "snapshots", "prod", "2026-05-24T10-00-00Z");
+    const body = readJourneyFromSnapshot(olderDir, "alpha", "Login");
+    expect(body).toEqual({ _id: "Login", v: 1 });
+  });
+
+  it("returns undefined when the snapshot lacks the journey", () => {
+    seed("prod", "2026-05-24T10-00-00Z", "alpha", { Login: {} });
+    const dir = join(root, "snapshots", "prod", "2026-05-24T10-00-00Z");
+    expect(readJourneyFromSnapshot(dir, "alpha", "Missing")).toBeUndefined();
   });
 });
