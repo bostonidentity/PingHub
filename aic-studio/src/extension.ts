@@ -30,7 +30,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
       delete: (k) => Promise.resolve(ctx.secrets.delete(k))
     });
 
-    const envTree = new EnvironmentsTreeProvider(db);
+    const envTree = new EnvironmentsTreeProvider(db, ctx.globalStorageUri.fsPath);
     const statusBar = new ActiveEnvStatusBar(ctx, db);
 
     ctx.subscriptions.push(
