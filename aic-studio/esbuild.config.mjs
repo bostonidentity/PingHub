@@ -28,7 +28,8 @@ const integrationTestConfig = {
     "tests/integration/suite/pullFlow.test.ts",
     "tests/integration/suite/virtualDocs.test.ts",
     "tests/integration/suite/compare.test.ts",
-    "tests/integration/suite/pushFlow.test.ts"
+    "tests/integration/suite/pushFlow.test.ts",
+    "tests/integration/suite/promoteFlow.test.ts"
   ],
   bundle: false,
   outdir: "out/tests/integration",
