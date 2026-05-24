@@ -47,7 +47,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
     );
 
     const pullStatus = new PullProgressStatusBar(ctx);
-    const scmRegistry = new EnvSourceControlRegistry(ctx, db);
+    const scmRegistry = new EnvSourceControlRegistry(ctx, db, ctx.globalStorageUri.fsPath);
     scmRegistry.syncFromDb();
 
     const contentProvider = new AicDocumentContentProvider(ctx.globalStorageUri.fsPath);

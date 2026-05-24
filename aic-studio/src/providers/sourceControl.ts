@@ -1,23 +1,35 @@
+// src/providers/sourceControl.ts
 import * as vscode from "vscode";
 import type { Database } from "better-sqlite3";
 import { listEnvironments } from "../core/db/environments";
+import { findLocallyModifiedJourneys, type ChangedItem } from "../core/diff/snapshotDiff";
+import { makeAicUri } from "./virtualDocs";
+
+interface EnvScm {
+  scm: vscode.SourceControl;
+  changes: vscode.SourceControlResourceGroup;
+}
 
 export class EnvSourceControlRegistry {
-  private readonly scms = new Map<string, vscode.SourceControl>();
+  private readonly scms = new Map<string, EnvScm>();
 
-  constructor(private readonly ctx: vscode.ExtensionContext, private readonly db: Database) {}
+  constructor(
+    private readonly ctx: vscode.ExtensionContext,
+    private readonly db: Database,
+    private readonly globalStoragePath: string
+  ) {}
 
-  /** Create or refresh SourceControl entries for all current envs. */
   syncFromDb(): void {
     const envs = listEnvironments(this.db);
     const envNames = new Set(envs.map((e) => e.name));
 
-    for (const [name, scm] of this.scms.entries()) {
+    for (const [name, entry] of this.scms.entries()) {
       if (!envNames.has(name)) {
-        scm.dispose();
+        entry.scm.dispose();
         this.scms.delete(name);
       }
     }
+
     for (const env of envs) {
       if (!this.scms.has(env.name)) {
         const scm = vscode.scm.createSourceControl(
@@ -29,10 +41,24 @@ export class EnvSourceControlRegistry {
           command: "aic-studio.sync.push",
           title: "Push to env"
         };
-        scm.createResourceGroup("changes", "Changes");
+        const changes = scm.createResourceGroup("changes", "Changes");
         this.ctx.subscriptions.push(scm);
-        this.scms.set(env.name, scm);
+        this.scms.set(env.name, { scm, changes });
       }
+    }
+
+    this.refreshChanges();
+  }
+
+  /** Recompute Changes group resources for every env. */
+  refreshChanges(): void {
+    for (const [envName, entry] of this.scms.entries()) {
+      const diffs: ChangedItem[] = findLocallyModifiedJourneys(this.globalStoragePath, envName);
+      entry.changes.resourceStates = diffs.map((d) => ({
+        resourceUri: makeAicUri(envName, d.realm, d.resourceType, d.resourceId),
+        decorations: { strikeThrough: false }
+      }));
+      entry.scm.count = diffs.length;
     }
   }
 }
