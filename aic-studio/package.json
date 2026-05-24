@@ -111,6 +111,12 @@
         "title": "AIC Studio: Archive promotion task…",
         "category": "AIC Studio"
       }
+      ,
+      { "command": "aic-studio.compare.withRevision", "title": "AIC Studio: Compare with revision…", "category": "AIC Studio" },
+      { "command": "aic-studio.compare.pickEnvs", "title": "AIC Studio: Compare envs (pick two)…", "category": "AIC Studio" },
+      { "command": "aic-studio.history.openDetails", "title": "AIC Studio: Show operation details", "category": "AIC Studio" },
+      { "command": "aic-studio.promote.removeItem", "title": "AIC Studio: Remove item from promotion task", "category": "AIC Studio" },
+      { "command": "aic-studio.promote.deleteTask", "title": "AIC Studio: Delete promotion task…", "category": "AIC Studio" }
     ],
     "menus": {
       "view/title": [
@@ -156,6 +162,10 @@
           "when": "viewItem == aic-studio.promotionTask",
           "group": "2_archive"
         }
+        ,
+        { "command": "aic-studio.compare.withRevision", "when": "viewItem == aic-studio.journey", "group": "1_compare" },
+        { "command": "aic-studio.promote.removeItem", "when": "viewItem == aic-studio.promotionTaskItem", "group": "inline" },
+        { "command": "aic-studio.promote.deleteTask", "when": "viewItem == aic-studio.promotionTask || viewItem == aic-studio.archivedTask", "group": "3_delete" }
       ]
     },
     "configuration": {
