@@ -51,7 +51,8 @@ const webviewUiConfig = {
   entryPoints: [
     "src/webviews/ui/federation-editor/main.tsx",
     "src/webviews/ui/monitor-dashboard/main.tsx",
-    "src/webviews/ui/logs-query/main.tsx"
+    "src/webviews/ui/logs-query/main.tsx",
+    "src/webviews/ui/analyze/main.tsx"
   ],
   bundle: true,
   outdir: "out/webviews",
