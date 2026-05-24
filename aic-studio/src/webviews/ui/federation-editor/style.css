@@ -1,0 +1,69 @@
+:root {
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+}
+
+body { margin: 0; padding: 16px; }
+
+.status, .editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+header h2 {
+  margin: 0;
+  font-size: 1.2em;
+}
+
+header p {
+  margin: 4px 0 0;
+  color: var(--vscode-descriptionForeground);
+}
+
+textarea {
+  flex: 1;
+  min-height: 60vh;
+  font-family: var(--vscode-editor-font-family, "Menlo", monospace);
+  font-size: var(--vscode-editor-font-size);
+  background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+  color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-input-border);
+  padding: 8px;
+  resize: vertical;
+}
+
+.actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+button {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.ok {
+  color: var(--vscode-testing-iconPassed, #4ec9b0);
+}
+
+.err {
+  color: var(--vscode-errorForeground);
+}
+
+code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+  padding: 1px 4px;
+  border-radius: 3px;
+}
