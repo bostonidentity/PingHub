@@ -162,6 +162,8 @@
       { "command": "aic-studio.logs.openQueryEditor", "title": "AIC Studio: Open log query editor…", "category": "AIC Studio", "icon": "$(search)" },
       { "command": "aic-studio.logs.runSavedQuery", "title": "AIC Studio: Run saved log query", "category": "AIC Studio" },
       { "command": "aic-studio.logs.deleteSavedQuery", "title": "AIC Studio: Delete saved log query…", "category": "AIC Studio" }
+      ,
+      { "command": "aic-studio.analyze.findUsage", "title": "AIC Studio: Find usage", "category": "AIC Studio", "icon": "$(references)" }
     ],
     "menus": {
       "view/title": [
@@ -257,6 +259,9 @@
         ,
         { "command": "aic-studio.logs.openQueryEditor", "when": "viewItem == aic-studio.logsEnv", "group": "inline" },
         { "command": "aic-studio.logs.deleteSavedQuery", "when": "viewItem == aic-studio.savedLogQuery", "group": "1_delete" }
+        ,
+        { "command": "aic-studio.analyze.findUsage", "when": "viewItem == aic-studio.journey", "group": "3_analyze" },
+        { "command": "aic-studio.analyze.findUsage", "when": "viewItem == aic-studio.federationItem", "group": "3_analyze" }
       ]
     },
     "configuration": {

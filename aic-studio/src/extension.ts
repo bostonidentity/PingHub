@@ -30,6 +30,8 @@ import { registerCompareCommands } from "./commands/compare";
 import { PullProgressStatusBar } from "./status/pullProgress";
 import { FederationEditorHost } from "./webviews/host/federationHost";
 import { registerFederationCommands } from "./commands/federation";
+import { AnalyzeHost } from "./webviews/host/analyzeHost";
+import { registerAnalyzeCommands } from "./commands/analyze";
 
 export function activate(ctx: vscode.ExtensionContext): void {
   initLogger(ctx);
@@ -177,6 +179,9 @@ export function activate(ctx: vscode.ExtensionContext): void {
       },
       openQueryEditor: (envName: string, savedQueryId?: number) => logsQueryHost.open(envName, savedQueryId)
     });
+
+    const analyzeHost = new AnalyzeHost({ ctx, globalStoragePath: ctx.globalStorageUri.fsPath });
+    registerAnalyzeCommands(ctx, analyzeHost);
 
     // Read poll interval from config (default 15 minutes)
     const pollMinutes = vscode.workspace.getConfiguration("aic-studio").get<number>("monitor.pollIntervalMinutes") ?? 15;
