@@ -5,8 +5,6 @@ import {
   Environment,
   ConfigScope,
   CONFIG_SCOPES,
-  PROMOTE_SUBCOMMANDS,
-  PromoteSubcommand,
 } from "@/lib/fr-config-types";
 import type { ScopeSelection } from "@/lib/fr-config-types";
 import type { PromotionTask, TaskStatus } from "@/lib/promotion-tasks";
