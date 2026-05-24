@@ -89,6 +89,27 @@
         "command": "aic-studio.compare.withEnv",
         "title": "AIC Studio: Compare with environment…",
         "category": "AIC Studio"
+      },
+      {
+        "command": "aic-studio.sync.push",
+        "title": "AIC Studio: Push to environment…",
+        "category": "AIC Studio"
+      },
+      {
+        "command": "aic-studio.promote.addToTask",
+        "title": "AIC Studio: Add to promotion task…",
+        "category": "AIC Studio"
+      },
+      {
+        "command": "aic-studio.promote.runTask",
+        "title": "AIC Studio: Run promotion task…",
+        "category": "AIC Studio",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "aic-studio.promote.archiveTask",
+        "title": "AIC Studio: Archive promotion task…",
+        "category": "AIC Studio"
       }
     ],
     "menus": {
@@ -114,6 +135,26 @@
           "command": "aic-studio.compare.withEnv",
           "when": "viewItem == aic-studio.journey",
           "group": "1_compare"
+        },
+        {
+          "command": "aic-studio.sync.push",
+          "when": "viewItem == aic-studio.journey",
+          "group": "1_compare"
+        },
+        {
+          "command": "aic-studio.promote.addToTask",
+          "when": "viewItem == aic-studio.journey",
+          "group": "2_promote"
+        },
+        {
+          "command": "aic-studio.promote.runTask",
+          "when": "viewItem == aic-studio.promotionTask",
+          "group": "inline"
+        },
+        {
+          "command": "aic-studio.promote.archiveTask",
+          "when": "viewItem == aic-studio.promotionTask",
+          "group": "2_archive"
         }
       ]
     },
