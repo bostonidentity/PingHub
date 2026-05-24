@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const MIGRATIONS: readonly { version: number; sql: string }[] = [
   {
@@ -99,6 +99,21 @@ export const MIGRATIONS: readonly { version: number; sql: string }[] = [
         last_seen_at INTEGER NOT NULL,
         acknowledged_at INTEGER
       );
+    `
+  },
+  {
+    version: 6,
+    sql: `
+      CREATE TABLE IF NOT EXISTS saved_log_queries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        env_name TEXT NOT NULL,
+        name TEXT NOT NULL,
+        source TEXT NOT NULL,
+        filter_expr TEXT,
+        created_at INTEGER NOT NULL,
+        last_run_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_saved_log_queries_env ON saved_log_queries(env_name, name);
     `
   }
 ] as const;
