@@ -27,40 +27,60 @@ Built on top of a vendored subset of [`fr-config-manager`](https://github.com/Fo
 
 ## Install (end users)
 
-Clone the [PingHub monorepo](https://github.com/bostonidentity/PingHub) and run the bootstrap script — it detects your OS, ensures Node 20+, installs dependencies, builds, and launches the web UI.
+Clone the [PingHub monorepo](https://github.com/bostonidentity/PingHub) and run `./start` — it detects your OS, ensures Node 20+, installs dependencies, builds, launches the server in the background, and opens your browser.
 
 ### macOS / Linux
 
 ```bash
 git clone https://github.com/bostonidentity/PingHub.git
 cd PingHub
-./pinghub
+./start
 ```
 
-### Windows (Command Prompt or PowerShell)
+To stop:
+```bash
+./stop
+```
+
+### Windows (Command Prompt)
 
 ```cmd
 git clone https://github.com/bostonidentity/PingHub.git
 cd PingHub
-pinghub.cmd
+start.cmd
 ```
 
-That's it. Your browser opens at `http://127.0.0.1:47391`. `Ctrl-C` to stop.
+To stop:
+```cmd
+stop.cmd
+```
+
+The server runs in the background. Your browser opens at `http://127.0.0.1:47391`. Closing the browser does NOT stop the server — use `./stop` (or `stop.cmd`) to shut it down.
 
 **On first run** the script will install dependencies and run a production build (~30s on a fast machine). Subsequent launches start in seconds.
 
+### Logs
+
+The server's stdout/stderr is written to `aic-pipeline/.pinghub-logs/pinghub.log`. Each `./start` invocation appends a timestamped section header to the log so you can find session boundaries.
+
+To follow the log live:
+```bash
+tail -f aic-pipeline/.pinghub-logs/pinghub.log
+```
+
 ### Updating
 
-The script checks the repo for upstream updates each launch. When new commits are available it prints `⚡ N update(s) available` and prompts before continuing. To pull:
+`./start` checks the repo for upstream updates each launch and prints `⚡ N update(s) available` if any. To pull and restart:
 
 ```bash
+./stop
 git pull
-./pinghub
+./start
 ```
 
 ### Flags
 
-Pinghub-script flags:
+Bootstrap flags:
 
 | Flag | Effect |
 |---|---|
@@ -75,7 +95,6 @@ Launcher flags (forwarded to the running app):
 | `--port N` | Override the port (default 47391; falls back to a free port if taken) |
 | `--no-open` | Start the server but don't open the browser |
 | `--data-dir PATH` | Override `PINGHUB_DATA_DIR` |
-| `--version` | Print version and exit |
 
 ### Node version handling
 
@@ -90,7 +109,8 @@ If you previously ran with `--bundled-node` and later install system Node 20+, d
 ### Pin a specific version
 
 ```bash
-PINGHUB_VERSION=v0.3.0 curl -fsSL https://raw.githubusercontent.com/bostonidentity/PingHub/main/aic-pipeline/launcher/install.sh | bash
+git checkout v0.3.0
+./start
 ```
 
 ## Install (developers)

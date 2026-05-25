@@ -1,12 +1,16 @@
 @echo off
-REM pinghub.cmd — Windows entry. Detects Node, installs deps, builds, launches.
-REM Each step is check-then-do; safe to re-run.
+REM start.cmd — Windows entry: bootstrap + launch PingHub in background.
+REM Server logs go to aic-pipeline\.pinghub-logs\pinghub.log.
+REM Run stop.cmd to stop the server.
 
 setlocal enabledelayedexpansion
 
 set "REPO_ROOT=%~dp0"
 if "%REPO_ROOT:~-1%"=="\" set "REPO_ROOT=%REPO_ROOT:~0,-1%"
 set "APP_DIR=%REPO_ROOT%\aic-pipeline"
+set "LOG_DIR=%APP_DIR%\.pinghub-logs"
+set "LOG_FILE=%LOG_DIR%\pinghub.log"
+set "PID_FILE=%LOG_DIR%\pinghub.pid"
 set "LOG=[pinghub]"
 
 if not exist "%APP_DIR%" (
@@ -29,7 +33,19 @@ shift
 goto parse_args
 :parse_done
 
-REM ── 1. OS detect ──────────────────────────────────────────────────
+REM ── Already running? ──────────────────────────────────────────────
+if exist "%PID_FILE%" (
+  set /p EXISTING_PID=<"%PID_FILE%"
+  tasklist /FI "PID eq !EXISTING_PID!" 2>nul | findstr /C:"!EXISTING_PID!" >nul
+  if !errorlevel! EQU 0 (
+    echo %LOG% ERROR: already running ^(PID !EXISTING_PID!^). Run stop.cmd first, or check %LOG_FILE%
+    exit /b 1
+  ) else (
+    echo %LOG% stale PID file ^(PID !EXISTING_PID! not running^); cleaning up
+    del "%PID_FILE%" 2>nul
+  )
+)
+
 echo %LOG% detected: windows-x64
 
 REM ── Optional --reinstall ──────────────────────────────────────────
@@ -39,14 +55,12 @@ if "%REINSTALL%"=="1" (
   if exist "%APP_DIR%\.next"        rmdir /s /q "%APP_DIR%\.next"
 )
 
-REM ── 2. Ensure Node 20+ ────────────────────────────────────────────
+REM ── Ensure Node 20+ ───────────────────────────────────────────────
 set "NODE_PIN_VERSION=20.18.0"
 set "LOCAL_NODE_DIR=%APP_DIR%\.pinghub-node"
 set "LOCAL_NODE_BIN=%LOCAL_NODE_DIR%\node.exe"
-
 set "NODE_EXE="
 
-REM Priority 1: bundled
 if exist "%LOCAL_NODE_BIN%" (
   for /f "tokens=*" %%v in ('"%LOCAL_NODE_BIN%" -v 2^>nul') do set "NV=%%v"
   if defined NV (
@@ -59,7 +73,6 @@ if exist "%LOCAL_NODE_BIN%" (
   )
 )
 
-REM Priority 2: system Node
 if not defined NODE_EXE (
   where node >nul 2>&1
   if !errorlevel! EQU 0 (
@@ -77,7 +90,6 @@ if not defined NODE_EXE (
   )
 )
 
-REM Priority 3: download
 if not defined NODE_EXE (
   echo %LOG% Node 20+ not found. Downloading Node !NODE_PIN_VERSION!...
   set "TMP_DIR=%TEMP%\pinghub-node-%RANDOM%"
@@ -107,7 +119,7 @@ set "NODE_DIR="
 for %%i in ("%NODE_EXE%") do set "NODE_DIR=%%~dpi"
 set "PATH=%NODE_DIR%;%PATH%"
 
-REM ── 3. npm install ────────────────────────────────────────────────
+REM ── npm install ───────────────────────────────────────────────────
 pushd "%APP_DIR%"
 
 set "DEPS_STALE=0"
@@ -115,7 +127,7 @@ if not exist "node_modules" set "DEPS_STALE=1"
 if not exist "node_modules\.package-lock.json" set "DEPS_STALE=1"
 
 if "%DEPS_STALE%"=="1" (
-  echo %LOG% installing dependencies (npm install)...
+  echo %LOG% installing dependencies ^(npm install^)...
   call npm install
   if errorlevel 1 (
     echo %LOG% ERROR: npm install failed
@@ -126,9 +138,9 @@ if "%DEPS_STALE%"=="1" (
   echo %LOG% dependencies up to date
 )
 
-REM ── 4. Build ──────────────────────────────────────────────────────
+REM ── Build ─────────────────────────────────────────────────────────
 if not exist ".next\standalone\server.js" (
-  echo %LOG% building app (npm run build)...
+  echo %LOG% building app ^(npm run build^)...
   call npm run build
   if errorlevel 1 (
     echo %LOG% ERROR: build failed
@@ -141,7 +153,7 @@ if not exist ".next\standalone\server.js" (
 
 popd
 
-REM ── 5. Check for updates ──────────────────────────────────────────
+REM ── Check for updates ─────────────────────────────────────────────
 if "%SKIP_UPDATE%"=="0" (
   pushd "%REPO_ROOT%"
   git rev-parse --is-inside-work-tree >nul 2>&1
@@ -153,13 +165,7 @@ if "%SKIP_UPDATE%"=="0" (
       if defined AHEAD (
         if !AHEAD! GTR 0 (
           echo %LOG% !AHEAD! update^(s^) available
-          echo %LOG%   Run 'git pull' to update, then re-run pinghub
-          set /p "ANS=%LOG% Continue without updating? [Y/n] "
-          if /i "!ANS!"=="n" (
-            echo %LOG% aborted by user
-            popd
-            exit /b 5
-          )
+          echo %LOG%   Run 'git pull' then re-run start.cmd
         ) else (
           echo %LOG% up to date
         )
@@ -169,10 +175,40 @@ if "%SKIP_UPDATE%"=="0" (
   popd
 )
 
-REM ── 6. Launch ─────────────────────────────────────────────────────
+REM ── Launch in background ──────────────────────────────────────────
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
+
+echo. >> "%LOG_FILE%"
+echo ============================================================ >> "%LOG_FILE%"
+echo  pinghub start at %DATE% %TIME% >> "%LOG_FILE%"
+echo  node: %NODE_EXE% >> "%LOG_FILE%"
+echo  cwd: %APP_DIR% >> "%LOG_FILE%"
+echo ============================================================ >> "%LOG_FILE%"
+
+echo %LOG% launching in background...
 pushd "%APP_DIR%"
-echo %LOG% launching...
-"%NODE_EXE%" launcher\launcher.mjs %LAUNCHER_ARGS%
-set "EXIT_CODE=!errorlevel!"
+
+REM Use PowerShell to spawn detached and capture PID.
+for /f "tokens=*" %%p in ('powershell -NoProfile -Command "$p = Start-Process -FilePath '%NODE_EXE%' -ArgumentList 'launcher\launcher.mjs%LAUNCHER_ARGS%' -RedirectStandardOutput '%LOG_FILE%.out' -RedirectStandardError '%LOG_FILE%.err' -WindowStyle Hidden -PassThru; $p.Id"') do (
+  set "SERVER_PID=%%p"
+)
 popd
-exit /b %EXIT_CODE%
+
+echo %SERVER_PID% > "%PID_FILE%"
+
+REM Wait briefly, then verify it's still running
+timeout /t 3 /nobreak >nul
+tasklist /FI "PID eq %SERVER_PID%" 2>nul | findstr /C:"%SERVER_PID%" >nul
+if errorlevel 1 (
+  echo %LOG% ERROR: server died during startup. Last lines of log:
+  echo ----------------------------------------------------------------
+  if exist "%LOG_FILE%.err" type "%LOG_FILE%.err"
+  if exist "%LOG_FILE%.out" type "%LOG_FILE%.out"
+  echo ----------------------------------------------------------------
+  del "%PID_FILE%" 2>nul
+  exit /b 5
+)
+
+echo %LOG% started ^(PID %SERVER_PID%^)
+echo %LOG%   log:  %LOG_FILE%.out
+echo %LOG%   stop: stop.cmd

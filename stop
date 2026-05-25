@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# stop — stop the PingHub server started by ./start.
+# Reads the PID from aic-pipeline/.pinghub-logs/pinghub.pid,
+# sends SIGTERM, waits up to 3s for graceful shutdown, then SIGKILL
+# if still alive.
+
+set -euo pipefail
+
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_PATH" ]; do
+  link_target=$(readlink "$SCRIPT_PATH")
+  case "$link_target" in
+    /*) SCRIPT_PATH="$link_target" ;;
+    *)  SCRIPT_PATH="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)/$link_target" ;;
+  esac
+done
+REPO_ROOT="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+APP_DIR="${REPO_ROOT}/aic-pipeline"
+PID_FILE="${APP_DIR}/.pinghub-logs/pinghub.pid"
+LOG_PREFIX="[pinghub]"
+
+step() { echo "$LOG_PREFIX $*"; }
+
+if [ ! -f "$PID_FILE" ]; then
+  step "not running (no PID file at $PID_FILE)"
+  exit 0
+fi
+
+PID=$(cat "$PID_FILE" 2>/dev/null || true)
+if [ -z "$PID" ]; then
+  step "PID file empty; cleaning up"
+  rm -f "$PID_FILE"
+  exit 0
+fi
+
+if ! kill -0 "$PID" 2>/dev/null; then
+  step "stale PID file (PID $PID not running); cleaning up"
+  rm -f "$PID_FILE"
+  exit 0
+fi
+
+step "stopping PID $PID..."
+kill "$PID" 2>/dev/null || true
+
+# Wait up to 3 seconds for graceful shutdown
+for _ in 1 2 3; do
+  sleep 1
+  if ! kill -0 "$PID" 2>/dev/null; then
+    break
+  fi
+done
+
+if kill -0 "$PID" 2>/dev/null; then
+  step "still alive after 3s, forcing"
+  kill -9 "$PID" 2>/dev/null || true
+  sleep 1
+fi
+
+rm -f "$PID_FILE"
+step "✓ stopped"

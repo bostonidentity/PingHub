@@ -21,8 +21,9 @@
 /build
 /dist/
 
-# pinghub bootstrap-downloaded Node + cache
+# pinghub bootstrap-downloaded Node + cache + runtime logs/PID
 /.pinghub-node/
+/.pinghub-logs/
 /.tarball-cache/
 
 # misc

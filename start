@@ -1,25 +1,23 @@
 #!/usr/bin/env bash
-# pinghub — clone + launch.
+# start — bootstrap + launch PingHub in the background.
 #
 # After `git clone https://github.com/bostonidentity/PingHub && cd PingHub`,
-# run `./pinghub` to start the web UI. Each step below is check-then-do:
-# safe to re-run, picks up where the last run left off if anything failed.
+# run `./start` to install dependencies, build, and launch the web UI.
+# The server runs detached; logs go to aic-pipeline/.pinghub-logs/pinghub.log.
+# Browser auto-opens. Run `./stop` to stop the server.
 #
-#   1. Detect OS (mac / linux / windows-via-msys)
-#   2. Ensure Node 20+
-#        a. ./aic-pipeline/.pinghub-node/bin/node (bundled, highest priority)
-#        b. system `node` if version >= 20
-#        c. download Node 20.18.0 into ./aic-pipeline/.pinghub-node/
-#   3. npm install (if node_modules missing or stale)
-#   4. npm run build (if .next/standalone/server.js missing)
-#   5. Check git for upstream updates; prompt before continuing if any
-#   6. Launch via launcher/launcher.mjs
+# Each step is check-then-do — safe to re-run if a previous run failed
+# partway through; it picks up where it left off.
 #
-# Flags are forwarded to launcher.mjs:  --port, --no-open, --data-dir, --version
-# Pinghub-script-only flags:
-#   --bundled-node    force download of bundled Node even if system Node is fine
-#   --skip-update     don't check git for updates
-#   --reinstall       wipe node_modules + .next before bootstrapping
+# Pinghub-script flags:
+#   --bundled-node     force download of bundled Node even if system Node is fine
+#   --skip-update      don't check git for updates
+#   --reinstall        wipe node_modules + .next before bootstrapping
+#
+# Launcher flags forwarded to launcher.mjs:
+#   --port N           override port (default 47391)
+#   --no-open          start server but don't open the browser
+#   --data-dir PATH    override PINGHUB_DATA_DIR
 
 set -euo pipefail
 
@@ -34,12 +32,15 @@ while [ -L "$SCRIPT_PATH" ]; do
 done
 REPO_ROOT="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 APP_DIR="${REPO_ROOT}/aic-pipeline"
+LOG_DIR="${APP_DIR}/.pinghub-logs"
+LOG_FILE="${LOG_DIR}/pinghub.log"
+PID_FILE="${LOG_DIR}/pinghub.pid"
 
 LOG_PREFIX="[pinghub]"
 step() { echo "$LOG_PREFIX $*"; }
 fail() { echo "$LOG_PREFIX ERROR: $*" >&2; exit 1; }
 
-# ── Parse pinghub-only flags ────────────────────────────────────────
+# ── Parse flags ─────────────────────────────────────────────────────
 BUNDLED_NODE=0
 SKIP_UPDATE=0
 REINSTALL=0
@@ -53,12 +54,23 @@ for arg in "$@"; do
   esac
 done
 
+# ── Already running? ────────────────────────────────────────────────
+if [ -f "$PID_FILE" ]; then
+  EXISTING_PID=$(cat "$PID_FILE" 2>/dev/null || true)
+  if [ -n "$EXISTING_PID" ] && kill -0 "$EXISTING_PID" 2>/dev/null; then
+    fail "already running (PID $EXISTING_PID). Run ./stop first, or check $LOG_FILE"
+  else
+    step "stale PID file (PID $EXISTING_PID not running); cleaning up"
+    rm -f "$PID_FILE"
+  fi
+fi
+
 # ── 1. Detect OS ────────────────────────────────────────────────────
 case "$(uname -s)" in
   Darwin)              OS="darwin" ;;
   Linux)               OS="linux" ;;
   MINGW*|MSYS*|CYGWIN*) OS="windows" ;;
-  *) fail "unsupported OS: $(uname -s) — try the Windows installer if on native cmd/powershell" ;;
+  *) fail "unsupported OS: $(uname -s) — use start.cmd on native Windows" ;;
 esac
 
 case "$(uname -m)" in
@@ -86,7 +98,6 @@ LOCAL_NODE_DIR="${APP_DIR}/.pinghub-node"
 LOCAL_NODE_BIN="${LOCAL_NODE_DIR}/bin/node"
 
 node_major() {
-  # Echo the major version number of the node binary at $1, or empty string.
   if [ -x "$1" ]; then
     "$1" -v 2>/dev/null | sed 's/^v//' | cut -d. -f1
   fi
@@ -135,13 +146,11 @@ download_node() {
   mv "$extracted" "$LOCAL_NODE_DIR"
 }
 
-# Forced bundled mode
 if [ "$BUNDLED_NODE" -eq 1 ] && [ ! -x "$LOCAL_NODE_BIN" ]; then
   download_node
 fi
 
 NODE_EXE=""
-# Priority 1: local bundled Node
 if [ -x "$LOCAL_NODE_BIN" ]; then
   major=$(node_major "$LOCAL_NODE_BIN")
   if [ -n "$major" ] && [ "$major" -ge "$NODE_REQ_MAJOR" ]; then
@@ -154,7 +163,6 @@ if [ -x "$LOCAL_NODE_BIN" ]; then
   fi
 fi
 
-# Priority 2: system Node
 if [ -z "$NODE_EXE" ] && command -v node >/dev/null 2>&1; then
   sys_node=$(command -v node)
   major=$(node_major "$sys_node")
@@ -166,17 +174,14 @@ if [ -z "$NODE_EXE" ] && command -v node >/dev/null 2>&1; then
   fi
 fi
 
-# Priority 3: download
 if [ -z "$NODE_EXE" ]; then
   download_node
   NODE_EXE="$LOCAL_NODE_BIN"
   step "✓ downloaded Node $("$NODE_EXE" -v)"
 fi
 
-# Make the chosen Node win against system on PATH for child npm calls
 NPM_EXE="$(dirname "$NODE_EXE")/npm"
 if [ ! -x "$NPM_EXE" ]; then
-  # System Node — use system npm
   NPM_EXE="npm"
 fi
 export PATH="$(dirname "$NODE_EXE"):${PATH}"
@@ -187,7 +192,6 @@ cd "$APP_DIR"
 deps_stale() {
   [ ! -d node_modules ] && return 0
   [ ! -f node_modules/.package-lock.json ] && return 0
-  # If package.json is newer than node_modules/.package-lock.json, deps are stale
   [ package.json -nt node_modules/.package-lock.json ] && return 0
   [ package-lock.json -nt node_modules/.package-lock.json ] && return 0
   return 1
@@ -224,28 +228,53 @@ if [ "$SKIP_UPDATE" -eq 0 ]; then
         ahead=$(git rev-list --count "HEAD..${upstream}" 2>/dev/null || echo "0")
         if [ "$ahead" -gt 0 ]; then
           step "⚡ ${ahead} update(s) available on ${branch}"
-          step "   Run 'git pull' to update, then re-run ./pinghub"
-          printf "$LOG_PREFIX Continue without updating? [Y/n] "
-          if read -r ans </dev/tty; then
-            case "$ans" in
-              n|N|no|NO) fail "aborted by user; git pull and re-run" ;;
-            esac
-          fi
+          step "   Run 'git pull' to update, then re-run ./start"
         else
           step "✓ up to date"
         fi
-      else
-        step "(no upstream tracking branch — skipping update check)"
       fi
     else
       step "(could not reach origin — skipping update check)"
     fi
-  else
-    step "(not a git checkout — skipping update check)"
   fi
 fi
 
-# ── 6. Launch ───────────────────────────────────────────────────────
+# ── 6. Launch in background ─────────────────────────────────────────
+mkdir -p "$LOG_DIR"
 cd "$APP_DIR"
-step "launching..."
-exec "$NODE_EXE" launcher/launcher.mjs "${LAUNCHER_ARGS[@]}"
+
+# Timestamp the log so users can find session boundaries
+{
+  echo ""
+  echo "════════════════════════════════════════════════════════════"
+  echo " pinghub start at $(date '+%Y-%m-%d %H:%M:%S')"
+  echo " node: $NODE_EXE ($("$NODE_EXE" -v))"
+  echo " cwd: $APP_DIR"
+  echo " args: ${LAUNCHER_ARGS[*]:-(none)}"
+  echo "════════════════════════════════════════════════════════════"
+} >> "$LOG_FILE"
+
+step "launching in background..."
+# nohup + & + disown survives terminal close.
+# stdin /dev/null so the child doesn't try to read from the closing tty.
+nohup "$NODE_EXE" launcher/launcher.mjs "${LAUNCHER_ARGS[@]}" \
+  </dev/null >> "$LOG_FILE" 2>&1 &
+SERVER_PID=$!
+echo "$SERVER_PID" > "$PID_FILE"
+disown "$SERVER_PID" 2>/dev/null || true
+
+# Wait a few seconds and check it's still alive
+sleep 3
+if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+  echo "$LOG_PREFIX ✗ server died during startup. Last 30 lines of $LOG_FILE:"
+  echo "────────────────────────────────────────────────────────────"
+  tail -30 "$LOG_FILE"
+  echo "────────────────────────────────────────────────────────────"
+  rm -f "$PID_FILE"
+  exit 1
+fi
+
+step "✓ started (PID $SERVER_PID)"
+step "  log:  $LOG_FILE"
+step "  tail: tail -f $LOG_FILE"
+step "  stop: ./stop"
