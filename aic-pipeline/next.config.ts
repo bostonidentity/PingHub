@@ -3,6 +3,10 @@ import path from "node:path";
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  output: "standalone",
+  outputFileTracingIncludes: {
+    "**/*": ["./src/vendor/**/*"]
+  },
   turbopack: {
     root: path.resolve(__dirname),
   },
