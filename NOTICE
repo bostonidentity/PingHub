@@ -8,10 +8,10 @@ This product is licensed under the Apache License, Version 2.0
 Third-party software included in source form
 -------------------------------------------------------------------------------
 
-The aic-pipeline project includes source code from the ForgeRock
+The ping-aic-studio project includes source code from the ForgeRock
 fr-config-manager project, vendored under
-aic-pipeline/src/vendor/fr-config-manager/. That code is licensed under
-the MIT License (see aic-pipeline/src/vendor/fr-config-manager/LICENSE).
+ping-aic-studio/src/vendor/fr-config-manager/. That code is licensed under
+the MIT License (see ping-aic-studio/src/vendor/fr-config-manager/LICENSE).
 
     fr-config-manager
     https://github.com/ForgeRock/fr-config-manager

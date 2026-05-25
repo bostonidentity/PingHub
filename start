@@ -1,0 +1,340 @@
+#!/usr/bin/env bash
+# start — bootstrap + launch PingHub in the background.
+#
+# After `git clone https://github.com/bostonidentity/PingHub && cd PingHub`,
+# run `./start` to install dependencies, build, and launch the web UI.
+# The server runs detached; logs go to ping-aic-studio/.pinghub-logs/pinghub.log.
+# Browser auto-opens. Run `./stop` to stop the server.
+#
+# Each step is check-then-do — safe to re-run if a previous run failed
+# partway through; it picks up where it left off.
+#
+# Pinghub-script flags:
+#   --bundled-node     force download of bundled Node even if system Node is fine
+#   --skip-update      don't check git for updates
+#   --reinstall        wipe node_modules + .next before bootstrapping
+#
+# Launcher flags forwarded to launcher.mjs:
+#   --port N           override port (default 3000; auto-picks a free port if 3000 is taken)
+#   --no-open          start server but don't open the browser
+#   --data-dir PATH    override PINGHUB_DATA_DIR
+
+set -euo pipefail
+
+# Resolve the directory containing this script, following symlinks.
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_PATH" ]; do
+  link_target=$(readlink "$SCRIPT_PATH")
+  case "$link_target" in
+    /*) SCRIPT_PATH="$link_target" ;;
+    *)  SCRIPT_PATH="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)/$link_target" ;;
+  esac
+done
+REPO_ROOT="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+APP_DIR="${REPO_ROOT}/ping-aic-studio"
+LOG_DIR="${APP_DIR}/.pinghub-logs"
+LOG_FILE="${LOG_DIR}/pinghub.log"
+PID_FILE="${LOG_DIR}/pinghub.pid"
+
+LOG_PREFIX="[Ping AIC Studio]"
+step() { echo "$LOG_PREFIX $*"; }
+fail() { echo "$LOG_PREFIX ERROR: $*" >&2; exit 1; }
+
+print_help() {
+  cat <<EOF
+Usage: ./start [OPTIONS]
+
+Bootstrap and launch PingHub in the background.
+
+The script:
+  1. Detects OS (macOS / Linux / Windows-MSYS)
+  2. Ensures Node 20+ (bundled > system > auto-download)
+  3. Runs npm install if dependencies are missing/stale
+  4. Runs npm run build if no production build exists
+  5. Checks git for upstream updates
+  6. Launches the server in the background, opens the browser
+
+The server runs detached — closing your terminal does not stop it.
+Use './stop' to shut it down, or './status' to check if it's running.
+
+OPTIONS
+  --port N           override port (default 3000; auto-falls-back if taken)
+  --data-dir PATH    override PINGHUB_DATA_DIR (default: matches \`npm run dev\`)
+  --no-open          start the server without opening the browser
+  --reinstall        wipe node_modules + .next before bootstrapping
+  --bundled-node     force download of Node 20.18.0 (skip system Node)
+  --skip-update      skip the git fetch update check
+  -h, --help         show this help and exit
+
+EXAMPLES
+  ./start                          # default — opens browser at http://127.0.0.1:3000
+  ./start --no-open                # server only, no browser
+  ./start --port 8080              # custom port
+  ./start --reinstall              # wipe node_modules + .next, rebuild
+  ./start --bundled-node           # use pinned Node 20.18.0 (download if absent)
+
+RELATED
+  ./stop      stop the running server
+  ./status    show whether the server is currently running
+EOF
+}
+
+# ── Parse flags ─────────────────────────────────────────────────────
+BUNDLED_NODE=0
+SKIP_UPDATE=0
+REINSTALL=0
+LAUNCHER_ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help)      print_help; exit 0 ;;
+    --bundled-node) BUNDLED_NODE=1 ;;
+    --skip-update)  SKIP_UPDATE=1 ;;
+    --reinstall)    REINSTALL=1 ;;
+    *)              LAUNCHER_ARGS+=("$arg") ;;
+  esac
+done
+
+# ── Already running? Only one process allowed at a time. ────────────
+if [ -f "$PID_FILE" ]; then
+  EXISTING_PID=$(cat "$PID_FILE" 2>/dev/null || true)
+  if [ -n "$EXISTING_PID" ] && kill -0 "$EXISTING_PID" 2>/dev/null; then
+    # Look up the URL it's serving — parse the most recent "ready at" line
+    # in the log file (last session wins).
+    EXISTING_URL=""
+    if [ -f "$LOG_FILE" ]; then
+      EXISTING_URL=$(grep "ready at " "$LOG_FILE" | tail -1 | sed -E 's/.*ready at //')
+    fi
+    # Start time (Linux supports `-o lstart=`, macOS supports `-o lstart`)
+    EXISTING_STARTED=$(ps -o lstart= -p "$EXISTING_PID" 2>/dev/null | sed 's/^ *//' || true)
+
+    echo "$LOG_PREFIX ERROR: Ping AIC Studio is already running" >&2
+    echo "$LOG_PREFIX   PID:      $EXISTING_PID" >&2
+    [ -n "$EXISTING_URL" ]     && echo "$LOG_PREFIX   serving:  $EXISTING_URL" >&2
+    [ -n "$EXISTING_STARTED" ] && echo "$LOG_PREFIX   started:  $EXISTING_STARTED" >&2
+    echo "$LOG_PREFIX   log:      $LOG_FILE" >&2
+    echo "$LOG_PREFIX" >&2
+    echo "$LOG_PREFIX Only one Ping AIC Studio process can run at a time." >&2
+    echo "$LOG_PREFIX Run './stop' to stop it, then './start' to start a new one." >&2
+    exit 1
+  else
+    step "found stale PID file (PID $EXISTING_PID is not running) — cleaning up"
+    rm -f "$PID_FILE"
+  fi
+fi
+
+# ── 1. Detect OS ────────────────────────────────────────────────────
+case "$(uname -s)" in
+  Darwin)              OS="darwin" ;;
+  Linux)               OS="linux" ;;
+  MINGW*|MSYS*|CYGWIN*) OS="windows" ;;
+  *) fail "unsupported OS: $(uname -s) — use start.cmd on native Windows" ;;
+esac
+
+case "$(uname -m)" in
+  arm64|aarch64) ARCH="arm64" ;;
+  x86_64|amd64)  ARCH="x64" ;;
+  *) fail "unsupported architecture: $(uname -m)" ;;
+esac
+
+step "detected: ${OS}-${ARCH}"
+
+if [ ! -d "$APP_DIR" ]; then
+  fail "expected ping-aic-studio/ directory at $APP_DIR — are you inside the PingHub repo?"
+fi
+
+# ── Optional --reinstall ────────────────────────────────────────────
+if [ "$REINSTALL" -eq 1 ]; then
+  step "--reinstall: wiping node_modules + .next"
+  rm -rf "${APP_DIR}/node_modules" "${APP_DIR}/.next"
+fi
+
+# ── 2. Ensure Node 20+ ──────────────────────────────────────────────
+NODE_REQ_MAJOR=20
+NODE_PIN_VERSION="20.18.0"
+LOCAL_NODE_DIR="${APP_DIR}/.pinghub-node"
+LOCAL_NODE_BIN="${LOCAL_NODE_DIR}/bin/node"
+
+node_major() {
+  if [ -x "$1" ]; then
+    "$1" -v 2>/dev/null | sed 's/^v//' | cut -d. -f1
+  fi
+}
+
+download_node() {
+  local arch suffix url tmp extracted
+  case "$ARCH" in
+    arm64) arch="arm64" ;;
+    x64)   arch="x64" ;;
+  esac
+  case "$OS" in
+    darwin)  suffix="darwin-${arch}.tar.gz" ;;
+    linux)   suffix="linux-${arch}.tar.xz" ;;
+    windows) suffix="win-${arch}.zip" ;;
+  esac
+  url="https://nodejs.org/dist/v${NODE_PIN_VERSION}/node-v${NODE_PIN_VERSION}-${suffix}"
+
+  step "downloading Node ${NODE_PIN_VERSION} from nodejs.org..."
+  tmp=$(mktemp -d)
+  trap "rm -rf $tmp" RETURN
+
+  if ! curl -fL --progress-bar "$url" -o "${tmp}/node-archive"; then
+    fail "could not download Node — check network or install Node 20+ manually from https://nodejs.org"
+  fi
+
+  case "$suffix" in
+    *.tar.gz|*.tar.xz)
+      if ! tar -xf "${tmp}/node-archive" -C "$tmp"; then
+        fail "could not extract Node archive"
+      fi
+      ;;
+    *.zip)
+      if ! unzip -q "${tmp}/node-archive" -d "$tmp"; then
+        fail "could not unzip Node archive"
+      fi
+      ;;
+  esac
+
+  extracted=$(find "$tmp" -maxdepth 1 -mindepth 1 -type d | head -1)
+  if [ -z "$extracted" ] || [ ! -x "${extracted}/bin/node" ]; then
+    fail "Node binary not found in extracted archive"
+  fi
+
+  rm -rf "$LOCAL_NODE_DIR"
+  mv "$extracted" "$LOCAL_NODE_DIR"
+}
+
+if [ "$BUNDLED_NODE" -eq 1 ] && [ ! -x "$LOCAL_NODE_BIN" ]; then
+  download_node
+fi
+
+NODE_EXE=""
+if [ -x "$LOCAL_NODE_BIN" ]; then
+  major=$(node_major "$LOCAL_NODE_BIN")
+  if [ -n "$major" ] && [ "$major" -ge "$NODE_REQ_MAJOR" ]; then
+    NODE_EXE="$LOCAL_NODE_BIN"
+    step "✓ using bundled Node $("$NODE_EXE" -v) ($LOCAL_NODE_BIN)"
+  else
+    step "bundled Node is too old; re-downloading..."
+    download_node
+    NODE_EXE="$LOCAL_NODE_BIN"
+  fi
+fi
+
+if [ -z "$NODE_EXE" ] && command -v node >/dev/null 2>&1; then
+  sys_node=$(command -v node)
+  major=$(node_major "$sys_node")
+  if [ -n "$major" ] && [ "$major" -ge "$NODE_REQ_MAJOR" ]; then
+    NODE_EXE="$sys_node"
+    step "✓ using system Node $("$NODE_EXE" -v) ($sys_node)"
+  else
+    step "found system Node $($sys_node -v 2>/dev/null) but need ${NODE_REQ_MAJOR}+; will bundle"
+  fi
+fi
+
+if [ -z "$NODE_EXE" ]; then
+  download_node
+  NODE_EXE="$LOCAL_NODE_BIN"
+  step "✓ downloaded Node $("$NODE_EXE" -v)"
+fi
+
+NPM_EXE="$(dirname "$NODE_EXE")/npm"
+if [ ! -x "$NPM_EXE" ]; then
+  NPM_EXE="npm"
+fi
+export PATH="$(dirname "$NODE_EXE"):${PATH}"
+
+# ── 3. npm install ──────────────────────────────────────────────────
+cd "$APP_DIR"
+
+deps_stale() {
+  [ ! -d node_modules ] && return 0
+  [ ! -f node_modules/.package-lock.json ] && return 0
+  [ package.json -nt node_modules/.package-lock.json ] && return 0
+  [ package-lock.json -nt node_modules/.package-lock.json ] && return 0
+  return 1
+}
+
+if deps_stale; then
+  step "installing dependencies (npm install)..."
+  if ! "$NPM_EXE" install; then
+    fail "npm install failed — see output above"
+  fi
+else
+  step "✓ dependencies up to date"
+fi
+
+# ── 4. Build ────────────────────────────────────────────────────────
+if [ ! -f .next/standalone/server.js ]; then
+  step "building app (npm run build)..."
+  if ! "$NPM_EXE" run build; then
+    fail "build failed — see output above"
+  fi
+else
+  step "✓ build present"
+fi
+
+# ── 5. Check for updates ────────────────────────────────────────────
+if [ "$SKIP_UPDATE" -eq 0 ]; then
+  cd "$REPO_ROOT"
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    step "checking for updates..."
+    if git fetch --quiet origin 2>/dev/null; then
+      branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "HEAD")
+      upstream=$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null || echo "")
+      if [ -n "$upstream" ]; then
+        ahead=$(git rev-list --count "HEAD..${upstream}" 2>/dev/null || echo "0")
+        if [ "$ahead" -gt 0 ]; then
+          step "⚡ ${ahead} update(s) available on ${branch}"
+          step "   Run 'git pull' to update, then re-run ./start"
+        else
+          step "✓ up to date"
+        fi
+      fi
+    else
+      step "(could not reach origin — skipping update check)"
+    fi
+  fi
+fi
+
+# ── 6. Launch in background ─────────────────────────────────────────
+mkdir -p "$LOG_DIR"
+cd "$APP_DIR"
+
+# Timestamp the log so users can find session boundaries
+{
+  echo ""
+  echo "════════════════════════════════════════════════════════════"
+  echo " Ping AIC Studio start at $(date '+%Y-%m-%d %H:%M:%S')"
+  echo " node: $NODE_EXE ($("$NODE_EXE" -v))"
+  echo " cwd: $APP_DIR"
+  echo " args: ${LAUNCHER_ARGS[*]:-(none)}"
+  echo "════════════════════════════════════════════════════════════"
+} >> "$LOG_FILE"
+
+step "launching in background..."
+# nohup + & + disown survives terminal close.
+# stdin /dev/null so the child doesn't try to read from the closing tty.
+# Bash 3.2 (macOS default) errors on "${arr[@]}" when set -u is on and the
+# array is empty. The ${arr[@]+...} expansion expands to nothing in that
+# case, otherwise to the array contents.
+nohup "$NODE_EXE" launcher/launcher.mjs ${LAUNCHER_ARGS[@]+"${LAUNCHER_ARGS[@]}"} \
+  </dev/null >> "$LOG_FILE" 2>&1 &
+SERVER_PID=$!
+echo "$SERVER_PID" > "$PID_FILE"
+disown "$SERVER_PID" 2>/dev/null || true
+
+# Wait a few seconds and check it's still alive
+sleep 3
+if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+  echo "$LOG_PREFIX ✗ Ping AIC Studio failed to start. Last 30 lines of $LOG_FILE:"
+  echo "────────────────────────────────────────────────────────────"
+  tail -30 "$LOG_FILE"
+  echo "────────────────────────────────────────────────────────────"
+  rm -f "$PID_FILE"
+  exit 1
+fi
+
+step "✓ Ping AIC Studio started successfully (PID $SERVER_PID)"
+step "  log:  $LOG_FILE"
+step "  tail: tail -f $LOG_FILE"
+step "  stop: ./stop"

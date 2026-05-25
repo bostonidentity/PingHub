@@ -1,5 +1,5 @@
 # Monorepo-level ignores. Project-specific rules live in each
-# project's own .gitignore (e.g. aic-pipeline/.gitignore).
+# project's own .gitignore (e.g. ping-aic-studio/.gitignore).
 
 # OS
 .DS_Store

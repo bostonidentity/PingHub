@@ -1,0 +1,663 @@
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import fs from "fs";
+import os from "os";
+import path from "path";
+import { listSnapshotTypes, readRecord, listRecords, evictCache, resolveTitles } from "./snapshot-fs";
+import { buildIndexFromNDJson } from "./index-builder";
+import { flattenForIndex } from "./flatten-fields";
+
+let tmpDir: string;
+const ENV = "test-env";
+
+function writeRecord(type: string, id: string, body: Record<string, unknown>) {
+  const dir = path.join(tmpDir, ENV, "managed-data", type);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify(body));
+}
+
+function writeManifest(type: string, count: number, pulledAt = 1700000000000) {
+  const dir = path.join(tmpDir, ENV, "managed-data", type);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "_manifest.json"),
+    JSON.stringify({ type, pulledAt, count, jobId: "j1" }),
+  );
+}
+
+beforeEach(() => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "data-tab-"));
+});
+
+afterEach(() => {
+  // Evict all cached entries so tests don't leak state.
+  const managedDir = path.join(tmpDir, ENV, "managed-data");
+  if (fs.existsSync(managedDir)) {
+    for (const d of fs.readdirSync(managedDir)) {
+      evictCache(path.join(managedDir, d));
+    }
+  }
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+describe("listSnapshotTypes", () => {
+  it("returns empty list when no snapshot directory exists", async () => {
+    expect(await listSnapshotTypes(tmpDir, ENV)).toEqual([]);
+  });
+
+  it("lists types that have a manifest", async () => {
+    writeManifest("alpha_user", 3, 1700000000000);
+    writeManifest("alpha_role", 2, 1700000001000);
+    const out = await listSnapshotTypes(tmpDir, ENV);
+    expect(out).toEqual([
+      { name: "alpha_role", count: 2, pulledAt: 1700000001000 },
+      { name: "alpha_user", count: 3, pulledAt: 1700000000000 },
+    ].sort((a, b) => a.name.localeCompare(b.name)));
+  });
+
+  it("skips directories without a manifest", async () => {
+    writeManifest("alpha_user", 1);
+    fs.mkdirSync(path.join(tmpDir, ENV, "managed-data", "half_pulled"), { recursive: true });
+    const out = await listSnapshotTypes(tmpDir, ENV);
+    expect(out.map((t) => t.name)).toEqual(["alpha_user"]);
+  });
+});
+
+
+describe("listRecords", () => {
+  beforeEach(async () => {
+    writeManifest("alpha_user", 3);
+    writeRecord("alpha_user", "u1", { _id: "u1", name: "alice", mail: "alice@x.co" });
+    writeRecord("alpha_user", "u2", { _id: "u2", name: "bob", mail: "bob@x.co" });
+    writeRecord("alpha_user", "u3", { _id: "u3", name: "charlie", mail: "alice@y.co" });
+    const typeDir = path.join(tmpDir, ENV, "managed-data", "alpha_user");
+    // Write data.ndjson so the SQLite backfill path can build the index.
+    const records = [
+      { _id: "u1", name: "alice", mail: "alice@x.co" },
+      { _id: "u2", name: "bob", mail: "bob@x.co" },
+      { _id: "u3", name: "charlie", mail: "alice@y.co" },
+    ];
+    fs.writeFileSync(
+      path.join(typeDir, "data.ndjson"),
+      records.map((r) => JSON.stringify(r) + "\n").join(""),
+    );
+    await buildIndexFromNDJson(typeDir, (rec) => {
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rec)) {
+        if (k.startsWith("_") && k !== "_id") continue;
+        if (typeof v === "string") out[k] = v;
+        else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+      }
+      return out;
+    });
+  });
+
+  it("returns all records paginated in pull order", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "",
+      page: 1,
+      limit: 10,
+      display: { title: "name", searchFields: ["name"] },
+    });
+    expect(page.total).toBe(3);
+    expect(page.records.map((r) => r.id)).toEqual(["u1", "u2", "u3"]);
+    expect(page.records[0]).toEqual({ id: "u1", title: "alice" });
+  });
+
+  it("substring-search matches values across all indexed fields", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "alice",
+      page: 1,
+      limit: 10,
+      display: { title: "name", searchFields: [] },
+    });
+    // u1 matches on both name and mail; u3 matches on mail only.
+    expect(page.total).toBe(2);
+    expect(page.records.map((r) => r.id).sort()).toEqual(["u1", "u3"]);
+  });
+
+  it("full-JSON search matches on values across all records", async () => {
+    // "@x.co" appears in two records (alice and bob).
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "@x.co",
+      page: 1,
+      limit: 10,
+      display: { title: "name", searchFields: [] },
+    });
+    expect(page.total).toBe(2);
+  });
+
+  it("paginates with limit and page", async () => {
+    const first = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "", page: 1, limit: 2,
+      display: { title: "name", searchFields: [] },
+    });
+    expect(first.records.map((r) => r.id)).toEqual(["u1", "u2"]);
+    const second = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "", page: 2, limit: 2,
+      display: { title: "name", searchFields: [] },
+    });
+    expect(second.records.map((r) => r.id)).toEqual(["u3"]);
+  });
+
+  it("falls back to id when the title field is missing", async () => {
+    writeRecord("alpha_user", "u4", { _id: "u4" });
+    const typeDir = path.join(tmpDir, ENV, "managed-data", "alpha_user");
+    fs.appendFileSync(path.join(typeDir, "data.ndjson"), JSON.stringify({ _id: "u4" }) + "\n");
+    evictCache(typeDir);
+    await buildIndexFromNDJson(typeDir, (rec) => {
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rec)) {
+        if (k.startsWith("_") && k !== "_id") continue;
+        if (typeof v === "string") out[k] = v;
+        else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+      }
+      return out;
+    });
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "", page: 1, limit: 10,
+      display: { title: "name", searchFields: [] },
+    });
+    expect(page.records.find((r) => r.id === "u4")?.title).toBe("u4");
+  });
+
+  it("honors titleField override and matches case-insensitively", async () => {
+    // Record uses capital-N Name; override asks for lower-case "name".
+    writeRecord("alpha_user", "u5", { _id: "u5", Name: "Overridden" });
+    const typeDir = path.join(tmpDir, ENV, "managed-data", "alpha_user");
+    fs.appendFileSync(path.join(typeDir, "data.ndjson"), JSON.stringify({ _id: "u5", Name: "Overridden" }) + "\n");
+    evictCache(typeDir);
+    await buildIndexFromNDJson(typeDir, (rec) => {
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rec)) {
+        if (k.startsWith("_") && k !== "_id") continue;
+        if (typeof v === "string") out[k] = v;
+        else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+      }
+      return out;
+    });
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "", page: 1, limit: 10,
+      display: { title: "_id", searchFields: [] },
+      titleField: "name",
+    });
+    expect(page.records.find((r) => r.id === "u5")?.title).toBe("Overridden");
+  });
+});
+
+// ── NDJSON-format reader tests ─────────────────────────────────────────────
+
+async function writeNDJsonSnapshot(
+  type: string,
+  records: Record<string, unknown>[],
+) {
+  const dir = path.join(tmpDir, ENV, "managed-data", type);
+  fs.mkdirSync(dir, { recursive: true });
+  const lines = records.map((r) => JSON.stringify(r) + "\n");
+  fs.writeFileSync(path.join(dir, "data.ndjson"), lines.join(""));
+  fs.writeFileSync(
+    path.join(dir, "_manifest.json"),
+    JSON.stringify({ type, pulledAt: 1700000000000, count: records.length, jobId: "j1" }),
+  );
+  await buildIndexFromNDJson(dir, (rec) => {
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(rec)) {
+      if (k.startsWith("_") && k !== "_id") continue;
+      if (typeof v === "string") out[k] = v;
+      else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+    }
+    return out;
+  });
+}
+
+describe("readRecord (NDJSON format)", () => {
+  it("reads a record by id via byte-offset seek", async () => {
+    await writeNDJsonSnapshot("alpha_user", [
+      { _id: "u1", userName: "alice" },
+      { _id: "u2", userName: "bob", longField: "x".repeat(500) },
+      { _id: "u3", userName: "charlie" },
+    ]);
+    expect(await readRecord(tmpDir, ENV, "alpha_user", "u2"))
+      .toEqual({ _id: "u2", userName: "bob", longField: "x".repeat(500) });
+  });
+
+  it("returns null for an unknown id in NDJSON format", async () => {
+    await writeNDJsonSnapshot("alpha_user", [{ _id: "u1" }]);
+    expect(await readRecord(tmpDir, ENV, "alpha_user", "missing")).toBeNull();
+  });
+});
+
+// ── Index-accelerated path ─────────────────────────────────────────────────
+
+describe("listRecords with SQLite index", () => {
+  beforeEach(async () => {
+    writeManifest("alpha_user", 3);
+    writeRecord("alpha_user", "u1", { _id: "u1", name: "alice", mail: "alice@x.co" });
+    writeRecord("alpha_user", "u2", { _id: "u2", name: "bob", mail: "bob@x.co" });
+    writeRecord("alpha_user", "u3", { _id: "u3", name: "charlie", mail: "alice@y.co" });
+    const typeDir = path.join(tmpDir, ENV, "managed-data", "alpha_user");
+    const records = [
+      { _id: "u1", name: "alice", mail: "alice@x.co" },
+      { _id: "u2", name: "bob", mail: "bob@x.co" },
+      { _id: "u3", name: "charlie", mail: "alice@y.co" },
+    ];
+    fs.writeFileSync(
+      path.join(typeDir, "data.ndjson"),
+      records.map((r) => JSON.stringify(r) + "\n").join(""),
+    );
+    await buildIndexFromNDJson(typeDir, (rec) => {
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rec)) {
+        if (k.startsWith("_") && k !== "_id") continue;
+        if (typeof v === "string") out[k] = v;
+        else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+      }
+      return out;
+    });
+  });
+
+  it("uses the index for no-query browsing without reading individual files", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "", page: 1, limit: 10,
+      display: { title: "name", searchFields: [] },
+    });
+    expect(page.total).toBe(3);
+    expect(page.records).toEqual([
+      { id: "u1", title: "alice" },
+      { id: "u2", title: "bob" },
+      { id: "u3", title: "charlie" },
+    ]);
+    expect(page.fields.length).toBeGreaterThan(0);
+  });
+
+  it("searches indexed fields without file I/O", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "alice", page: 1, limit: 10,
+      display: { title: "name", searchFields: [] },
+    });
+    expect(page.total).toBe(2);
+    expect(page.records.map((r) => r.id).sort()).toEqual(["u1", "u3"]);
+  });
+
+  it("paginates correctly from the index", async () => {
+    const first = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "", page: 1, limit: 2,
+      display: { title: "name", searchFields: [] },
+    });
+    expect(first.records.map((r) => r.id)).toEqual(["u1", "u2"]);
+    const second = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "", page: 2, limit: 2,
+      display: { title: "name", searchFields: [] },
+    });
+    expect(second.records.map((r) => r.id)).toEqual(["u3"]);
+  });
+
+  it("falls back to id when title field is not in the index", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "", page: 1, limit: 10,
+      display: { title: "nonexistent", searchFields: [] },
+    });
+    expect(page.records[0].title).toBe("u1");
+  });
+});
+
+describe("listRecords (NDJSON format)", () => {
+  beforeEach(async () => {
+    await writeNDJsonSnapshot(
+      "alpha_user",
+      [
+        { _id: "u1", name: "alice", mail: "alice@x.co" },
+        { _id: "u2", name: "bob", mail: "bob@x.co" },
+        { _id: "u3", name: "charlie", mail: "alice@y.co" },
+      ],
+    );
+  });
+
+  it("paginates from the index", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "", page: 1, limit: 10,
+      display: { title: "name", searchFields: [] },
+    });
+    expect(page.total).toBe(3);
+    expect(page.records.map((r) => r.id)).toEqual(["u1", "u2", "u3"]);
+  });
+
+  it("searches via the index without scanning data.ndjson", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "alice", page: 1, limit: 10,
+      display: { title: "name", searchFields: [] },
+    });
+    expect(page.total).toBe(2);
+    expect(page.records.map((r) => r.id).sort()).toEqual(["u1", "u3"]);
+  });
+
+  it("finds records via the SQLite index", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "charlie", page: 1, limit: 10,
+      display: { title: "name", searchFields: [] },
+    });
+    expect(page.total).toBe(1);
+    expect(page.records[0].id).toBe("u3");
+  });
+});
+
+async function buildType(type: string, records: Record<string, unknown>[]) {
+  const dir = path.join(tmpDir, ENV, "managed-data", type);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "_manifest.json"),
+    JSON.stringify({ type, pulledAt: 1700000000000, count: records.length, jobId: "j1" }),
+  );
+  fs.writeFileSync(
+    path.join(dir, "data.ndjson"),
+    records.map((r) => JSON.stringify(r) + "\n").join(""),
+  );
+  await buildIndexFromNDJson(dir, (rec) => {
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(rec)) {
+      if (k.startsWith("_") && k !== "_id") continue;
+      if (typeof v === "string") out[k] = v;
+      else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+    }
+    return out;
+  });
+}
+
+describe("resolveTitles", () => {
+  it("resolves titles using the chosen attribute per type", async () => {
+    await buildType("alpha_user", [
+      { _id: "u1", userName: "alice", mail: "alice@x.co" },
+      { _id: "u2", userName: "bob", mail: "bob@x.co" },
+    ]);
+    await buildType("alpha_role", [
+      { _id: "r1", name: "admin" },
+      { _id: "r2", name: "viewer" },
+    ]);
+    const out = await resolveTitles(tmpDir, ENV, [
+      { type: "alpha_user", id: "u1" },
+      { type: "alpha_user", id: "u2" },
+      { type: "alpha_role", id: "r1" },
+    ], { alpha_user: "userName", alpha_role: "name" });
+    expect(out.titles).toEqual({
+      "alpha_user/u1": "alice",
+      "alpha_user/u2": "bob",
+      "alpha_role/r1": "admin",
+    });
+    expect(out.fieldsByType.alpha_user).toContain("userName");
+    expect(out.fieldsByType.alpha_role).toContain("name");
+  });
+
+  it("falls back to id when attr is empty, missing, or absent on the record", async () => {
+    await buildType("alpha_user", [
+      { _id: "u1", userName: "alice" },
+      { _id: "u2" },
+    ]);
+    const out = await resolveTitles(tmpDir, ENV, [
+      { type: "alpha_user", id: "u1" },
+      { type: "alpha_user", id: "u2" },
+    ], { alpha_user: "missingField" });
+    expect(out.titles["alpha_user/u1"]).toBe("u1");
+    expect(out.titles["alpha_user/u2"]).toBe("u2");
+  });
+
+  it("matches attribute case-insensitively", async () => {
+    await buildType("alpha_user", [{ _id: "u1", UserName: "alice" }]);
+    const out = await resolveTitles(tmpDir, ENV, [
+      { type: "alpha_user", id: "u1" },
+    ], { alpha_user: "username" });
+    expect(out.titles["alpha_user/u1"]).toBe("alice");
+  });
+
+  it("returns null titles and empty fields for an unpulled type", async () => {
+    const out = await resolveTitles(tmpDir, ENV, [
+      { type: "alpha_user", id: "u1" },
+    ], {});
+    expect(out.titles["alpha_user/u1"]).toBeNull();
+    expect(out.fieldsByType.alpha_user).toEqual([]);
+  });
+
+  it("returns null title for an id missing from a pulled type", async () => {
+    await buildType("alpha_user", [{ _id: "u1", userName: "alice" }]);
+    const out = await resolveTitles(tmpDir, ENV, [
+      { type: "alpha_user", id: "ghost" },
+    ], { alpha_user: "userName" });
+    expect(out.titles["alpha_user/ghost"]).toBeNull();
+  });
+
+  it("handles empty refs without throwing", async () => {
+    const out = await resolveTitles(tmpDir, ENV, [], {});
+    expect(out.titles).toEqual({});
+    expect(out.fieldsByType).toEqual({});
+  });
+});
+
+// ── Deep-nested attribute search (schema v2) ───────────────────────────────
+
+async function buildDeepType(type: string, records: Record<string, unknown>[]) {
+  const dir = path.join(tmpDir, ENV, "managed-data", type);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "_manifest.json"),
+    JSON.stringify({ type, pulledAt: 1700000000000, count: records.length, jobId: "j1" }),
+  );
+  fs.writeFileSync(
+    path.join(dir, "data.ndjson"),
+    records.map((r) => JSON.stringify(r) + "\n").join(""),
+  );
+  await buildIndexFromNDJson(dir, flattenForIndex);
+}
+
+describe("listRecords — nested attribute search", () => {
+  const RECORDS = [
+    {
+      _id: "u1",
+      userName: "alice",
+      profile: { givenName: "Alice", address: { city: "Boston" } },
+      mail: ["alice@x.co", "alice@y.co"],
+      manager: { _ref: "managed/user/u9" },
+    },
+    {
+      _id: "u2",
+      userName: "bob",
+      profile: { givenName: "Robert", address: { city: "Boston" } },
+      mail: ["bob@x.co"],
+      manager: { _ref: "managed/user/u9" },
+    },
+    {
+      _id: "u3",
+      userName: "charlie",
+      profile: { givenName: "Charlie", address: { city: "Seattle" } },
+      mail: ["charlie@x.co"],
+    },
+  ];
+
+  beforeEach(async () => {
+    await buildDeepType("alpha_user", RECORDS);
+  });
+
+  it("matches a value inside a nested object via dotted path", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "Alice", page: 1, limit: 10,
+      display: { title: "userName", searchFields: [] },
+      attr: "profile.givenName",
+      op: "equals",
+    });
+    expect(page.records.map((r) => r.id)).toEqual(["u1"]);
+  });
+
+  it("matches a deeply nested value", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "Boston", page: 1, limit: 10,
+      display: { title: "userName", searchFields: [] },
+      attr: "profile.address.city",
+    });
+    expect(page.records.map((r) => r.id).sort()).toEqual(["u1", "u2"]);
+  });
+
+  it("matches any element of an array via the bare attr prefix", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "@y.co", page: 1, limit: 10,
+      display: { title: "userName", searchFields: [] },
+      attr: "mail",
+    });
+    expect(page.records.map((r) => r.id)).toEqual(["u1"]);
+  });
+
+  it("matches by last-segment leaf name at any depth", async () => {
+    // attr="givenName" should match profile.givenName everywhere.
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "Char", page: 1, limit: 10,
+      display: { title: "userName", searchFields: [] },
+      attr: "givenName",
+      op: "startsWith",
+    });
+    expect(page.records.map((r) => r.id)).toEqual(["u3"]);
+  });
+
+  it("matches relationship _ref values", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "managed/user/u9", page: 1, limit: 10,
+      display: { title: "userName", searchFields: [] },
+      attr: "manager._ref",
+      op: "equals",
+    });
+    expect(page.records.map((r) => r.id).sort()).toEqual(["u1", "u2"]);
+  });
+
+  it("exposes collapsed array paths in the fields dropdown", async () => {
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "", page: 1, limit: 10,
+      display: { title: "userName", searchFields: [] },
+    });
+    // `mail.0`, `mail.1` collapse to a single `mail` entry.
+    expect(page.fields).toContain("mail");
+    expect(page.fields.find((f) => /^mail\.\d+$/.test(f))).toBeUndefined();
+    // Nested paths preserved.
+    expect(page.fields).toContain("profile.givenName");
+    expect(page.fields).toContain("profile.address.city");
+    expect(page.fields).toContain("manager._ref");
+  });
+
+  it("finds a keyword inside a long description nested in an array (prod regression)", async () => {
+    // Mirrors the prod alpha_tenant_dashboardapplicationwidget record. The
+    // user picks `content.myAppsDescription.en` from the dropdown (collapsed
+    // form), the stored path is `content.0.myAppsDescription.en`, and the
+    // value is a ~400-char description containing the search keyword.
+    const desc = "Allows case workers to query data - WARNING! BY ACCESSING AND USING THIS GOVERNMENT COMPUTER SYSTEM, YOU ARE CONSENTING TO SYSTEM MONITORING FOR LAW ENFORCEMENT AND OTHER PURPOSES. UNAUTHORIZED USE OF, OR ACCESS TO, THIS COMPUTER SYSTEM MAY SUBJECT YOU TO CRIMINAL PROSECUTION AND PENALTIES.";
+    await buildDeepType("alpha_widget", [
+      {
+        _id: "w1",
+        content: [{
+          title: { en: "DCSS BI", es: "DCSS BI" },
+          myAppsDescription: { en: desc, es: "otro texto" },
+        }],
+      },
+      {
+        _id: "w2",
+        content: [{ title: { en: "Other", es: "Otro" }, myAppsDescription: { en: "nope", es: "nope" } }],
+      },
+    ]);
+    const page = await listRecords(tmpDir, ENV, "alpha_widget", {
+      q: "government", page: 1, limit: 10,
+      display: { title: "_id", searchFields: [] },
+      attr: "content.myAppsDescription.en",
+      op: "contains",
+    });
+    expect(page.records.map((r) => r.id)).toEqual(["w1"]);
+  });
+});
+
+describe("listRecords — auto-rebuild on stale index schema", () => {
+  it("rebuilds a v1-style index lazily when fields_json lacks nested paths", async () => {
+    // Simulate a tenant pulled with the v1 indexer: only top-level scalars in
+    // fields_json. The new openIndexDb() detects the version mismatch and
+    // wipes records; loadCache() then rebuilds from data.ndjson with the deep
+    // flattener, so the next search finds nested values.
+    const type = "alpha_user";
+    const dir = path.join(tmpDir, ENV, "managed-data", type);
+    fs.mkdirSync(dir, { recursive: true });
+    const records = [
+      { _id: "u1", userName: "alice", profile: { givenName: "Alice" } },
+    ];
+    fs.writeFileSync(
+      path.join(dir, "data.ndjson"),
+      records.map((r) => JSON.stringify(r) + "\n").join(""),
+    );
+    fs.writeFileSync(
+      path.join(dir, "_manifest.json"),
+      JSON.stringify({ type, pulledAt: 1700000000000, count: 1, jobId: "j1" }),
+    );
+    // Build the index using the legacy (top-level-only) projection and stamp
+    // schemaVersion=1, simulating an upgrade-in-place scenario.
+    await buildIndexFromNDJson(dir, (rec) => {
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rec)) {
+        if (k.startsWith("_") && k !== "_id") continue;
+        if (typeof v === "string") out[k] = v;
+      }
+      return out;
+    });
+    const Database = (await import("better-sqlite3")).default;
+    const db = new Database(path.join(dir, "index.sqlite"));
+    db.prepare("INSERT OR REPLACE INTO meta(key,value) VALUES ('schemaVersion', '1')").run();
+    db.close();
+    evictCache(dir);
+
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "Alice", page: 1, limit: 10,
+      display: { title: "userName", searchFields: [] },
+      attr: "profile.givenName",
+      op: "equals",
+    });
+    expect(page.records.map((r) => r.id)).toEqual(["u1"]);
+  });
+
+  it("rebuilds a true v1-shaped DB (no meta table at all)", async () => {
+    // Reproduces the bug where a tenant pulled before the v2 indexer had a
+    // `records` table but no `meta` table. The first v2 openIndexDb would
+    // silently stamp schemaVersion=2 on top of the v1 data instead of
+    // dropping it. The fix detects "records table exists + no schemaVersion"
+    // as stale and forces a rebuild via the bumped SCHEMA_VERSION (now 3).
+    const type = "alpha_user";
+    const dir = path.join(tmpDir, ENV, "managed-data", type);
+    fs.mkdirSync(dir, { recursive: true });
+    const records = [
+      { _id: "u1", userName: "alice", profile: { givenName: "Alice" } },
+    ];
+    fs.writeFileSync(
+      path.join(dir, "data.ndjson"),
+      records.map((r) => JSON.stringify(r) + "\n").join(""),
+    );
+    fs.writeFileSync(
+      path.join(dir, "_manifest.json"),
+      JSON.stringify({ type, pulledAt: 1700000000001, count: 1, jobId: "j1" }),
+    );
+    // Build a v1-shaped DB by hand: records table populated with scalar-only
+    // fields_json, NO meta table.
+    const Database = (await import("better-sqlite3")).default;
+    const dbPath = path.join(dir, "index.sqlite");
+    const db = new Database(dbPath);
+    db.prepare(`
+      CREATE TABLE records (
+        id TEXT PRIMARY KEY NOT NULL,
+        ord INTEGER NOT NULL,
+        offset INTEGER NOT NULL,
+        length INTEGER NOT NULL,
+        fields_json TEXT NOT NULL,
+        searchable TEXT NOT NULL
+      )
+    `).run();
+    db.prepare(
+      "INSERT INTO records(id,ord,offset,length,fields_json,searchable) VALUES (?,?,?,?,?,?)",
+    ).run("u1", 0, 0, 50, JSON.stringify({ _id: "u1", userName: "alice" }), "u1 alice");
+    db.close();
+    evictCache(dir);
+
+    const page = await listRecords(tmpDir, ENV, "alpha_user", {
+      q: "Alice", page: 1, limit: 10,
+      display: { title: "userName", searchFields: [] },
+      attr: "profile.givenName",
+      op: "equals",
+    });
+    expect(page.records.map((r) => r.id)).toEqual(["u1"]);
+  });
+});

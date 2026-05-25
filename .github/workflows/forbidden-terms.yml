@@ -1,0 +1,87 @@
+name: Forbidden Terms
+
+on:
+  pull_request:
+  push:
+    branches: [main, development]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need both sides of the diff. 0 = full history (safe default).
+          fetch-depth: 0
+
+      - name: Resolve diff range
+        id: range
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.event.after }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "base=$PR_BASE_SHA" >> "$GITHUB_OUTPUT"
+            echo "head=$PR_HEAD_SHA" >> "$GITHUB_OUTPUT"
+          else
+            BASE="$PUSH_BEFORE"
+            # First push to a new branch: 'before' is all-zeros — fall back to HEAD~1.
+            if [[ "$BASE" =~ ^0+$ ]]; then BASE=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD); fi
+            echo "base=$BASE" >> "$GITHUB_OUTPUT"
+            echo "head=$PUSH_AFTER" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Scan added lines
+        env:
+          FORBIDDEN_TERMS: ${{ secrets.FORBIDDEN_TERMS }}
+          FORBIDDEN_TERMS_ALLOWLIST: ${{ secrets.FORBIDDEN_TERMS_ALLOWLIST }}
+          BASE_SHA: ${{ steps.range.outputs.base }}
+          HEAD_SHA: ${{ steps.range.outputs.head }}
+        run: |
+          python3 <<'PY'
+          import os, re, subprocess, sys
+
+          def lines(name):
+              raw = os.environ.get(name, "") or ""
+              return [l.strip() for l in raw.splitlines()
+                      if l.strip() and not l.strip().startswith("#")]
+
+          terms = lines("FORBIDDEN_TERMS")
+          allow = lines("FORBIDDEN_TERMS_ALLOWLIST")
+          if not terms:
+              print("::warning::FORBIDDEN_TERMS secret is empty; nothing to check")
+              sys.exit(0)
+
+          term_re  = re.compile("|".join(re.escape(t) for t in terms), re.IGNORECASE)
+          allow_re = re.compile("|".join(allow), re.IGNORECASE) if allow else None
+
+          diff = subprocess.check_output(
+              ["git", "diff", "--unified=0", f"{os.environ['BASE_SHA']}..{os.environ['HEAD_SHA']}"],
+              text=True,
+          )
+
+          current_file, current_line, violations = None, 0, []
+          for raw in diff.splitlines():
+              if raw.startswith("+++ b/"):
+                  current_file = raw[6:]; continue
+              if raw.startswith("@@"):
+                  m = re.search(r"\+(\d+)", raw)
+                  current_line = (int(m.group(1)) - 1) if m else 0; continue
+              if raw.startswith("+") and not raw.startswith("+++"):
+                  current_line += 1
+                  content = raw[1:]
+                  if term_re.search(content) and not (allow_re and allow_re.search(content)):
+                      violations.append((current_file, current_line))
+
+          for f, ln in violations:
+              # Intentionally do NOT echo the matched term — keeps logs clean.
+              print(f"::error file={f},line={ln}::Forbidden term detected on this line")
+
+          if violations:
+              print(f"\n{len(violations)} forbidden term occurrence(s) found.", file=sys.stderr)
+              sys.exit(1)
+          print("No forbidden terms in added lines.")
+          PY

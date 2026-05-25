@@ -7,9 +7,9 @@ Tradeoff: These guidelines bias toward caution over speed. For trivial tasks, us
 ## Project Context
 
 - This repository is the PingHub monorepo.
-- Treat `aic-pipeline/` as the current application unless the user says otherwise.
-- `aic-pipeline/` is a Next.js/TypeScript utility for PingOne Advanced Identity Cloud (AIC).
-- Run app validation commands from `aic-pipeline/`.
+- Treat `ping-aic-studio/` as the current application unless the user says otherwise.
+- `ping-aic-studio/` is a Next.js/TypeScript utility for PingOne Advanced Identity Cloud (AIC).
+- Run app validation commands from `ping-aic-studio/`.
 - Do not commit tenant `.env` files, service-account keys, generated tenant config data, or runtime environment data.
 
 ## 1. Think Before Coding
@@ -69,7 +69,7 @@ Strong success criteria let the agent loop independently. Weak criteria like "ma
 
 ## Validation Commands
 
-From `aic-pipeline/`:
+From `ping-aic-studio/`:
 
 ```powershell
 npm install
