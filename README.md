@@ -20,6 +20,12 @@ To stop:
 ./stop
 ```
 
+To check whether it's running:
+
+```bash
+./status
+```
+
 ### Windows (Command Prompt)
 
 ```cmd
@@ -32,6 +38,12 @@ To stop:
 
 ```cmd
 stop.cmd
+```
+
+To check status:
+
+```cmd
+status.cmd
 ```
 
 `./start` detects your OS, ensures Node 20+ (uses system Node if present, otherwise auto-downloads Node 20.18.0 into `ping-aic-studio/.pinghub-node/`), installs dependencies, builds, and launches the web UI in the background. Your browser opens to `http://127.0.0.1:3000` (or another free port if 3000 is taken — the chosen URL is shown in the start output and in the log).

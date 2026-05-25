@@ -7,23 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-24
+
 ### Added
 
-- **`./start` + `./stop` scripts at the monorepo root** for end-user launch. After `git clone`, `./start` (or `start.cmd` on Windows):
-  1. Detects OS
-  2. Ensures Node 20+ (uses system Node if present, otherwise downloads pinned 20.18.0 into `./ping-aic-studio/.pinghub-node/`)
-  3. Installs dependencies (`npm install`) if missing/stale
-  4. Builds the app (`npm run build`) if not built
-  5. Checks `git fetch` for upstream updates
-  6. Launches the server **in the background** via `launcher/launcher.mjs` — picks a free port (preferred 47391), opens the browser
-- Server logs to `ping-aic-studio/.pinghub-logs/pinghub.log` with timestamped session headers; PID stored at `ping-aic-studio/.pinghub-logs/pinghub.pid`.
-- `./stop` (and `stop.cmd`) reads the PID file, sends SIGTERM, waits 3s, escalates to SIGKILL if needed.
+- **`./start`, `./stop`, `./status` scripts at the monorepo root** (Windows: `start.cmd` / `stop.cmd` / `status.cmd`) for end-user launch. After `git clone https://github.com/bostonidentity/PingHub`:
+  - `./start` detects OS, ensures Node 20+ (system Node if ≥ 20, else auto-downloads pinned 20.18.0 into `./ping-aic-studio/.pinghub-node/`), `npm install` / `npm run build` if needed, checks for upstream updates, then launches the server **in the background**. Browser auto-opens.
+  - `./stop` reads the PID file, sends SIGTERM, escalates to SIGKILL after 3s, cleans up.
+  - `./status` reports running/not-running with PID, URL, start time, log path.
 - `launcher/launcher.mjs` — cross-platform Node launcher: port selection, server spawn, browser auto-open, clean SIGTERM shutdown.
-- Bootstrap flags: `--reinstall`, `--bundled-node`, `--skip-update`.
+- Server logs to `ping-aic-studio/.pinghub-logs/pinghub.log` with timestamped session headers; PID at `ping-aic-studio/.pinghub-logs/pinghub.pid`.
+- Bootstrap flags: `--reinstall`, `--bundled-node`, `--skip-update`. Launcher flags: `--port`, `--no-open`, `--data-dir`, `-h`/`--help` on all three scripts.
+- `postbuild` npm hook copies `.next/static` + `public` into the standalone tree so CSS/JS chunks serve correctly in production.
+
+### Changed
+
+- **Rebranding:** display name "AIC Pipeline" → "Ping AIC Studio" (page title, nav header, footer, READMEs, console output prefix `[Ping AIC Studio]`). NPM package name `pinghub` unchanged.
+- **Folder renamed:** `aic-pipeline/` → `ping-aic-studio/` (file history preserved via `git mv`).
+- Default port: 3000 (auto-falls-back to a free port if 3000 is occupied).
+- `./start`'s data-dir resolution now matches `npm run dev` — reads `git-settings.json`'s `targetDir` (default `../environments`) and resolves to an absolute path before spawn, immune to the standalone server's `process.chdir(__dirname)` quirk.
+- `./start` refuses to run a second instance when one is already alive (prints PID, URL, start time, log path).
 
 ### Removed
 
 - Dead promote subcommand system (`/api/promote/route.ts`, `PromoteSubcommand` type, `PROMOTE_SUBCOMMANDS` array) — was unreachable since the active promote flow uses `/api/promote-items`.
+
+### Fixed
+
+- macOS bash 3.2 unbound-variable error when `./start` was invoked with no flags.
+- Static asset 404s (Tailwind CSS not loading) when running the standalone production build — fixed by the new `postbuild` asset-sync step.
 
 ## [0.2.7.3] - 2026-05-22
 
