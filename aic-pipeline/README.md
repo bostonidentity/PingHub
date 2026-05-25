@@ -55,7 +55,7 @@ To stop:
 stop.cmd
 ```
 
-The server runs in the background. Your browser opens at `http://127.0.0.1:47391`. Closing the browser does NOT stop the server — use `./stop` (or `stop.cmd`) to shut it down.
+The server runs in the background. Your browser opens at `http://127.0.0.1:3000` (or another free port if 3000 is taken — the chosen URL is printed in the start output). Closing the browser does NOT stop the server — use `./stop` (or `stop.cmd`) to shut it down.
 
 **On first run** the script will install dependencies and run a production build (~30s on a fast machine). Subsequent launches start in seconds.
 
@@ -92,7 +92,7 @@ Launcher flags (forwarded to the running app):
 
 | Flag | Effect |
 |---|---|
-| `--port N` | Override the port (default 47391; falls back to a free port if taken) |
+| `--port N` | Override the port (default 3000; auto-picks a free port if 3000 is taken) |
 | `--no-open` | Start the server but don't open the browser |
 | `--data-dir PATH` | Override `PINGHUB_DATA_DIR` |
 

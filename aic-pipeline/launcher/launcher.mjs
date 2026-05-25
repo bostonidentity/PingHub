@@ -55,7 +55,7 @@ export async function waitForServer(url, { timeoutMs = 30000, intervalMs = 200 }
   throw new Error(`timed out waiting for ${url} after ${timeoutMs}ms`);
 }
 
-const PREFERRED_PORT = 47391;
+const PREFERRED_PORT = 3000;
 const INSTALL_DIR = process.platform === "win32"
   ? path.join(process.env.LOCALAPPDATA ?? os.homedir(), "PingHub")
   : path.join(os.homedir(), ".pinghub");

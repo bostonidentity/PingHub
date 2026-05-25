@@ -15,7 +15,7 @@
 #   --reinstall        wipe node_modules + .next before bootstrapping
 #
 # Launcher flags forwarded to launcher.mjs:
-#   --port N           override port (default 47391)
+#   --port N           override port (default 3000; auto-picks a free port if 3000 is taken)
 #   --no-open          start server but don't open the browser
 #   --data-dir PATH    override PINGHUB_DATA_DIR
 
