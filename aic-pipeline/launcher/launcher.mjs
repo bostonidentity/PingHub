@@ -94,8 +94,6 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   const port = opts.port ?? await getPort({ port: PREFERRED_PORT });
-  const dataDir = opts.dataDir ?? path.join(INSTALL_DIR, "data");
-  mkdirSync(dataDir, { recursive: true });
 
   // Resolve standalone server.js location.
   // In tarball install: <INSTALL_DIR>/app/.next/standalone/server.js
@@ -113,19 +111,49 @@ export async function main(argv = process.argv.slice(2)) {
     process.exit(3);
   }
 
+  // The Next.js app's project root (where package.json + src/lib/paths.ts
+  // live). For dev/source: <repo>/aic-pipeline. For tarball: <install>/app.
+  const appDir = path.resolve(path.dirname(serverJs), "..", "..");
+  const isTarball = appDir.endsWith(`${path.sep}app`)
+    && existsSync(path.join(launcherDir, "..", "node"));
+
+  // Data dir resolution:
+  //   1. opts.dataDir (--data-dir flag)
+  //   2. tarball install → INSTALL_DIR/data (e.g., ~/.pinghub/data)
+  //   3. source mode → don't override; let paths.ts compute from cwd
+  //      (this matches `npm run dev` behavior so existing envs show up)
+  let dataDir = opts.dataDir;
+  if (!dataDir && isTarball) {
+    dataDir = path.join(INSTALL_DIR, "data");
+  }
+  if (dataDir) {
+    mkdirSync(dataDir, { recursive: true });
+  }
+
   console.error(`[pinghub] using port ${port}`);
-  console.error(`[pinghub] data dir ${dataDir}`);
+  if (dataDir) {
+    console.error(`[pinghub] data dir ${dataDir}`);
+  } else {
+    console.error(`[pinghub] data dir (default — git-settings.json or ${path.resolve(appDir, "..")}/environments)`);
+  }
   console.error(`[pinghub] starting server...`);
 
+  const childEnv = {
+    ...process.env,
+    HOSTNAME: "127.0.0.1",
+    PORT: String(port)
+  };
+  if (dataDir) {
+    childEnv.PINGHUB_DATA_DIR = dataDir;
+  }
+  // CWD: appDir (NOT path.dirname(serverJs)) so paths.ts's
+  // resolveTargetDir() default of '../environments' resolves to the same
+  // location as `npm run dev` (which runs with cwd = aic-pipeline/).
+  // server.js itself uses __dirname for its assets, so this is safe.
   const child = spawn(process.execPath, [serverJs], {
     stdio: ["ignore", "inherit", "inherit"],
-    env: {
-      ...process.env,
-      HOSTNAME: "127.0.0.1",
-      PORT: String(port),
-      PINGHUB_DATA_DIR: dataDir
-    },
-    cwd: path.dirname(serverJs)
+    env: childEnv,
+    cwd: appDir
   });
 
   const url = `http://127.0.0.1:${port}`;
