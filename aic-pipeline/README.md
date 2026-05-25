@@ -25,7 +25,75 @@ Built on top of a vendored subset of [`fr-config-manager`](https://github.com/Fo
 - Access to one or more Ping AIC tenants and a service account with the scopes you want to manage.
 - A local working directory for each tenant's config files (the `CONFIG_DIR` referenced below).
 
-## Install
+## Install (end users)
+
+Clone the [PingHub monorepo](https://github.com/bostonidentity/PingHub) and run the bootstrap script — it detects your OS, ensures Node 20+, installs dependencies, builds, and launches the web UI.
+
+### macOS / Linux
+
+```bash
+git clone https://github.com/bostonidentity/PingHub.git
+cd PingHub
+./pinghub
+```
+
+### Windows (Command Prompt or PowerShell)
+
+```cmd
+git clone https://github.com/bostonidentity/PingHub.git
+cd PingHub
+pinghub.cmd
+```
+
+That's it. Your browser opens at `http://127.0.0.1:47391`. `Ctrl-C` to stop.
+
+**On first run** the script will install dependencies and run a production build (~30s on a fast machine). Subsequent launches start in seconds.
+
+### Updating
+
+The script checks the repo for upstream updates each launch. When new commits are available it prints `⚡ N update(s) available` and prompts before continuing. To pull:
+
+```bash
+git pull
+./pinghub
+```
+
+### Flags
+
+Pinghub-script flags:
+
+| Flag | Effect |
+|---|---|
+| `--reinstall` | Wipe `node_modules` and `.next` before bootstrapping |
+| `--bundled-node` | Force download Node 20.18.0 to `./aic-pipeline/.pinghub-node/`, even if system Node is fine |
+| `--skip-update` | Skip the `git fetch` update check |
+
+Launcher flags (forwarded to the running app):
+
+| Flag | Effect |
+|---|---|
+| `--port N` | Override the port (default 47391; falls back to a free port if taken) |
+| `--no-open` | Start the server but don't open the browser |
+| `--data-dir PATH` | Override `PINGHUB_DATA_DIR` |
+| `--version` | Print version and exit |
+
+### Node version handling
+
+The script picks Node in this order:
+
+1. `./aic-pipeline/.pinghub-node/bin/node` (or `node.exe` on Windows) if present — use that
+2. System `node` from PATH if version ≥ 20
+3. Otherwise, download Node 20.18.0 to `./aic-pipeline/.pinghub-node/` and use it
+
+If you previously ran with `--bundled-node` and later install system Node 20+, delete `./aic-pipeline/.pinghub-node/` to switch back to the system version.
+
+### Pin a specific version
+
+```bash
+PINGHUB_VERSION=v0.3.0 curl -fsSL https://raw.githubusercontent.com/bostonidentity/PingHub/main/aic-pipeline/launcher/install.sh | bash
+```
+
+## Install (developers)
 
 ```bash
 git clone https://github.com/bostonidentity/PingHub.git

@@ -38,6 +38,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "elkjs": "^0.11.1",
+    "get-port": "^7.2.0",
     "jose": "^6.2.2",
     "js-beautify": "^1.15.4",
     "lucide-react": "^1.7.0",

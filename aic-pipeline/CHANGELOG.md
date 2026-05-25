@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **One-command bootstrap**: `./pinghub` (or `pinghub.cmd` on Windows) at the monorepo root. After `git clone`, a single command:
+  1. Detects OS
+  2. Ensures Node 20+ (uses system Node if present, otherwise downloads pinned 20.18.0 into `./aic-pipeline/.pinghub-node/`)
+  3. Installs dependencies (`npm install`) if missing/stale
+  4. Builds the app (`npm run build`) if not built
+  5. Checks `git fetch` for upstream updates and prompts before continuing
+  6. Launches via `launcher/launcher.mjs` — picks a free port (preferred 47391), opens the browser
+- `launcher/launcher.mjs` — cross-platform Node launcher: port selection, server spawn, browser auto-open, clean SIGINT shutdown.
+- `--reinstall`, `--bundled-node`, `--skip-update` flags for bootstrap control.
+
+### Removed
+
+- Dead promote subcommand system (`/api/promote/route.ts`, `PromoteSubcommand` type, `PROMOTE_SUBCOMMANDS` array) — was unreachable since the active promote flow uses `/api/promote-items`.
+
 ## [0.2.7.3] - 2026-05-22
 
 ### Added

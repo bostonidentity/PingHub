@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+# pinghub — clone + launch.
+#
+# After `git clone https://github.com/bostonidentity/PingHub && cd PingHub`,
+# run `./pinghub` to start the web UI. Each step below is check-then-do:
+# safe to re-run, picks up where the last run left off if anything failed.
+#
+#   1. Detect OS (mac / linux / windows-via-msys)
+#   2. Ensure Node 20+
+#        a. ./aic-pipeline/.pinghub-node/bin/node (bundled, highest priority)
+#        b. system `node` if version >= 20
+#        c. download Node 20.18.0 into ./aic-pipeline/.pinghub-node/
+#   3. npm install (if node_modules missing or stale)
+#   4. npm run build (if .next/standalone/server.js missing)
+#   5. Check git for upstream updates; prompt before continuing if any
+#   6. Launch via launcher/launcher.mjs
+#
+# Flags are forwarded to launcher.mjs:  --port, --no-open, --data-dir, --version
+# Pinghub-script-only flags:
+#   --bundled-node    force download of bundled Node even if system Node is fine
+#   --skip-update     don't check git for updates
+#   --reinstall       wipe node_modules + .next before bootstrapping
+
+set -euo pipefail
+
+# Resolve the directory containing this script, following symlinks.
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_PATH" ]; do
+  link_target=$(readlink "$SCRIPT_PATH")
+  case "$link_target" in
+    /*) SCRIPT_PATH="$link_target" ;;
+    *)  SCRIPT_PATH="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)/$link_target" ;;
+  esac
+done
+REPO_ROOT="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+APP_DIR="${REPO_ROOT}/aic-pipeline"
+
+LOG_PREFIX="[pinghub]"
+step() { echo "$LOG_PREFIX $*"; }
+fail() { echo "$LOG_PREFIX ERROR: $*" >&2; exit 1; }
+
+# ── Parse pinghub-only flags ────────────────────────────────────────
+BUNDLED_NODE=0
+SKIP_UPDATE=0
+REINSTALL=0
+LAUNCHER_ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --bundled-node) BUNDLED_NODE=1 ;;
+    --skip-update)  SKIP_UPDATE=1 ;;
+    --reinstall)    REINSTALL=1 ;;
+    *)              LAUNCHER_ARGS+=("$arg") ;;
+  esac
+done
+
+# ── 1. Detect OS ────────────────────────────────────────────────────
+case "$(uname -s)" in
+  Darwin)              OS="darwin" ;;
+  Linux)               OS="linux" ;;
+  MINGW*|MSYS*|CYGWIN*) OS="windows" ;;
+  *) fail "unsupported OS: $(uname -s) — try the Windows installer if on native cmd/powershell" ;;
+esac
+
+case "$(uname -m)" in
+  arm64|aarch64) ARCH="arm64" ;;
+  x86_64|amd64)  ARCH="x64" ;;
+  *) fail "unsupported architecture: $(uname -m)" ;;
+esac
+
+step "detected: ${OS}-${ARCH}"
+
+if [ ! -d "$APP_DIR" ]; then
+  fail "expected aic-pipeline/ directory at $APP_DIR — are you inside the PingHub repo?"
+fi
+
+# ── Optional --reinstall ────────────────────────────────────────────
+if [ "$REINSTALL" -eq 1 ]; then
+  step "--reinstall: wiping node_modules + .next"
+  rm -rf "${APP_DIR}/node_modules" "${APP_DIR}/.next"
+fi
+
+# ── 2. Ensure Node 20+ ──────────────────────────────────────────────
+NODE_REQ_MAJOR=20
+NODE_PIN_VERSION="20.18.0"
+LOCAL_NODE_DIR="${APP_DIR}/.pinghub-node"
+LOCAL_NODE_BIN="${LOCAL_NODE_DIR}/bin/node"
+
+node_major() {
+  # Echo the major version number of the node binary at $1, or empty string.
+  if [ -x "$1" ]; then
+    "$1" -v 2>/dev/null | sed 's/^v//' | cut -d. -f1
+  fi
+}
+
+download_node() {
+  local arch suffix url tmp extracted
+  case "$ARCH" in
+    arm64) arch="arm64" ;;
+    x64)   arch="x64" ;;
+  esac
+  case "$OS" in
+    darwin)  suffix="darwin-${arch}.tar.gz" ;;
+    linux)   suffix="linux-${arch}.tar.xz" ;;
+    windows) suffix="win-${arch}.zip" ;;
+  esac
+  url="https://nodejs.org/dist/v${NODE_PIN_VERSION}/node-v${NODE_PIN_VERSION}-${suffix}"
+
+  step "downloading Node ${NODE_PIN_VERSION} from nodejs.org..."
+  tmp=$(mktemp -d)
+  trap "rm -rf $tmp" RETURN
+
+  if ! curl -fL --progress-bar "$url" -o "${tmp}/node-archive"; then
+    fail "could not download Node — check network or install Node 20+ manually from https://nodejs.org"
+  fi
+
+  case "$suffix" in
+    *.tar.gz|*.tar.xz)
+      if ! tar -xf "${tmp}/node-archive" -C "$tmp"; then
+        fail "could not extract Node archive"
+      fi
+      ;;
+    *.zip)
+      if ! unzip -q "${tmp}/node-archive" -d "$tmp"; then
+        fail "could not unzip Node archive"
+      fi
+      ;;
+  esac
+
+  extracted=$(find "$tmp" -maxdepth 1 -mindepth 1 -type d | head -1)
+  if [ -z "$extracted" ] || [ ! -x "${extracted}/bin/node" ]; then
+    fail "Node binary not found in extracted archive"
+  fi
+
+  rm -rf "$LOCAL_NODE_DIR"
+  mv "$extracted" "$LOCAL_NODE_DIR"
+}
+
+# Forced bundled mode
+if [ "$BUNDLED_NODE" -eq 1 ] && [ ! -x "$LOCAL_NODE_BIN" ]; then
+  download_node
+fi
+
+NODE_EXE=""
+# Priority 1: local bundled Node
+if [ -x "$LOCAL_NODE_BIN" ]; then
+  major=$(node_major "$LOCAL_NODE_BIN")
+  if [ -n "$major" ] && [ "$major" -ge "$NODE_REQ_MAJOR" ]; then
+    NODE_EXE="$LOCAL_NODE_BIN"
+    step "✓ using bundled Node $("$NODE_EXE" -v) ($LOCAL_NODE_BIN)"
+  else
+    step "bundled Node is too old; re-downloading..."
+    download_node
+    NODE_EXE="$LOCAL_NODE_BIN"
+  fi
+fi
+
+# Priority 2: system Node
+if [ -z "$NODE_EXE" ] && command -v node >/dev/null 2>&1; then
+  sys_node=$(command -v node)
+  major=$(node_major "$sys_node")
+  if [ -n "$major" ] && [ "$major" -ge "$NODE_REQ_MAJOR" ]; then
+    NODE_EXE="$sys_node"
+    step "✓ using system Node $("$NODE_EXE" -v) ($sys_node)"
+  else
+    step "found system Node $($sys_node -v 2>/dev/null) but need ${NODE_REQ_MAJOR}+; will bundle"
+  fi
+fi
+
+# Priority 3: download
+if [ -z "$NODE_EXE" ]; then
+  download_node
+  NODE_EXE="$LOCAL_NODE_BIN"
+  step "✓ downloaded Node $("$NODE_EXE" -v)"
+fi
+
+# Make the chosen Node win against system on PATH for child npm calls
+NPM_EXE="$(dirname "$NODE_EXE")/npm"
+if [ ! -x "$NPM_EXE" ]; then
+  # System Node — use system npm
+  NPM_EXE="npm"
+fi
+export PATH="$(dirname "$NODE_EXE"):${PATH}"
+
+# ── 3. npm install ──────────────────────────────────────────────────
+cd "$APP_DIR"
+
+deps_stale() {
+  [ ! -d node_modules ] && return 0
+  [ ! -f node_modules/.package-lock.json ] && return 0
+  # If package.json is newer than node_modules/.package-lock.json, deps are stale
+  [ package.json -nt node_modules/.package-lock.json ] && return 0
+  [ package-lock.json -nt node_modules/.package-lock.json ] && return 0
+  return 1
+}
+
+if deps_stale; then
+  step "installing dependencies (npm install)..."
+  if ! "$NPM_EXE" install; then
+    fail "npm install failed — see output above"
+  fi
+else
+  step "✓ dependencies up to date"
+fi
+
+# ── 4. Build ────────────────────────────────────────────────────────
+if [ ! -f .next/standalone/server.js ]; then
+  step "building app (npm run build)..."
+  if ! "$NPM_EXE" run build; then
+    fail "build failed — see output above"
+  fi
+else
+  step "✓ build present"
+fi
+
+# ── 5. Check for updates ────────────────────────────────────────────
+if [ "$SKIP_UPDATE" -eq 0 ]; then
+  cd "$REPO_ROOT"
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    step "checking for updates..."
+    if git fetch --quiet origin 2>/dev/null; then
+      branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "HEAD")
+      upstream=$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null || echo "")
+      if [ -n "$upstream" ]; then
+        ahead=$(git rev-list --count "HEAD..${upstream}" 2>/dev/null || echo "0")
+        if [ "$ahead" -gt 0 ]; then
+          step "⚡ ${ahead} update(s) available on ${branch}"
+          step "   Run 'git pull' to update, then re-run ./pinghub"
+          printf "$LOG_PREFIX Continue without updating? [Y/n] "
+          if read -r ans </dev/tty; then
+            case "$ans" in
+              n|N|no|NO) fail "aborted by user; git pull and re-run" ;;
+            esac
+          fi
+        else
+          step "✓ up to date"
+        fi
+      else
+        step "(no upstream tracking branch — skipping update check)"
+      fi
+    else
+      step "(could not reach origin — skipping update check)"
+    fi
+  else
+    step "(not a git checkout — skipping update check)"
+  fi
+fi
+
+# ── 6. Launch ───────────────────────────────────────────────────────
+cd "$APP_DIR"
+step "launching..."
+exec "$NODE_EXE" launcher/launcher.mjs "${LAUNCHER_ARGS[@]}"

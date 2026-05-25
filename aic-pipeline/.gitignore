@@ -19,6 +19,11 @@
 
 # production
 /build
+/dist/
+
+# pinghub bootstrap-downloaded Node + cache
+/.pinghub-node/
+/.tarball-cache/
 
 # misc
 .DS_Store
