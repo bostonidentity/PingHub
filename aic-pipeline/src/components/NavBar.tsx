@@ -69,7 +69,7 @@ export function NavBar() {
               } : undefined}
               className="font-semibold text-[15px] tracking-tight shrink-0 text-white"
             >
-              AIC Pipeline
+              Ping AIC Studio
             </Link>
             <nav className="flex items-center gap-0.5 overflow-x-auto">
               {NAV_ITEMS.map(({ href, label }) => {

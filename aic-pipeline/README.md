@@ -1,4 +1,6 @@
-# aic-pipeline
+# Ping AIC Studio
+
+(folder name: `aic-pipeline/`)
 
 A web UI for managing Ping Advanced Identity Cloud (AIC) tenant configurations — pull config from a tenant, push it back, and promote it across environments (dev → staging → prod) with a guided diff-review workflow.
 

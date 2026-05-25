@@ -18,7 +18,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AIC Config Pipeline",
+  title: "Ping AIC Studio",
   description: "Ping Advanced Identity Cloud Configuration Pipeline UI",
 };
 
@@ -48,7 +48,7 @@ export default function RootLayout({
                 <span>
                   &copy; {new Date().getFullYear()} <span className="font-semibold text-slate-700">Boston Identity</span>
                 </span>
-                <span className="text-slate-400">AIC Config Pipeline</span>
+                <span className="text-slate-400">Ping AIC Studio</span>
               </div>
             </footer>
           </DialogProvider>
