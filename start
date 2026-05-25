@@ -54,13 +54,30 @@ for arg in "$@"; do
   esac
 done
 
-# ── Already running? ────────────────────────────────────────────────
+# ── Already running? Only one process allowed at a time. ────────────
 if [ -f "$PID_FILE" ]; then
   EXISTING_PID=$(cat "$PID_FILE" 2>/dev/null || true)
   if [ -n "$EXISTING_PID" ] && kill -0 "$EXISTING_PID" 2>/dev/null; then
-    fail "already running (PID $EXISTING_PID). Run ./stop first, or check $LOG_FILE"
+    # Look up the URL it's serving — parse the most recent "ready at" line
+    # in the log file (last session wins).
+    EXISTING_URL=""
+    if [ -f "$LOG_FILE" ]; then
+      EXISTING_URL=$(grep "ready at " "$LOG_FILE" | tail -1 | sed -E 's/.*ready at //')
+    fi
+    # Start time (Linux supports `-o lstart=`, macOS supports `-o lstart`)
+    EXISTING_STARTED=$(ps -o lstart= -p "$EXISTING_PID" 2>/dev/null | sed 's/^ *//' || true)
+
+    echo "$LOG_PREFIX ERROR: pinghub is already running" >&2
+    echo "$LOG_PREFIX   PID:      $EXISTING_PID" >&2
+    [ -n "$EXISTING_URL" ]     && echo "$LOG_PREFIX   serving:  $EXISTING_URL" >&2
+    [ -n "$EXISTING_STARTED" ] && echo "$LOG_PREFIX   started:  $EXISTING_STARTED" >&2
+    echo "$LOG_PREFIX   log:      $LOG_FILE" >&2
+    echo "$LOG_PREFIX" >&2
+    echo "$LOG_PREFIX Only one pinghub process can run at a time." >&2
+    echo "$LOG_PREFIX Run './stop' to stop it, then './start' to start a new one." >&2
+    exit 1
   else
-    step "stale PID file (PID $EXISTING_PID not running); cleaning up"
+    step "found stale PID file (PID $EXISTING_PID is not running) — cleaning up"
     rm -f "$PID_FILE"
   fi
 fi
