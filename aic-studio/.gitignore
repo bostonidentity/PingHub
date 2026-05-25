@@ -1,7 +1,0 @@
-node_modules/
-out/
-*.vsix
-.DS_Store
-*.tsbuildinfo
-coverage/
-.vscode-test/

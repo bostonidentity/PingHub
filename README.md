@@ -9,7 +9,6 @@ PingHub is a monorepo. Each top-level directory is an independent project with i
 | Project | Description |
 |---|---|
 | [`aic-pipeline/`](./aic-pipeline) | Web UI for AIC tenant config management — pull, push, and promote configs across environments with a guided diff-review workflow. |
-| [`aic-studio/`](./aic-studio) | VS Code extension successor to `aic-pipeline/` — same workflows, native VS Code UX. Currently in pre-release development. |
 
 More projects will be added to this monorepo over time.
 
