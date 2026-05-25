@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # stop — stop the PingHub server started by ./start.
-# Reads the PID from aic-pipeline/.pinghub-logs/pinghub.pid,
+# Reads the PID from ping-aic-studio/.pinghub-logs/pinghub.pid,
 # sends SIGTERM, waits up to 3s for graceful shutdown, then SIGKILL
 # if still alive.
 
@@ -15,7 +15,7 @@ while [ -L "$SCRIPT_PATH" ]; do
   esac
 done
 REPO_ROOT="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
-APP_DIR="${REPO_ROOT}/aic-pipeline"
+APP_DIR="${REPO_ROOT}/ping-aic-studio"
 PID_FILE="${APP_DIR}/.pinghub-logs/pinghub.pid"
 LOG_PREFIX="[Ping AIC Studio]"
 

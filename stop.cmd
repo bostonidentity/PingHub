@@ -5,7 +5,7 @@ setlocal enabledelayedexpansion
 
 set "REPO_ROOT=%~dp0"
 if "%REPO_ROOT:~-1%"=="\" set "REPO_ROOT=%REPO_ROOT:~0,-1%"
-set "APP_DIR=%REPO_ROOT%\aic-pipeline"
+set "APP_DIR=%REPO_ROOT%\ping-aic-studio"
 set "PID_FILE=%APP_DIR%\.pinghub-logs\pinghub.pid"
 set "LOG=[Ping AIC Studio]"
 

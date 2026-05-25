@@ -1,6 +1,6 @@
 # Ping AIC Studio
 
-(folder name: `aic-pipeline/`)
+(folder name: `ping-aic-studio/`)
 
 A web UI for managing Ping Advanced Identity Cloud (AIC) tenant configurations — pull config from a tenant, push it back, and promote it across environments (dev → staging → prod) with a guided diff-review workflow.
 
@@ -63,11 +63,11 @@ The server runs in the background. Your browser opens at `http://127.0.0.1:3000`
 
 ### Logs
 
-The server's stdout/stderr is written to `aic-pipeline/.pinghub-logs/pinghub.log`. Each `./start` invocation appends a timestamped section header to the log so you can find session boundaries.
+The server's stdout/stderr is written to `ping-aic-studio/.pinghub-logs/pinghub.log`. Each `./start` invocation appends a timestamped section header to the log so you can find session boundaries.
 
 To follow the log live:
 ```bash
-tail -f aic-pipeline/.pinghub-logs/pinghub.log
+tail -f ping-aic-studio/.pinghub-logs/pinghub.log
 ```
 
 ### Updating
@@ -87,7 +87,7 @@ Bootstrap flags:
 | Flag | Effect |
 |---|---|
 | `--reinstall` | Wipe `node_modules` and `.next` before bootstrapping |
-| `--bundled-node` | Force download Node 20.18.0 to `./aic-pipeline/.pinghub-node/`, even if system Node is fine |
+| `--bundled-node` | Force download Node 20.18.0 to `./ping-aic-studio/.pinghub-node/`, even if system Node is fine |
 | `--skip-update` | Skip the `git fetch` update check |
 
 Launcher flags (forwarded to the running app):
@@ -102,11 +102,11 @@ Launcher flags (forwarded to the running app):
 
 The script picks Node in this order:
 
-1. `./aic-pipeline/.pinghub-node/bin/node` (or `node.exe` on Windows) if present — use that
+1. `./ping-aic-studio/.pinghub-node/bin/node` (or `node.exe` on Windows) if present — use that
 2. System `node` from PATH if version ≥ 20
-3. Otherwise, download Node 20.18.0 to `./aic-pipeline/.pinghub-node/` and use it
+3. Otherwise, download Node 20.18.0 to `./ping-aic-studio/.pinghub-node/` and use it
 
-If you previously ran with `--bundled-node` and later install system Node 20+, delete `./aic-pipeline/.pinghub-node/` to switch back to the system version.
+If you previously ran with `--bundled-node` and later install system Node 20+, delete `./ping-aic-studio/.pinghub-node/` to switch back to the system version.
 
 ### Pin a specific version
 
@@ -119,7 +119,7 @@ git checkout v0.3.0
 
 ```bash
 git clone https://github.com/bostonidentity/PingHub.git
-cd PingHub/aic-pipeline
+cd PingHub/ping-aic-studio
 npm install
 ```
 

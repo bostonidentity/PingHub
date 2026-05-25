@@ -3,7 +3,7 @@
 #
 # After `git clone https://github.com/bostonidentity/PingHub && cd PingHub`,
 # run `./start` to install dependencies, build, and launch the web UI.
-# The server runs detached; logs go to aic-pipeline/.pinghub-logs/pinghub.log.
+# The server runs detached; logs go to ping-aic-studio/.pinghub-logs/pinghub.log.
 # Browser auto-opens. Run `./stop` to stop the server.
 #
 # Each step is check-then-do — safe to re-run if a previous run failed
@@ -31,7 +31,7 @@ while [ -L "$SCRIPT_PATH" ]; do
   esac
 done
 REPO_ROOT="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
-APP_DIR="${REPO_ROOT}/aic-pipeline"
+APP_DIR="${REPO_ROOT}/ping-aic-studio"
 LOG_DIR="${APP_DIR}/.pinghub-logs"
 LOG_FILE="${LOG_DIR}/pinghub.log"
 PID_FILE="${LOG_DIR}/pinghub.pid"
@@ -139,7 +139,7 @@ esac
 step "detected: ${OS}-${ARCH}"
 
 if [ ! -d "$APP_DIR" ]; then
-  fail "expected aic-pipeline/ directory at $APP_DIR — are you inside the PingHub repo?"
+  fail "expected ping-aic-studio/ directory at $APP_DIR — are you inside the PingHub repo?"
 fi
 
 # ── Optional --reinstall ────────────────────────────────────────────

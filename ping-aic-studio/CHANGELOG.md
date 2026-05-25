@@ -11,12 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`./start` + `./stop` scripts at the monorepo root** for end-user launch. After `git clone`, `./start` (or `start.cmd` on Windows):
   1. Detects OS
-  2. Ensures Node 20+ (uses system Node if present, otherwise downloads pinned 20.18.0 into `./aic-pipeline/.pinghub-node/`)
+  2. Ensures Node 20+ (uses system Node if present, otherwise downloads pinned 20.18.0 into `./ping-aic-studio/.pinghub-node/`)
   3. Installs dependencies (`npm install`) if missing/stale
   4. Builds the app (`npm run build`) if not built
   5. Checks `git fetch` for upstream updates
   6. Launches the server **in the background** via `launcher/launcher.mjs` — picks a free port (preferred 47391), opens the browser
-- Server logs to `aic-pipeline/.pinghub-logs/pinghub.log` with timestamped session headers; PID stored at `aic-pipeline/.pinghub-logs/pinghub.pid`.
+- Server logs to `ping-aic-studio/.pinghub-logs/pinghub.log` with timestamped session headers; PID stored at `ping-aic-studio/.pinghub-logs/pinghub.pid`.
 - `./stop` (and `stop.cmd`) reads the PID file, sends SIGTERM, waits 3s, escalates to SIGKILL if needed.
 - `launcher/launcher.mjs` — cross-platform Node launcher: port selection, server spawn, browser auto-open, clean SIGTERM shutdown.
 - Bootstrap flags: `--reinstall`, `--bundled-node`, `--skip-update`.
@@ -382,7 +382,7 @@ First public release of PingHub under the Apache License 2.0.
 - Vendored subset of [`fr-config-manager`](https://github.com/ForgeRock/fr-config-manager) under `src/vendor/` (MIT licensed — see `NOTICE`).
 - Apache 2.0 license, project metadata, `SECURITY.md`, `CODE_OF_CONDUCT.md`.
 
-[Unreleased]: https://github.com/bostonidentity/PingHub/compare/aic-pipeline/v0.2.1...HEAD
-[0.2.1]: https://github.com/bostonidentity/PingHub/compare/aic-pipeline/v0.2.0...aic-pipeline/v0.2.1
-[0.2.0]: https://github.com/bostonidentity/PingHub/compare/aic-pipeline/v0.1.0...aic-pipeline/v0.2.0
-[0.1.0]: https://github.com/bostonidentity/PingHub/releases/tag/aic-pipeline/v0.1.0
+[Unreleased]: https://github.com/bostonidentity/PingHub/compare/ping-aic-studio/v0.2.1...HEAD
+[0.2.1]: https://github.com/bostonidentity/PingHub/compare/ping-aic-studio/v0.2.0...ping-aic-studio/v0.2.1
+[0.2.0]: https://github.com/bostonidentity/PingHub/compare/ping-aic-studio/v0.1.0...ping-aic-studio/v0.2.0
+[0.1.0]: https://github.com/bostonidentity/PingHub/releases/tag/ping-aic-studio/v0.1.0

@@ -1,20 +1,20 @@
 @echo off
 REM start.cmd — Windows entry: bootstrap + launch PingHub in background.
-REM Server logs go to aic-pipeline\.pinghub-logs\pinghub.log.
+REM Server logs go to ping-aic-studio\.pinghub-logs\pinghub.log.
 REM Run stop.cmd to stop the server.
 
 setlocal enabledelayedexpansion
 
 set "REPO_ROOT=%~dp0"
 if "%REPO_ROOT:~-1%"=="\" set "REPO_ROOT=%REPO_ROOT:~0,-1%"
-set "APP_DIR=%REPO_ROOT%\aic-pipeline"
+set "APP_DIR=%REPO_ROOT%\ping-aic-studio"
 set "LOG_DIR=%APP_DIR%\.pinghub-logs"
 set "LOG_FILE=%LOG_DIR%\pinghub.log"
 set "PID_FILE=%LOG_DIR%\pinghub.pid"
 set "LOG=[Ping AIC Studio]"
 
 if not exist "%APP_DIR%" (
-  echo %LOG% ERROR: expected aic-pipeline directory at %APP_DIR%
+  echo %LOG% ERROR: expected ping-aic-studio directory at %APP_DIR%
   exit /b 1
 )
 

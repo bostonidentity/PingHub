@@ -81,7 +81,7 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (opts.update) {
     console.error("--update not implemented in launcher; re-run the install script:");
-    console.error("  curl -fsSL https://raw.githubusercontent.com/bostonidentity/PingHub/main/aic-pipeline/launcher/install.sh | bash");
+    console.error("  curl -fsSL https://raw.githubusercontent.com/bostonidentity/PingHub/main/ping-aic-studio/launcher/install.sh | bash");
     process.exit(1);
   }
 
@@ -97,7 +97,7 @@ export async function main(argv = process.argv.slice(2)) {
 
   // Resolve standalone server.js location.
   // In tarball install: <INSTALL_DIR>/app/.next/standalone/server.js
-  // In source dev:      <repo>/aic-pipeline/.next/standalone/server.js
+  // In source dev:      <repo>/ping-aic-studio/.next/standalone/server.js
   const launcherDir = path.dirname(new URL(import.meta.url).pathname);
   const candidates = [
     path.resolve(launcherDir, "..", "app", ".next", "standalone", "server.js"),   // tarball
@@ -112,7 +112,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   // The Next.js app's project root (where package.json + src/lib/paths.ts
-  // live). For dev/source: <repo>/aic-pipeline. For tarball: <install>/app.
+  // live). For dev/source: <repo>/ping-aic-studio. For tarball: <install>/app.
   const appDir = path.resolve(path.dirname(serverJs), "..", "..");
   const isTarball = appDir.endsWith(`${path.sep}app`)
     && existsSync(path.join(launcherDir, "..", "node"));
@@ -125,7 +125,7 @@ export async function main(argv = process.argv.slice(2)) {
   // Priority:
   //   1. opts.dataDir (--data-dir flag)
   //   2. tarball install → INSTALL_DIR/data (e.g., ~/.pinghub/data)
-  //   3. source mode → read git-settings.json from aic-pipeline/, honor its
+  //   3. source mode → read git-settings.json from ping-aic-studio/, honor its
   //      targetDir (default "../environments"). Resolve relative to appDir
   //      so it matches what `npm run dev` would compute.
   let dataDir = opts.dataDir;
@@ -161,7 +161,7 @@ export async function main(argv = process.argv.slice(2)) {
   };
   // CWD: appDir (NOT path.dirname(serverJs)) so paths.ts's
   // resolveTargetDir() default of '../environments' resolves to the same
-  // location as `npm run dev` (which runs with cwd = aic-pipeline/).
+  // location as `npm run dev` (which runs with cwd = ping-aic-studio/).
   // server.js itself uses __dirname for its assets, so this is safe.
   const child = spawn(process.execPath, [serverJs], {
     stdio: ["ignore", "inherit", "inherit"],

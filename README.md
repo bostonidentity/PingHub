@@ -34,16 +34,16 @@ To stop:
 stop.cmd
 ```
 
-`./start` detects your OS, ensures Node 20+ (uses system Node if present, otherwise auto-downloads Node 20.18.0 into `aic-pipeline/.pinghub-node/`), installs dependencies, builds, and launches the web UI in the background. Your browser opens to `http://127.0.0.1:3000` (or another free port if 3000 is taken — the chosen URL is shown in the start output and in the log).
+`./start` detects your OS, ensures Node 20+ (uses system Node if present, otherwise auto-downloads Node 20.18.0 into `ping-aic-studio/.pinghub-node/`), installs dependencies, builds, and launches the web UI in the background. Your browser opens to `http://127.0.0.1:3000` (or another free port if 3000 is taken — the chosen URL is shown in the start output and in the log).
 
 **First run** takes ~30-60 seconds (npm install + build). Subsequent launches start in seconds.
 
 **Server runs detached** — closing the browser does NOT stop it. Use `./stop` (or `stop.cmd`) to shut down.
 
-**Logs** are at `aic-pipeline/.pinghub-logs/pinghub.log`. Follow live with:
+**Logs** are at `ping-aic-studio/.pinghub-logs/pinghub.log`. Follow live with:
 
 ```bash
-tail -f aic-pipeline/.pinghub-logs/pinghub.log
+tail -f ping-aic-studio/.pinghub-logs/pinghub.log
 ```
 
 **Updates:** `./start` checks for upstream commits each launch and prints `⚡ N update(s) available` if any. To pull and restart:
@@ -54,13 +54,13 @@ git pull
 ./start
 ```
 
-See [aic-pipeline/README.md](./aic-pipeline/README.md) for full flag reference (`--port`, `--no-open`, `--reinstall`, `--bundled-node`, etc.) and Node-version-handling details.
+See [ping-aic-studio/README.md](./ping-aic-studio/README.md) for full flag reference (`--port`, `--no-open`, `--reinstall`, `--bundled-node`, etc.) and Node-version-handling details.
 
 ## Projects
 
 | Project | Description |
 |---|---|
-| [`aic-pipeline/`](./aic-pipeline) | Web UI for AIC tenant config management — pull, push, and promote configs across environments with a guided diff-review workflow. |
+| [`ping-aic-studio/`](./ping-aic-studio) | Web UI for AIC tenant config management — pull, push, and promote configs across environments with a guided diff-review workflow. |
 
 More projects will be added to this monorepo over time.
 
@@ -68,7 +68,7 @@ More projects will be added to this monorepo over time.
 
 ```
 PingHub/
-  aic-pipeline/          # AIC config pipeline UI (Next.js)
+  ping-aic-studio/          # AIC config pipeline UI (Next.js)
   start, stop            # mac/linux launcher
   start.cmd, stop.cmd    # Windows launcher
   docs/                  # design specs, plans, session logs
