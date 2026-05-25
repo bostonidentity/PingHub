@@ -9,6 +9,29 @@ set "APP_DIR=%REPO_ROOT%\aic-pipeline"
 set "PID_FILE=%APP_DIR%\.pinghub-logs\pinghub.pid"
 set "LOG=[pinghub]"
 
+if "%~1"=="-h"     goto print_help
+if "%~1"=="--help" goto print_help
+goto main
+
+:print_help
+echo Usage: stop.cmd [OPTIONS]
+echo.
+echo Stop the PingHub server started by start.cmd. Sends a stop signal,
+echo waits up to 3 seconds, then escalates to force-kill if needed.
+echo Cleans up the PID file regardless of outcome.
+echo.
+echo If no server is running, exits quietly with code 0.
+echo.
+echo OPTIONS
+echo   -h, --help         show this help and exit
+echo.
+echo RELATED
+echo   start.cmd    bootstrap and launch the server
+echo   status.cmd   show whether the server is currently running
+exit /b 0
+
+:main
+
 if not exist "%PID_FILE%" (
   echo %LOG% not running ^(no PID file at %PID_FILE%^)
   exit /b 0

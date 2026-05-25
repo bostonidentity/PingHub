@@ -25,12 +25,34 @@ set "REINSTALL=0"
 set "LAUNCHER_ARGS="
 :parse_args
 if "%~1"=="" goto parse_done
+if "%~1"=="-h"             goto print_help
+if "%~1"=="--help"         goto print_help
 if "%~1"=="--bundled-node" (set "BUNDLED_NODE=1" & shift & goto parse_args)
 if "%~1"=="--skip-update"  (set "SKIP_UPDATE=1"  & shift & goto parse_args)
 if "%~1"=="--reinstall"    (set "REINSTALL=1"    & shift & goto parse_args)
 set "LAUNCHER_ARGS=!LAUNCHER_ARGS! %~1"
 shift
 goto parse_args
+
+:print_help
+echo Usage: start.cmd [OPTIONS]
+echo.
+echo Bootstrap and launch PingHub in the background.
+echo.
+echo OPTIONS
+echo   --port N           override port (default 3000; auto-falls-back if taken)
+echo   --data-dir PATH    override PINGHUB_DATA_DIR
+echo   --no-open          start the server without opening the browser
+echo   --reinstall        wipe node_modules + .next before bootstrapping
+echo   --bundled-node     force download of Node 20.18.0 (skip system Node)
+echo   --skip-update      skip the git fetch update check
+echo   -h, --help         show this help and exit
+echo.
+echo RELATED
+echo   stop.cmd     stop the running server
+echo   status.cmd   show whether the server is currently running
+exit /b 0
+
 :parse_done
 
 REM ── Already running? ──────────────────────────────────────────────

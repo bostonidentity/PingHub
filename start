@@ -40,6 +40,45 @@ LOG_PREFIX="[pinghub]"
 step() { echo "$LOG_PREFIX $*"; }
 fail() { echo "$LOG_PREFIX ERROR: $*" >&2; exit 1; }
 
+print_help() {
+  cat <<EOF
+Usage: ./start [OPTIONS]
+
+Bootstrap and launch PingHub in the background.
+
+The script:
+  1. Detects OS (macOS / Linux / Windows-MSYS)
+  2. Ensures Node 20+ (bundled > system > auto-download)
+  3. Runs npm install if dependencies are missing/stale
+  4. Runs npm run build if no production build exists
+  5. Checks git for upstream updates
+  6. Launches the server in the background, opens the browser
+
+The server runs detached — closing your terminal does not stop it.
+Use './stop' to shut it down, or './status' to check if it's running.
+
+OPTIONS
+  --port N           override port (default 3000; auto-falls-back if taken)
+  --data-dir PATH    override PINGHUB_DATA_DIR (default: matches \`npm run dev\`)
+  --no-open          start the server without opening the browser
+  --reinstall        wipe node_modules + .next before bootstrapping
+  --bundled-node     force download of Node 20.18.0 (skip system Node)
+  --skip-update      skip the git fetch update check
+  -h, --help         show this help and exit
+
+EXAMPLES
+  ./start                          # default — opens browser at http://127.0.0.1:3000
+  ./start --no-open                # server only, no browser
+  ./start --port 8080              # custom port
+  ./start --reinstall              # wipe node_modules + .next, rebuild
+  ./start --bundled-node           # use pinned Node 20.18.0 (download if absent)
+
+RELATED
+  ./stop      stop the running server
+  ./status    show whether the server is currently running
+EOF
+}
+
 # ── Parse flags ─────────────────────────────────────────────────────
 BUNDLED_NODE=0
 SKIP_UPDATE=0
@@ -47,6 +86,7 @@ REINSTALL=0
 LAUNCHER_ARGS=()
 for arg in "$@"; do
   case "$arg" in
+    -h|--help)      print_help; exit 0 ;;
     --bundled-node) BUNDLED_NODE=1 ;;
     --skip-update)  SKIP_UPDATE=1 ;;
     --reinstall)    REINSTALL=1 ;;

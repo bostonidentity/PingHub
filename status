@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# status — show whether PingHub is currently running.
+#
+# Exit codes:
+#   0  running
+#   1  not running (or stale PID file)
+#   2  bad invocation (e.g., unknown flag)
+
+set -euo pipefail
+
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_PATH" ]; do
+  link_target=$(readlink "$SCRIPT_PATH")
+  case "$link_target" in
+    /*) SCRIPT_PATH="$link_target" ;;
+    *)  SCRIPT_PATH="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)/$link_target" ;;
+  esac
+done
+REPO_ROOT="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+APP_DIR="${REPO_ROOT}/aic-pipeline"
+LOG_DIR="${APP_DIR}/.pinghub-logs"
+LOG_FILE="${LOG_DIR}/pinghub.log"
+PID_FILE="${LOG_DIR}/pinghub.pid"
+LOG_PREFIX="[pinghub]"
+
+print_help() {
+  cat <<EOF
+Usage: ./status [OPTIONS]
+
+Show whether PingHub is currently running.
+
+Looks at the PID file and verifies the process is alive. When running,
+prints the PID, the URL the server is serving, when it was started,
+and the log file path.
+
+OPTIONS
+  -h, --help         show this help and exit
+
+EXIT CODES
+  0  running
+  1  not running (no PID file, or stale PID file)
+
+RELATED
+  ./start     bootstrap and launch the server
+  ./stop      stop the running server
+EOF
+}
+
+case "${1:-}" in
+  -h|--help) print_help; exit 0 ;;
+  "") ;;
+  *) echo "$LOG_PREFIX ERROR: unknown argument: $1" >&2; print_help; exit 2 ;;
+esac
+
+if [ ! -f "$PID_FILE" ]; then
+  echo "$LOG_PREFIX status: not running (no PID file)"
+  exit 1
+fi
+
+PID=$(cat "$PID_FILE" 2>/dev/null || true)
+if [ -z "$PID" ]; then
+  echo "$LOG_PREFIX status: not running (PID file is empty — likely stale)"
+  exit 1
+fi
+
+if ! kill -0 "$PID" 2>/dev/null; then
+  echo "$LOG_PREFIX status: not running (PID $PID is not alive — stale PID file)"
+  echo "$LOG_PREFIX   Run './start' to launch, or './stop' to clean up the stale file."
+  exit 1
+fi
+
+# Running — gather details
+URL=""
+if [ -f "$LOG_FILE" ]; then
+  URL=$(grep "ready at " "$LOG_FILE" | tail -1 | sed -E 's/.*ready at //' || true)
+fi
+STARTED=$(ps -o lstart= -p "$PID" 2>/dev/null | sed 's/^ *//' || true)
+CMDLINE=$(ps -o command= -p "$PID" 2>/dev/null || true)
+
+echo "$LOG_PREFIX status: running"
+echo "$LOG_PREFIX   PID:      $PID"
+[ -n "$URL" ]     && echo "$LOG_PREFIX   serving:  $URL"
+[ -n "$STARTED" ] && echo "$LOG_PREFIX   started:  $STARTED"
+[ -n "$CMDLINE" ] && echo "$LOG_PREFIX   command:  $CMDLINE"
+echo "$LOG_PREFIX   log:      $LOG_FILE"
+echo "$LOG_PREFIX   stop:     ./stop"
+exit 0
