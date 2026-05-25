@@ -117,35 +117,48 @@ export async function main(argv = process.argv.slice(2)) {
   const isTarball = appDir.endsWith(`${path.sep}app`)
     && existsSync(path.join(launcherDir, "..", "node"));
 
-  // Data dir resolution:
+  // Data dir resolution. We must compute the absolute path HERE because
+  // Next.js's standalone server.js does `process.chdir(__dirname)` on
+  // startup (== .next/standalone/), so passing `cwd` to spawn is useless
+  // and any relative path inside the app resolves wrong.
+  //
+  // Priority:
   //   1. opts.dataDir (--data-dir flag)
   //   2. tarball install → INSTALL_DIR/data (e.g., ~/.pinghub/data)
-  //   3. source mode → don't override; let paths.ts compute from cwd
-  //      (this matches `npm run dev` behavior so existing envs show up)
+  //   3. source mode → read git-settings.json from aic-pipeline/, honor its
+  //      targetDir (default "../environments"). Resolve relative to appDir
+  //      so it matches what `npm run dev` would compute.
   let dataDir = opts.dataDir;
   if (!dataDir && isTarball) {
     dataDir = path.join(INSTALL_DIR, "data");
   }
-  if (dataDir) {
-    mkdirSync(dataDir, { recursive: true });
+  if (!dataDir) {
+    let targetDir = "../environments";
+    const settingsPath = path.join(appDir, "git-settings.json");
+    if (existsSync(settingsPath)) {
+      try {
+        const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+        if (typeof settings.targetDir === "string" && settings.targetDir.trim()) {
+          targetDir = settings.targetDir;
+        }
+      } catch {
+        // bad JSON — fall back to default
+      }
+    }
+    dataDir = path.isAbsolute(targetDir) ? targetDir : path.resolve(appDir, targetDir);
   }
+  mkdirSync(dataDir, { recursive: true });
 
   console.error(`[pinghub] using port ${port}`);
-  if (dataDir) {
-    console.error(`[pinghub] data dir ${dataDir}`);
-  } else {
-    console.error(`[pinghub] data dir (default — git-settings.json or ${path.resolve(appDir, "..")}/environments)`);
-  }
+  console.error(`[pinghub] data dir ${dataDir}`);
   console.error(`[pinghub] starting server...`);
 
   const childEnv = {
     ...process.env,
     HOSTNAME: "127.0.0.1",
-    PORT: String(port)
+    PORT: String(port),
+    PINGHUB_DATA_DIR: dataDir
   };
-  if (dataDir) {
-    childEnv.PINGHUB_DATA_DIR = dataDir;
-  }
   // CWD: appDir (NOT path.dirname(serverJs)) so paths.ts's
   // resolveTargetDir() default of '../environments' resolves to the same
   // location as `npm run dev` (which runs with cwd = aic-pipeline/).
