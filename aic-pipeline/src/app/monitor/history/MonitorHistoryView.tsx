@@ -507,7 +507,7 @@ function DetailPanel(props: {
 }) {
     const { kind, label, hours, points, availability, onClose } = props;
 
-    const chartData = useMemo(() => {
+    const chartData = useMemo((): object[] => {
         if (kind === "server") {
             return (points as ServerBucket[]).map((p) => ({
                 ts: p.ts,
