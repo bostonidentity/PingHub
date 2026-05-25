@@ -274,7 +274,10 @@ cd "$APP_DIR"
 step "launching in background..."
 # nohup + & + disown survives terminal close.
 # stdin /dev/null so the child doesn't try to read from the closing tty.
-nohup "$NODE_EXE" launcher/launcher.mjs "${LAUNCHER_ARGS[@]}" \
+# Bash 3.2 (macOS default) errors on "${arr[@]}" when set -u is on and the
+# array is empty. The ${arr[@]+...} expansion expands to nothing in that
+# case, otherwise to the array contents.
+nohup "$NODE_EXE" launcher/launcher.mjs ${LAUNCHER_ARGS[@]+"${LAUNCHER_ARGS[@]}"} \
   </dev/null >> "$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 echo "$SERVER_PID" > "$PID_FILE"
