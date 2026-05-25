@@ -36,7 +36,7 @@ LOG_DIR="${APP_DIR}/.pinghub-logs"
 LOG_FILE="${LOG_DIR}/pinghub.log"
 PID_FILE="${LOG_DIR}/pinghub.pid"
 
-LOG_PREFIX="[pinghub]"
+LOG_PREFIX="[Ping AIC Studio]"
 step() { echo "$LOG_PREFIX $*"; }
 fail() { echo "$LOG_PREFIX ERROR: $*" >&2; exit 1; }
 
@@ -107,13 +107,13 @@ if [ -f "$PID_FILE" ]; then
     # Start time (Linux supports `-o lstart=`, macOS supports `-o lstart`)
     EXISTING_STARTED=$(ps -o lstart= -p "$EXISTING_PID" 2>/dev/null | sed 's/^ *//' || true)
 
-    echo "$LOG_PREFIX ERROR: pinghub is already running" >&2
+    echo "$LOG_PREFIX ERROR: Ping AIC Studio is already running" >&2
     echo "$LOG_PREFIX   PID:      $EXISTING_PID" >&2
     [ -n "$EXISTING_URL" ]     && echo "$LOG_PREFIX   serving:  $EXISTING_URL" >&2
     [ -n "$EXISTING_STARTED" ] && echo "$LOG_PREFIX   started:  $EXISTING_STARTED" >&2
     echo "$LOG_PREFIX   log:      $LOG_FILE" >&2
     echo "$LOG_PREFIX" >&2
-    echo "$LOG_PREFIX Only one pinghub process can run at a time." >&2
+    echo "$LOG_PREFIX Only one Ping AIC Studio process can run at a time." >&2
     echo "$LOG_PREFIX Run './stop' to stop it, then './start' to start a new one." >&2
     exit 1
   else
@@ -304,7 +304,7 @@ cd "$APP_DIR"
 {
   echo ""
   echo "════════════════════════════════════════════════════════════"
-  echo " pinghub start at $(date '+%Y-%m-%d %H:%M:%S')"
+  echo " Ping AIC Studio start at $(date '+%Y-%m-%d %H:%M:%S')"
   echo " node: $NODE_EXE ($("$NODE_EXE" -v))"
   echo " cwd: $APP_DIR"
   echo " args: ${LAUNCHER_ARGS[*]:-(none)}"
@@ -326,7 +326,7 @@ disown "$SERVER_PID" 2>/dev/null || true
 # Wait a few seconds and check it's still alive
 sleep 3
 if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-  echo "$LOG_PREFIX ✗ server died during startup. Last 30 lines of $LOG_FILE:"
+  echo "$LOG_PREFIX ✗ Ping AIC Studio failed to start. Last 30 lines of $LOG_FILE:"
   echo "────────────────────────────────────────────────────────────"
   tail -30 "$LOG_FILE"
   echo "────────────────────────────────────────────────────────────"
@@ -334,7 +334,7 @@ if ! kill -0 "$SERVER_PID" 2>/dev/null; then
   exit 1
 fi
 
-step "✓ started (PID $SERVER_PID)"
+step "✓ Ping AIC Studio started successfully (PID $SERVER_PID)"
 step "  log:  $LOG_FILE"
 step "  tail: tail -f $LOG_FILE"
 step "  stop: ./stop"

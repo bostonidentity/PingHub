@@ -14,7 +14,7 @@ set "APP_DIR=%REPO_ROOT%\aic-pipeline"
 set "LOG_DIR=%APP_DIR%\.pinghub-logs"
 set "LOG_FILE=%LOG_DIR%\pinghub.log"
 set "PID_FILE=%LOG_DIR%\pinghub.pid"
-set "LOG=[pinghub]"
+set "LOG=[Ping AIC Studio]"
 
 if "%~1"=="-h"     goto print_help
 if "%~1"=="--help" goto print_help
@@ -50,19 +50,19 @@ exit /b 2
 
 :main
 if not exist "%PID_FILE%" (
-  echo %LOG% status: not running ^(no PID file^)
+  echo %LOG% status: Ping AIC Studio is not running ^(no PID file^)
   exit /b 1
 )
 
 set /p PID=<"%PID_FILE%"
 if "%PID%"=="" (
-  echo %LOG% status: not running ^(PID file is empty - likely stale^)
+  echo %LOG% status: Ping AIC Studio is not running ^(PID file is empty - likely stale^)
   exit /b 1
 )
 
 tasklist /FI "PID eq %PID%" 2>nul | findstr /C:"%PID%" >nul
 if errorlevel 1 (
-  echo %LOG% status: not running ^(PID %PID% is not alive - stale PID file^)
+  echo %LOG% status: Ping AIC Studio is not running ^(PID %PID% is not alive - stale PID file^)
   echo %LOG%   Run start.cmd to launch, or stop.cmd to clean up the stale file.
   exit /b 1
 )
@@ -78,7 +78,7 @@ if exist "%LOG_FILE%" (
   )
 )
 
-echo %LOG% status: running
+echo %LOG% status: Ping AIC Studio is running
 echo %LOG%   PID:      %PID%
 if defined URL echo %LOG%   serving:  %URL%
 echo %LOG%   log:      %LOG_FILE%

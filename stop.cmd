@@ -7,7 +7,7 @@ set "REPO_ROOT=%~dp0"
 if "%REPO_ROOT:~-1%"=="\" set "REPO_ROOT=%REPO_ROOT:~0,-1%"
 set "APP_DIR=%REPO_ROOT%\aic-pipeline"
 set "PID_FILE=%APP_DIR%\.pinghub-logs\pinghub.pid"
-set "LOG=[pinghub]"
+set "LOG=[Ping AIC Studio]"
 
 if "%~1"=="-h"     goto print_help
 if "%~1"=="--help" goto print_help
@@ -33,7 +33,7 @@ exit /b 0
 :main
 
 if not exist "%PID_FILE%" (
-  echo %LOG% not running ^(no PID file at %PID_FILE%^)
+  echo %LOG% Ping AIC Studio is not running ^(no PID file at %PID_FILE%^)
   exit /b 0
 )
 
@@ -51,7 +51,7 @@ if errorlevel 1 (
   exit /b 0
 )
 
-echo %LOG% stopping PID %PID%...
+echo %LOG% stopping Ping AIC Studio ^(PID %PID%^)...
 taskkill /PID %PID% >nul 2>&1
 
 REM Wait up to 3 seconds
@@ -67,4 +67,4 @@ timeout /t 1 /nobreak >nul
 
 :done
 del "%PID_FILE%" 2>nul
-echo %LOG% stopped
+echo %LOG% Ping AIC Studio stopped

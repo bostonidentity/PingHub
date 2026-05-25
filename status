@@ -21,7 +21,7 @@ APP_DIR="${REPO_ROOT}/aic-pipeline"
 LOG_DIR="${APP_DIR}/.pinghub-logs"
 LOG_FILE="${LOG_DIR}/pinghub.log"
 PID_FILE="${LOG_DIR}/pinghub.pid"
-LOG_PREFIX="[pinghub]"
+LOG_PREFIX="[Ping AIC Studio]"
 
 print_help() {
   cat <<EOF
@@ -53,18 +53,18 @@ case "${1:-}" in
 esac
 
 if [ ! -f "$PID_FILE" ]; then
-  echo "$LOG_PREFIX status: not running (no PID file)"
+  echo "$LOG_PREFIX status: Ping AIC Studio is not running (no PID file)"
   exit 1
 fi
 
 PID=$(cat "$PID_FILE" 2>/dev/null || true)
 if [ -z "$PID" ]; then
-  echo "$LOG_PREFIX status: not running (PID file is empty — likely stale)"
+  echo "$LOG_PREFIX status: Ping AIC Studio is not running (PID file is empty — likely stale)"
   exit 1
 fi
 
 if ! kill -0 "$PID" 2>/dev/null; then
-  echo "$LOG_PREFIX status: not running (PID $PID is not alive — stale PID file)"
+  echo "$LOG_PREFIX status: Ping AIC Studio is not running (PID $PID is not alive — stale PID file)"
   echo "$LOG_PREFIX   Run './start' to launch, or './stop' to clean up the stale file."
   exit 1
 fi
@@ -77,7 +77,7 @@ fi
 STARTED=$(ps -o lstart= -p "$PID" 2>/dev/null | sed 's/^ *//' || true)
 CMDLINE=$(ps -o command= -p "$PID" 2>/dev/null || true)
 
-echo "$LOG_PREFIX status: running"
+echo "$LOG_PREFIX status: Ping AIC Studio is running"
 echo "$LOG_PREFIX   PID:      $PID"
 [ -n "$URL" ]     && echo "$LOG_PREFIX   serving:  $URL"
 [ -n "$STARTED" ] && echo "$LOG_PREFIX   started:  $STARTED"

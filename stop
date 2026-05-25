@@ -17,7 +17,7 @@ done
 REPO_ROOT="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 APP_DIR="${REPO_ROOT}/aic-pipeline"
 PID_FILE="${APP_DIR}/.pinghub-logs/pinghub.pid"
-LOG_PREFIX="[pinghub]"
+LOG_PREFIX="[Ping AIC Studio]"
 
 step() { echo "$LOG_PREFIX $*"; }
 
@@ -46,7 +46,7 @@ case "${1:-}" in
 esac
 
 if [ ! -f "$PID_FILE" ]; then
-  step "not running (no PID file at $PID_FILE)"
+  step "Ping AIC Studio is not running (no PID file at $PID_FILE)"
   exit 0
 fi
 
@@ -63,7 +63,7 @@ if ! kill -0 "$PID" 2>/dev/null; then
   exit 0
 fi
 
-step "stopping PID $PID..."
+step "stopping Ping AIC Studio (PID $PID)..."
 kill "$PID" 2>/dev/null || true
 
 # Wait up to 3 seconds for graceful shutdown
@@ -81,4 +81,4 @@ if kill -0 "$PID" 2>/dev/null; then
 fi
 
 rm -f "$PID_FILE"
-step "✓ stopped"
+step "✓ Ping AIC Studio stopped"

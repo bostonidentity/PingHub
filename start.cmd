@@ -11,7 +11,7 @@ set "APP_DIR=%REPO_ROOT%\aic-pipeline"
 set "LOG_DIR=%APP_DIR%\.pinghub-logs"
 set "LOG_FILE=%LOG_DIR%\pinghub.log"
 set "PID_FILE=%LOG_DIR%\pinghub.pid"
-set "LOG=[pinghub]"
+set "LOG=[Ping AIC Studio]"
 
 if not exist "%APP_DIR%" (
   echo %LOG% ERROR: expected aic-pipeline directory at %APP_DIR%
@@ -60,7 +60,7 @@ if exist "%PID_FILE%" (
   set /p EXISTING_PID=<"%PID_FILE%"
   tasklist /FI "PID eq !EXISTING_PID!" 2>nul | findstr /C:"!EXISTING_PID!" >nul
   if !errorlevel! EQU 0 (
-    echo %LOG% ERROR: already running ^(PID !EXISTING_PID!^). Run stop.cmd first, or check %LOG_FILE%
+    echo %LOG% ERROR: Ping AIC Studio is already running ^(PID !EXISTING_PID!^). Run stop.cmd first, or check %LOG_FILE%
     exit /b 1
   ) else (
     echo %LOG% stale PID file ^(PID !EXISTING_PID! not running^); cleaning up
@@ -202,7 +202,7 @@ if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 
 echo. >> "%LOG_FILE%"
 echo ============================================================ >> "%LOG_FILE%"
-echo  pinghub start at %DATE% %TIME% >> "%LOG_FILE%"
+echo  Ping AIC Studio start at %DATE% %TIME% >> "%LOG_FILE%"
 echo  node: %NODE_EXE% >> "%LOG_FILE%"
 echo  cwd: %APP_DIR% >> "%LOG_FILE%"
 echo ============================================================ >> "%LOG_FILE%"
@@ -222,7 +222,7 @@ REM Wait briefly, then verify it's still running
 timeout /t 3 /nobreak >nul
 tasklist /FI "PID eq %SERVER_PID%" 2>nul | findstr /C:"%SERVER_PID%" >nul
 if errorlevel 1 (
-  echo %LOG% ERROR: server died during startup. Last lines of log:
+  echo %LOG% ERROR: Ping AIC Studio failed to start. Last lines of log:
   echo ----------------------------------------------------------------
   if exist "%LOG_FILE%.err" type "%LOG_FILE%.err"
   if exist "%LOG_FILE%.out" type "%LOG_FILE%.out"
@@ -231,6 +231,6 @@ if errorlevel 1 (
   exit /b 5
 )
 
-echo %LOG% started ^(PID %SERVER_PID%^)
+echo %LOG% Ping AIC Studio started successfully ^(PID %SERVER_PID%^)
 echo %LOG%   log:  %LOG_FILE%.out
 echo %LOG%   stop: stop.cmd
