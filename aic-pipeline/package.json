@@ -17,6 +17,7 @@
     "dev": "next dev",
     "dev:dir": "node cli.mjs dev --data-dir",
     "build": "next build",
+    "postbuild": "node scripts/copy-standalone-assets.mjs",
     "start": "next start",
     "start:dir": "node cli.mjs start --data-dir",
     "lint": "eslint",
