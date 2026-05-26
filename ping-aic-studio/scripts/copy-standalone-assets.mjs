@@ -16,8 +16,9 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = path.resolve(new URL(".", import.meta.url).pathname, "..");
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const STANDALONE_DIR = path.join(ROOT, ".next", "standalone");
 
 if (!fs.existsSync(STANDALONE_DIR)) {
@@ -28,7 +29,7 @@ if (!fs.existsSync(STANDALONE_DIR)) {
 
 const PAIRS = [
   { src: path.join(ROOT, ".next", "static"), dst: path.join(STANDALONE_DIR, ".next", "static") },
-  { src: path.join(ROOT, "public"),          dst: path.join(STANDALONE_DIR, "public") }
+  { src: path.join(ROOT, "public"), dst: path.join(STANDALONE_DIR, "public") }
 ];
 
 for (const { src, dst } of PAIRS) {

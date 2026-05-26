@@ -210,13 +210,21 @@ echo ============================================================ >> "%LOG_FILE%
 echo %LOG% launching in background...
 pushd "%APP_DIR%"
 
-REM Use PowerShell to spawn detached and capture PID.
-for /f "tokens=*" %%p in ('powershell -NoProfile -Command "$p = Start-Process -FilePath '%NODE_EXE%' -ArgumentList 'launcher\launcher.mjs%LAUNCHER_ARGS%' -RedirectStandardOutput '%LOG_FILE%.out' -RedirectStandardError '%LOG_FILE%.err' -WindowStyle Hidden -PassThru; $p.Id"') do (
-  set "SERVER_PID=%%p"
-)
+REM Use PowerShell to spawn detached and write PID to file. We avoid
+REM capturing PowerShell stdout with `for /f` because Start-Process with
+REM -RedirectStandard* keeps the host alive until the child exits, which
+REM hangs cmd's pipe reader. Writing the PID to a file and reading it back
+REM dodges that.
+del "%PID_FILE%" 2>nul
+powershell -NoProfile -Command "$p = Start-Process -FilePath '%NODE_EXE%' -ArgumentList 'launcher\launcher.mjs%LAUNCHER_ARGS%' -RedirectStandardOutput '%LOG_FILE%.out' -RedirectStandardError '%LOG_FILE%.err' -WindowStyle Hidden -PassThru; Set-Content -Path '%PID_FILE%' -Value $p.Id -Encoding ASCII; exit 0"
 popd
 
-echo %SERVER_PID% > "%PID_FILE%"
+set "SERVER_PID="
+if exist "%PID_FILE%" set /p SERVER_PID=<"%PID_FILE%"
+if not defined SERVER_PID (
+  echo %LOG% ERROR: failed to launch Ping AIC Studio ^(no PID written^)
+  exit /b 5
+)
 
 REM Wait briefly, then verify it's still running
 timeout /t 3 /nobreak >nul
