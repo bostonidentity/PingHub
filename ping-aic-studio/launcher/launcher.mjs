@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { fileURLToPath } from "node:url";
 import getPort from "get-port";
 
 const KNOWN_FLAGS = new Set(["--port", "--data-dir", "--no-open", "--update", "--uninstall", "--version"]);
@@ -27,10 +28,10 @@ export function parseArgv(argv) {
         break;
       }
       case "--data-dir": out.dataDir = v ?? argv[++i]; break;
-      case "--no-open":  out.noOpen = true; break;
-      case "--update":   out.update = true; break;
-      case "--uninstall":out.uninstall = true; break;
-      case "--version":  out.version = true; break;
+      case "--no-open": out.noOpen = true; break;
+      case "--update": out.update = true; break;
+      case "--uninstall": out.uninstall = true; break;
+      case "--version": out.version = true; break;
     }
   }
   return out;
@@ -49,7 +50,7 @@ export async function waitForServer(url, { timeoutMs = 30000, intervalMs = 200 }
     try {
       const res = await fetch(url, { method: "GET" });
       if (res.status < 500) return;
-    } catch {}
+    } catch { }
     await sleep(intervalMs);
   }
   throw new Error(`timed out waiting for ${url} after ${timeoutMs}ms`);
@@ -98,7 +99,7 @@ export async function main(argv = process.argv.slice(2)) {
   // Resolve standalone server.js location.
   // In tarball install: <INSTALL_DIR>/app/.next/standalone/server.js
   // In source dev:      <repo>/ping-aic-studio/.next/standalone/server.js
-  const launcherDir = path.dirname(new URL(import.meta.url).pathname);
+  const launcherDir = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
     path.resolve(launcherDir, "..", "app", ".next", "standalone", "server.js"),   // tarball
     path.resolve(launcherDir, "..", ".next", "standalone", "server.js")           // source
@@ -203,6 +204,6 @@ export async function main(argv = process.argv.slice(2)) {
 }
 
 // Run main if invoked directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   main();
 }

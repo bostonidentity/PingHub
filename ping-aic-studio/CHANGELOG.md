@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-26
+
+### Fixed
+
+- **Windows startup** — `start.cmd` failed to launch the server on Windows due to three bugs:
+  - `scripts/copy-standalone-assets.mjs` used `new URL(".", import.meta.url).pathname` which yields `/C:/...` on Windows; `path.resolve` then mangled it to `C:\C:\...`, so the postbuild script silently skipped copying `.next/static` and `public/` into `.next/standalone/`. Switched to `fileURLToPath`.
+  - `launcher/launcher.mjs` had the same Windows path bug when locating `.next/standalone/server.js`, and its "run main if invoked directly" guard compared `file:///C:/...` to `file://C:\...`, so `main()` never ran on Windows and the launcher exited silently with empty log files. Both fixed via `fileURLToPath`.
+  - `start.cmd` used `for /f` to capture the PID from a PowerShell `Start-Process -RedirectStandard*` call, which hung the shell because Start-Process keeps the host alive until the child exits. Switched to writing the PID directly to the PID file from PowerShell.
+
 ## [0.3.0] - 2026-05-24
 
 ### Added
