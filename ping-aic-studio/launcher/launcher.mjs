@@ -158,7 +158,11 @@ export async function main(argv = process.argv.slice(2)) {
     ...process.env,
     HOSTNAME: "127.0.0.1",
     PORT: String(port),
-    PINGHUB_DATA_DIR: dataDir
+    PINGHUB_DATA_DIR: dataDir,
+    // Next's standalone server.js chdirs to .next/standalone/ on startup,
+    // so app code that reads process.cwd() (e.g. git-settings.ts) gets the
+    // wrong root. Pass the real app dir explicitly.
+    PINGHUB_APP_DIR: appDir
   };
   // CWD: appDir (NOT path.dirname(serverJs)) so paths.ts's
   // resolveTargetDir() default of '../environments' resolves to the same

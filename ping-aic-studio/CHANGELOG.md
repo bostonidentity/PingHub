@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-05-27
+
+### Fixed
+
+- **Repo tab showed empty / wrong paths under the standalone server** — the Repo settings page is a Server Component that read `git-settings.json` via `process.cwd()` at module load. Two problems compounded:
+  - The page had no `dynamic` directive, so `next build` prerendered it once and never re-read the settings file. Fixed by adding `export const dynamic = "force-dynamic"` to `src/app/settings/page.tsx`.
+  - Next.js's standalone `server.js` calls `process.chdir(__dirname)` on startup, so once running, `process.cwd()` was `<app>/.next/standalone/` — `git-settings.json` was never found and `targetDir: "../environments"` resolved to `<app>/.next/environments`. `src/lib/git-settings.ts` now resolves the app root lazily via a new `PINGHUB_APP_DIR` env var (falling back to `process.cwd()`), and `launcher/launcher.mjs` exports it alongside `PINGHUB_DATA_DIR`.
+
 ## [0.3.1] - 2026-05-26
 
 ### Fixed
