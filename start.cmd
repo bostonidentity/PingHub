@@ -22,6 +22,7 @@ REM ── Parse flags ───────────────────
 set "BUNDLED_NODE=0"
 set "SKIP_UPDATE=0"
 set "REINSTALL=0"
+set "REBUILD=0"
 set "LAUNCHER_ARGS="
 :parse_args
 if "%~1"=="" goto parse_done
@@ -30,6 +31,7 @@ if "%~1"=="--help"         goto print_help
 if "%~1"=="--bundled-node" (set "BUNDLED_NODE=1" & shift & goto parse_args)
 if "%~1"=="--skip-update"  (set "SKIP_UPDATE=1"  & shift & goto parse_args)
 if "%~1"=="--reinstall"    (set "REINSTALL=1"    & shift & goto parse_args)
+if "%~1"=="--build"        (set "REBUILD=1"      & shift & goto parse_args)
 set "LAUNCHER_ARGS=!LAUNCHER_ARGS! %~1"
 shift
 goto parse_args
@@ -43,6 +45,7 @@ echo OPTIONS
 echo   --port N           override port (default 3000; auto-falls-back if taken)
 echo   --data-dir PATH    override PINGHUB_DATA_DIR
 echo   --no-open          start the server without opening the browser
+echo   --build            wipe .next and rebuild (keeps node_modules)
 echo   --reinstall        wipe node_modules + .next before bootstrapping
 echo   --bundled-node     force download of Node 20.18.0 (skip system Node)
 echo   --skip-update      skip the git fetch update check
@@ -70,10 +73,13 @@ if exist "%PID_FILE%" (
 
 echo %LOG% detected: windows-x64
 
-REM ── Optional --reinstall ──────────────────────────────────────────
+REM ── Optional --reinstall / --build ───────────────────────────────
 if "%REINSTALL%"=="1" (
   echo %LOG% --reinstall: wiping node_modules and .next
   if exist "%APP_DIR%\node_modules" rmdir /s /q "%APP_DIR%\node_modules"
+  if exist "%APP_DIR%\.next"        rmdir /s /q "%APP_DIR%\.next"
+) else if "%REBUILD%"=="1" (
+  echo %LOG% --build: wiping .next
   if exist "%APP_DIR%\.next"        rmdir /s /q "%APP_DIR%\.next"
 )
 

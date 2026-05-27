@@ -1,15 +1,16 @@
 "use client";
 
 /**
- * Compact unified-diff viewer for the Browse-tab compare mode.
+ * Side-by-side diff viewer for the Browse-tab compare mode.
  *
- * Renders a single-pane line diff (left gutter = - sign for removed, + for
- * added) with line numbers per side. Designed to drop into the dark-themed
- * file viewer; for the heavyweight side-by-side, scoped-by-promotion-task
- * viewer see `app/compare/DiffReport.tsx`.
+ * Matches the Compare tab's `SplitDiffView` (Source | Modified columns,
+ * red/green row highlighting, right-side minimap) so history-version diffs
+ * render the same way as journey/script diffs in the Compare tab. Adds a
+ * "changes only" toggle that hides context rows.
  */
-import { useMemo } from "react";
-import { clientDiff, formatForDiff, summarizeDiff } from "@/lib/client-diff";
+import { useMemo, useRef, useState } from "react";
+import { clientDiff, formatForDiff, summarizeDiff, toSplitRows } from "@/lib/client-diff";
+import { DiffMinimap } from "@/app/compare/DiffMinimap";
 import { cn } from "@/lib/utils";
 
 export interface FileDiffViewerProps {
@@ -21,18 +22,21 @@ export interface FileDiffViewerProps {
 }
 
 export function FileDiffViewer({ aContent, bContent, aLabel, bLabel, fileName }: FileDiffViewerProps) {
-    const { diffLines, summary } = useMemo(() => {
+    const [changesOnly, setChangesOnly] = useState(false);
+    const scrollRef = useRef<HTMLDivElement>(null);
+
+    const { allLines, summary } = useMemo(() => {
         const a = formatForDiff(aContent, fileName);
         const b = formatForDiff(bContent, fileName);
         const lines = clientDiff(a, b);
-        return { diffLines: lines, summary: summarizeDiff(lines) };
+        return { allLines: lines, summary: summarizeDiff(lines) };
     }, [aContent, bContent, fileName]);
 
-    // Track per-side line numbers as we iterate so each row shows a/b columns
-    // aligned with the surviving file. Removed lines bump only A; added bump
-    // only B; context rows bump both. Matches the conventions of `git diff`.
-    let aNum = 0;
-    let bNum = 0;
+    const visibleLines = useMemo(
+        () => (changesOnly ? allLines.filter((l) => l.type !== "context") : allLines),
+        [allLines, changesOnly],
+    );
+    const rows = useMemo(() => toSplitRows(visibleLines), [visibleLines]);
 
     return (
         <div className="h-full flex flex-col">
@@ -46,6 +50,19 @@ export function FileDiffViewer({ aContent, bContent, aLabel, bLabel, fileName }:
                     <span className="px-1.5 py-0.5 rounded bg-emerald-900/50 text-emerald-200 font-mono">B</span>
                     <span className="truncate max-w-[14rem]" title={bLabel}>{bLabel}</span>
                 </span>
+                <button
+                    type="button"
+                    onClick={() => setChangesOnly((v) => !v)}
+                    className={cn(
+                        "ml-2 px-2 py-0.5 rounded border text-[10px] font-mono transition-colors",
+                        changesOnly
+                            ? "bg-slate-700 border-slate-500 text-slate-100"
+                            : "bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200",
+                    )}
+                    title="Toggle to hide unchanged lines"
+                >
+                    {changesOnly ? "Showing changes only" : "Show changes only"}
+                </button>
                 <span className="ml-auto flex items-center gap-2 font-mono">
                     <span className="text-emerald-400">+{summary.added}</span>
                     <span className="text-rose-400">-{summary.removed}</span>
@@ -54,58 +71,44 @@ export function FileDiffViewer({ aContent, bContent, aLabel, bLabel, fileName }:
                     )}
                 </span>
             </div>
-            <div className="flex-1 overflow-auto bg-slate-900">
-                <pre className="text-[11px] font-mono leading-5">
-                    {diffLines.map((line, idx) => {
-                        const isAdded = line.type === "added";
-                        const isRemoved = line.type === "removed";
-                        if (line.type === "context") {
-                            aNum++;
-                            bNum++;
-                        } else if (isAdded) {
-                            bNum++;
-                        } else if (isRemoved) {
-                            aNum++;
-                        }
-                        return (
-                            <div
-                                key={idx}
-                                className={cn(
-                                    "flex",
-                                    isAdded && "bg-emerald-950/40",
-                                    isRemoved && "bg-rose-950/40",
-                                )}
-                            >
-                                <span className="select-none shrink-0 w-10 text-right pr-2 text-slate-600 tabular-nums">
-                                    {isAdded ? "" : aNum}
-                                </span>
-                                <span className="select-none shrink-0 w-10 text-right pr-2 text-slate-600 tabular-nums">
-                                    {isRemoved ? "" : bNum}
-                                </span>
-                                <span
-                                    className={cn(
-                                        "select-none shrink-0 w-4 text-center",
-                                        isAdded && "text-emerald-400",
-                                        isRemoved && "text-rose-400",
-                                        line.type === "context" && "text-slate-600",
-                                    )}
-                                >
-                                    {isAdded ? "+" : isRemoved ? "-" : " "}
-                                </span>
-                                <span
-                                    className={cn(
-                                        "whitespace-pre-wrap break-all flex-1 pr-3",
-                                        isAdded && "text-emerald-100",
-                                        isRemoved && "text-rose-100",
-                                        line.type === "context" && "text-slate-300",
-                                    )}
-                                >
-                                    {line.content || "\u00A0"}
-                                </span>
-                            </div>
-                        );
-                    })}
-                </pre>
+            <div className="flex flex-1 min-h-0 bg-slate-950">
+                <div ref={scrollRef} className="flex-1 overflow-auto text-[10px] font-mono leading-5">
+                    <table className="w-full border-collapse table-fixed">
+                        <thead>
+                            <tr className="border-b border-slate-700 bg-slate-900 text-[9px] text-slate-500 sticky top-0 z-10">
+                                <th className="px-3 py-1 text-left font-normal border-r border-slate-700 w-1/2">Source</th>
+                                <th className="px-3 py-1 text-left font-normal w-1/2">Modified</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {rows.length === 0 ? (
+                                <tr>
+                                    <td colSpan={2} className="px-3 py-2 text-center text-slate-500">
+                                        {changesOnly ? "(no changes)" : ""}
+                                    </td>
+                                </tr>
+                            ) : (
+                                rows.map((row, i) => (
+                                    <tr key={i}>
+                                        <td className={cn(
+                                            "px-3 py-0 whitespace-pre-wrap break-all align-top border-r border-slate-800 w-1/2",
+                                            row.leftRem ? "bg-red-950 text-red-300" : "text-slate-400",
+                                        )}>
+                                            {row.left ?? ""}
+                                        </td>
+                                        <td className={cn(
+                                            "px-3 py-0 whitespace-pre-wrap break-all align-top w-1/2",
+                                            row.rightAdd ? "bg-emerald-950 text-emerald-300" : "text-slate-400",
+                                        )}>
+                                            {row.right ?? ""}
+                                        </td>
+                                    </tr>
+                                ))
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+                <DiffMinimap lines={visibleLines} scrollRef={scrollRef} />
             </div>
         </div>
     );
