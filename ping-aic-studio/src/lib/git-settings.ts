@@ -2,8 +2,18 @@ import { spawn, spawnSync } from "child_process";
 import fs from "fs";
 import path from "path";
 
-const REPO_ROOT = process.cwd();
-const SETTINGS_PATH = path.join(REPO_ROOT, "git-settings.json");
+// The Next.js standalone server (`.next/standalone/server.js`) calls
+// `process.chdir(__dirname)` on startup, so by the time this module loads
+// `process.cwd()` is `<app>/.next/standalone/` — not the app dir we want.
+// The launcher exports `PINGHUB_APP_DIR` so we can recover the real root.
+// Evaluated lazily on each call so tests that `process.chdir` still work.
+function repoRoot(): string {
+  return process.env.PINGHUB_APP_DIR || process.cwd();
+}
+
+function settingsPath(): string {
+  return path.join(repoRoot(), "git-settings.json");
+}
 
 export interface GitSettings {
   remoteUrl: string;
@@ -26,9 +36,10 @@ const DEFAULT_SETTINGS: GitSettings = {
 };
 
 export function loadSettings(): GitSettings {
-  if (!fs.existsSync(SETTINGS_PATH)) return { ...DEFAULT_SETTINGS };
+  const p = settingsPath();
+  if (!fs.existsSync(p)) return { ...DEFAULT_SETTINGS };
   try {
-    const raw = JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf-8"));
+    const raw = JSON.parse(fs.readFileSync(p, "utf-8"));
     return { ...DEFAULT_SETTINGS, ...raw };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -37,14 +48,14 @@ export function loadSettings(): GitSettings {
 
 export function saveSettings(next: Partial<GitSettings>): GitSettings {
   const merged = { ...loadSettings(), ...next };
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(merged, null, 2) + "\n", "utf-8");
+  fs.writeFileSync(settingsPath(), JSON.stringify(merged, null, 2) + "\n", "utf-8");
   return merged;
 }
 
 export function resolveTargetDir(settings: GitSettings = loadSettings()): string {
   return path.isAbsolute(settings.targetDir)
     ? settings.targetDir
-    : path.join(REPO_ROOT, settings.targetDir);
+    : path.join(repoRoot(), settings.targetDir);
 }
 
 export function targetHasGit(settings: GitSettings = loadSettings()): boolean {
