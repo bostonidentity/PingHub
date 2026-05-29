@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.2] - 2026-05-27
+## [0.3.3] - 2026-05-29
+
+### Added
+
+- **Browse tab — Myers-based unified diff viewer.** Replaced the old split side-by-side viewer with the same unified diff renderer used by the Compare tab: line numbers in both gutters, collapsed unchanged hunks (expand on click), syntax highlighting, +/- prefix column, A/B header chips, and a right-side minimap.
+- **Browse tab — cross-environment version compare.** Each A/B slot in the Versions/Compare popover can now point at a different environment. The popover gets an **Env** pill row so you can browse another environment's git history for the same file, and slot buttons show an `env ·` prefix when the slot is not the current view's environment.
+- **`start` — prompt to pull + rebuild when updates are available.** On launch, `start`/`start.cmd` now checks `origin` and, if commits are behind, offers to fast-forward and rebuild before booting the standalone server.
+- **`--build` flag for `start`.** Forces a clean rebuild without needing a separate `npm run build`.
 
 ### Fixed
 
