@@ -1,11 +1,12 @@
 import fs from "fs";
 import path from "path";
+import { diffArrays } from "diff";
 import type { DiffLine, FileDiff, CompareReport, CompareEndpoint, DiffOptions, JourneyTreeNode, JourneyScript, JourneyNodeInfo } from "./diff-types";
 import { formatHtml, shouldFormatAsHtml } from "./format-html";
 import { getRealmRoots } from "./realm-paths";
 import { loadSemanticJourneys } from "./semantic-compare-adapter";
 
-const MAX_LINES = 2000;
+const MAX_LINES = 50_000;
 const MAX_CONTENT_BYTES = 200_000; // 200 KB per side
 
 // ── Metadata fields to strip from JSON when not including metadata ───────────
@@ -18,45 +19,45 @@ const METADATA_KEYS = new Set([
 // ── Scope → directory mapping ────────────────────────────────────────────────
 
 const SCOPE_DIR: Record<string, string> = {
-  "access-config":         "access-config",
-  "audit":                 "audit",
+  "access-config": "access-config",
+  "audit": "audit",
   "connector-definitions": "sync/connectors",
-  "connector-mappings":    "sync/mappings",
-  "cookie-domains":        "cookie-domains",
-  "cors":                  "cors",
-  "csp":                   "csp",
-  "custom-nodes":          "custom-nodes",
-  "email-provider":        "email-provider",
-  "email-templates":       "email-templates",
-  "endpoints":             "endpoints",
-  "idm-authentication":    "idm-authentication-config",
-  "iga-workflows":         "iga/workflows",
-  "internal-roles":        "internal-roles",
-  "kba":                   "kba",
-  "locales":               "locales",
-  "managed-objects":       "managed-objects",
-  "org-privileges":        "org-privileges",
-  "raw":                   "raw",
-  "remote-servers":        "sync/rcs",
-  "schedules":             "schedules",
-  "secrets":               "esvs/secrets",
-  "service-objects":       "service-objects",
-  "telemetry":             "telemetry",
-  "terms-and-conditions":  "terms-conditions",
-  "ui-config":             "ui",
-  "variables":             "esvs/variables",
+  "connector-mappings": "sync/mappings",
+  "cookie-domains": "cookie-domains",
+  "cors": "cors",
+  "csp": "csp",
+  "custom-nodes": "custom-nodes",
+  "email-provider": "email-provider",
+  "email-templates": "email-templates",
+  "endpoints": "endpoints",
+  "idm-authentication": "idm-authentication-config",
+  "iga-workflows": "iga/workflows",
+  "internal-roles": "internal-roles",
+  "kba": "kba",
+  "locales": "locales",
+  "managed-objects": "managed-objects",
+  "org-privileges": "org-privileges",
+  "raw": "raw",
+  "remote-servers": "sync/rcs",
+  "schedules": "schedules",
+  "secrets": "esvs/secrets",
+  "service-objects": "service-objects",
+  "telemetry": "telemetry",
+  "terms-and-conditions": "terms-conditions",
+  "ui-config": "ui",
+  "variables": "esvs/variables",
 };
 
 const REALM_SCOPE_SUBDIR: Record<string, string> = {
-  "authz-policies":  "authorization",
-  "journeys":        "journeys",
-  "oauth2-agents":   "realm-config/agents",
+  "authz-policies": "authorization",
+  "journeys": "journeys",
+  "oauth2-agents": "realm-config/agents",
   "password-policy": "password-policy",
-  "saml":            "realm-config/saml",
-  "scripts":         "scripts",
+  "saml": "realm-config/saml",
+  "scripts": "scripts",
   "secret-mappings": "secret-mappings",
-  "services":        "services",
-  "themes":          "themes",
+  "services": "services",
+  "themes": "themes",
 };
 
 /** Resolve scope names to actual filesystem directories within a config dir. */
@@ -195,30 +196,19 @@ function computeLineDiff(aText: string, bText: string): DiffLine[] {
     return [{ type: "context", content: `(file too large to diff — ${a.length} vs ${b.length} lines)` }];
   }
 
-  const m = a.length, n = b.length;
-  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      dp[i][j] = a[i - 1] === b[j - 1]
-        ? dp[i - 1][j - 1] + 1
-        : Math.max(dp[i - 1][j], dp[i][j - 1]);
+  const changes = diffArrays(a, b);
+  const lines: DiffLine[] = [];
+  for (const change of changes) {
+    const type: DiffLine["type"] = change.added
+      ? "added"
+      : change.removed
+        ? "removed"
+        : "context";
+    for (const value of change.value) {
+      lines.push({ type, content: value });
     }
   }
 
-  const lines: DiffLine[] = [];
-  let i = m, j = n;
-  while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
-      lines.unshift({ type: "context", content: a[i - 1] });
-      i--; j--;
-    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-      lines.unshift({ type: "added", content: b[j - 1] });
-      j--;
-    } else {
-      lines.unshift({ type: "removed", content: a[i - 1] });
-      i--;
-    }
-  }
   return lines;
 }
 

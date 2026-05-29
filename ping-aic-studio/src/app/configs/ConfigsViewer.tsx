@@ -973,10 +973,12 @@ const GROUPS = Array.from(new Set(CONFIG_SCOPES.map((s) => s.group)));
 
 function SectionsView({
   environment,
+  environments,
   preselect,
   onPreselectApplied,
 }: {
   environment: string;
+  environments: Environment[];
   preselect?: { scope: string; item: string; fileName?: string; line?: number; query?: string } | null;
   onPreselectApplied?: () => void;
 }) {
@@ -1283,6 +1285,7 @@ function SectionsView({
   const showVersionUi = selectedScope !== "iga-workflows";
   const versionUi = useVersionPicker({
     environment,
+    environments,
     filePath: activeFile?.relPath ?? null,
     fileName: activeFile?.name ?? "",
     workingContent: activeFile?.content ?? null,
@@ -2120,7 +2123,7 @@ export function ConfigsViewer({ environments }: { environments: Environment[] })
       </div>
 
       {view === "sections"
-        ? <SectionsView environment={selectedEnv} preselect={preselect} onPreselectApplied={() => setPreselect(null)} />
+        ? <SectionsView environment={selectedEnv} environments={environments} preselect={preselect} onPreselectApplied={() => setPreselect(null)} />
         : <TreeView environment={selectedEnv} />
       }
     </div>

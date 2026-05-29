@@ -6,6 +6,7 @@ import { DiffMinimap } from "./DiffMinimap";
 import type { CompareReport, FileDiff, DiffLine, JourneyTreeNode, JourneyScript, JourneyNodeInfo } from "@/lib/diff-types";
 import { cn } from "@/lib/utils";
 import { js_beautify } from "js-beautify";
+import { diffArrays } from "diff";
 import { JourneyDiffGraphModal, type NavEntry } from "./JourneyDiffGraph";
 import { WorkflowDiffGraphModal } from "./WorkflowDiffGraph";
 import type { PromotionTask } from "@/lib/promotion-tasks";
@@ -29,24 +30,19 @@ function formatContent(content: string, filePath: string): string {
   return content;
 }
 
-// ── Client-side LCS diff (mirrors server diff.ts logic) ──────────────────────
+// ── Client-side Myers diff (mirrors server diff.ts logic) ───────────────────
 
 function clientDiff(aText: string, bText: string): DiffLine[] {
   const a = aText === "" ? [] : aText.split("\n");
   const b = bText === "" ? [] : bText.split("\n");
-  const m = a.length, n = b.length;
-  // Bail on very large files to avoid freezing the browser
-  if (m > 2000 || n > 2000) return [{ type: "context", content: "(file too large to diff in browser)" }];
-  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
-  for (let i = 1; i <= m; i++)
-    for (let j = 1; j <= n; j++)
-      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
+  if (a.length > 50_000 || b.length > 50_000) {
+    return [{ type: "context", content: `(file too large to diff in browser — ${a.length} vs ${b.length} lines)` }];
+  }
+  const changes = diffArrays(a, b);
   const lines: DiffLine[] = [];
-  let i = m, j = n;
-  while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) { lines.unshift({ type: "context", content: a[i - 1] }); i--; j--; }
-    else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) { lines.unshift({ type: "added", content: b[j - 1] }); j--; }
-    else { lines.unshift({ type: "removed", content: a[i - 1] }); i--; }
+  for (const change of changes) {
+    const type: DiffLine["type"] = change.added ? "added" : change.removed ? "removed" : "context";
+    for (const value of change.value) lines.push({ type, content: value });
   }
   return lines;
 }

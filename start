@@ -12,6 +12,7 @@
 # Pinghub-script flags:
 #   --bundled-node     force download of bundled Node even if system Node is fine
 #   --skip-update      don't check git for updates
+#   --build            wipe .next and rebuild (keeps node_modules)
 #   --reinstall        wipe node_modules + .next before bootstrapping
 #
 # Launcher flags forwarded to launcher.mjs:
@@ -61,6 +62,7 @@ OPTIONS
   --port N           override port (default 3000; auto-falls-back if taken)
   --data-dir PATH    override PINGHUB_DATA_DIR (default: matches \`npm run dev\`)
   --no-open          start the server without opening the browser
+  --build            wipe .next and rebuild (keeps node_modules)
   --reinstall        wipe node_modules + .next before bootstrapping
   --bundled-node     force download of Node 20.18.0 (skip system Node)
   --skip-update      skip the git fetch update check
@@ -70,6 +72,7 @@ EXAMPLES
   ./start                          # default — opens browser at http://127.0.0.1:3000
   ./start --no-open                # server only, no browser
   ./start --port 8080              # custom port
+  ./start --build                  # wipe .next and rebuild (keeps node_modules)
   ./start --reinstall              # wipe node_modules + .next, rebuild
   ./start --bundled-node           # use pinned Node 20.18.0 (download if absent)
 
@@ -83,6 +86,7 @@ EOF
 BUNDLED_NODE=0
 SKIP_UPDATE=0
 REINSTALL=0
+REBUILD=0
 LAUNCHER_ARGS=()
 for arg in "$@"; do
   case "$arg" in
@@ -90,6 +94,7 @@ for arg in "$@"; do
     --bundled-node) BUNDLED_NODE=1 ;;
     --skip-update)  SKIP_UPDATE=1 ;;
     --reinstall)    REINSTALL=1 ;;
+    --build)        REBUILD=1 ;;
     *)              LAUNCHER_ARGS+=("$arg") ;;
   esac
 done
@@ -142,10 +147,13 @@ if [ ! -d "$APP_DIR" ]; then
   fail "expected ping-aic-studio/ directory at $APP_DIR — are you inside the PingHub repo?"
 fi
 
-# ── Optional --reinstall ────────────────────────────────────────────
+# ── Optional --reinstall / --build ──────────────────────────────────
 if [ "$REINSTALL" -eq 1 ]; then
   step "--reinstall: wiping node_modules + .next"
   rm -rf "${APP_DIR}/node_modules" "${APP_DIR}/.next"
+elif [ "$REBUILD" -eq 1 ]; then
+  step "--build: wiping .next"
+  rm -rf "${APP_DIR}/.next"
 fi
 
 # ── 2. Ensure Node 20+ ──────────────────────────────────────────────
@@ -243,7 +251,47 @@ if [ ! -x "$NPM_EXE" ]; then
 fi
 export PATH="$(dirname "$NODE_EXE"):${PATH}"
 
-# ── 3. npm install ──────────────────────────────────────────────────
+# ── 3. Check for updates (offer to pull) ────────────────────────────
+if [ "$SKIP_UPDATE" -eq 0 ]; then
+  cd "$REPO_ROOT"
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    step "checking for updates..."
+    if git fetch --quiet origin 2>/dev/null; then
+      branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "HEAD")
+      upstream=$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null || echo "")
+      if [ -n "$upstream" ]; then
+        ahead=$(git rev-list --count "HEAD..${upstream}" 2>/dev/null || echo "0")
+        if [ "$ahead" -gt 0 ]; then
+          step "⚡ ${ahead} update(s) available on ${branch} (${upstream})"
+          do_pull=0
+          if [ -t 0 ] && [ -r /dev/tty ]; then
+            printf "%s Pull and rebuild now? [Y/n] " "$LOG_PREFIX"
+            read -r reply </dev/tty || reply=""
+            case "$reply" in ""|y|Y|yes|YES) do_pull=1 ;; esac
+          else
+            step "   (non-interactive shell — skipping; re-run with a TTY or run 'git pull')"
+          fi
+          if [ "$do_pull" -eq 1 ]; then
+            step "pulling latest..."
+            if git pull --ff-only --quiet; then
+              step "✓ pulled — wiping .next to force rebuild"
+              rm -rf "${APP_DIR}/.next"
+            else
+              fail "git pull failed — resolve manually then re-run ./start"
+            fi
+          fi
+        else
+          step "✓ up to date"
+        fi
+      fi
+    else
+      step "(could not reach origin — skipping update check)"
+    fi
+    cd "$APP_DIR"
+  fi
+fi
+
+# ── 4. npm install ──────────────────────────────────────────────────
 cd "$APP_DIR"
 
 deps_stale() {
@@ -263,7 +311,7 @@ else
   step "✓ dependencies up to date"
 fi
 
-# ── 4. Build ────────────────────────────────────────────────────────
+# ── 5. Build ────────────────────────────────────────────────────────
 if [ ! -f .next/standalone/server.js ]; then
   step "building app (npm run build)..."
   if ! "$NPM_EXE" run build; then
@@ -271,29 +319,6 @@ if [ ! -f .next/standalone/server.js ]; then
   fi
 else
   step "✓ build present"
-fi
-
-# ── 5. Check for updates ────────────────────────────────────────────
-if [ "$SKIP_UPDATE" -eq 0 ]; then
-  cd "$REPO_ROOT"
-  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    step "checking for updates..."
-    if git fetch --quiet origin 2>/dev/null; then
-      branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "HEAD")
-      upstream=$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null || echo "")
-      if [ -n "$upstream" ]; then
-        ahead=$(git rev-list --count "HEAD..${upstream}" 2>/dev/null || echo "0")
-        if [ "$ahead" -gt 0 ]; then
-          step "⚡ ${ahead} update(s) available on ${branch}"
-          step "   Run 'git pull' to update, then re-run ./start"
-        else
-          step "✓ up to date"
-        fi
-      fi
-    else
-      step "(could not reach origin — skipping update check)"
-    fi
-  fi
 fi
 
 # ── 6. Launch in background ─────────────────────────────────────────

@@ -22,6 +22,7 @@ REM ── Parse flags ───────────────────
 set "BUNDLED_NODE=0"
 set "SKIP_UPDATE=0"
 set "REINSTALL=0"
+set "REBUILD=0"
 set "LAUNCHER_ARGS="
 :parse_args
 if "%~1"=="" goto parse_done
@@ -30,6 +31,7 @@ if "%~1"=="--help"         goto print_help
 if "%~1"=="--bundled-node" (set "BUNDLED_NODE=1" & shift & goto parse_args)
 if "%~1"=="--skip-update"  (set "SKIP_UPDATE=1"  & shift & goto parse_args)
 if "%~1"=="--reinstall"    (set "REINSTALL=1"    & shift & goto parse_args)
+if "%~1"=="--build"        (set "REBUILD=1"      & shift & goto parse_args)
 set "LAUNCHER_ARGS=!LAUNCHER_ARGS! %~1"
 shift
 goto parse_args
@@ -43,6 +45,7 @@ echo OPTIONS
 echo   --port N           override port (default 3000; auto-falls-back if taken)
 echo   --data-dir PATH    override PINGHUB_DATA_DIR
 echo   --no-open          start the server without opening the browser
+echo   --build            wipe .next and rebuild (keeps node_modules)
 echo   --reinstall        wipe node_modules + .next before bootstrapping
 echo   --bundled-node     force download of Node 20.18.0 (skip system Node)
 echo   --skip-update      skip the git fetch update check
@@ -70,10 +73,13 @@ if exist "%PID_FILE%" (
 
 echo %LOG% detected: windows-x64
 
-REM ── Optional --reinstall ──────────────────────────────────────────
+REM ── Optional --reinstall / --build ───────────────────────────────
 if "%REINSTALL%"=="1" (
   echo %LOG% --reinstall: wiping node_modules and .next
   if exist "%APP_DIR%\node_modules" rmdir /s /q "%APP_DIR%\node_modules"
+  if exist "%APP_DIR%\.next"        rmdir /s /q "%APP_DIR%\.next"
+) else if "%REBUILD%"=="1" (
+  echo %LOG% --build: wiping .next
   if exist "%APP_DIR%\.next"        rmdir /s /q "%APP_DIR%\.next"
 )
 
@@ -141,6 +147,44 @@ set "NODE_DIR="
 for %%i in ("%NODE_EXE%") do set "NODE_DIR=%%~dpi"
 set "PATH=%NODE_DIR%;%PATH%"
 
+REM ── Check for updates (offer to pull) ─────────────────────────────
+if "%SKIP_UPDATE%"=="0" (
+  pushd "%REPO_ROOT%"
+  git rev-parse --is-inside-work-tree >nul 2>&1
+  if !errorlevel! EQU 0 (
+    echo %LOG% checking for updates...
+    git fetch --quiet origin >nul 2>&1
+    if !errorlevel! EQU 0 (
+      set "AHEAD=0"
+      for /f %%a in ('git rev-list --count HEAD..@{u} 2^>nul') do set "AHEAD=%%a"
+      if !AHEAD! GTR 0 (
+        echo %LOG% !AHEAD! update^(s^) available
+        set /p "REPLY=%LOG% Pull and rebuild now? [Y/n] "
+        if /i "!REPLY!"=="n"    set "DO_PULL=0"
+        if /i "!REPLY!"=="no"   set "DO_PULL=0"
+        if not defined DO_PULL  set "DO_PULL=1"
+        if "!DO_PULL!"=="1" (
+          echo %LOG% pulling latest...
+          git pull --ff-only --quiet
+          if !errorlevel! EQU 0 (
+            echo %LOG% pulled - wiping .next to force rebuild
+            if exist "%APP_DIR%\.next" rmdir /s /q "%APP_DIR%\.next"
+          ) else (
+            echo %LOG% ERROR: git pull failed - resolve manually then re-run
+            popd
+            exit /b 5
+          )
+        )
+      ) else (
+        echo %LOG% up to date
+      )
+    ) else (
+      echo %LOG% ^(could not reach origin - skipping update check^)
+    )
+  )
+  popd
+)
+
 REM ── npm install ───────────────────────────────────────────────────
 pushd "%APP_DIR%"
 
@@ -174,28 +218,6 @@ if not exist ".next\standalone\server.js" (
 )
 
 popd
-
-REM ── Check for updates ─────────────────────────────────────────────
-if "%SKIP_UPDATE%"=="0" (
-  pushd "%REPO_ROOT%"
-  git rev-parse --is-inside-work-tree >nul 2>&1
-  if !errorlevel! EQU 0 (
-    echo %LOG% checking for updates...
-    git fetch --quiet origin >nul 2>&1
-    if !errorlevel! EQU 0 (
-      for /f %%a in ('git rev-list --count HEAD..@{u} 2^>nul') do set "AHEAD=%%a"
-      if defined AHEAD (
-        if !AHEAD! GTR 0 (
-          echo %LOG% !AHEAD! update^(s^) available
-          echo %LOG%   Run 'git pull' then re-run start.cmd
-        ) else (
-          echo %LOG% up to date
-        )
-      )
-    )
-  )
-  popd
-)
 
 REM ── Launch in background ──────────────────────────────────────────
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"

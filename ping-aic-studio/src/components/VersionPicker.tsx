@@ -16,17 +16,21 @@ import type { FileCommit } from "@/lib/git-history";
 import { FileDiffViewer } from "@/components/FileDiffViewer";
 
 export type SlotRef =
-    | { kind: "working" }
-    | { kind: "sha"; sha: string; shortSha: string; isoDate: string };
+    | { kind: "working"; env?: string }
+    | { kind: "sha"; env?: string; sha: string; shortSha: string; isoDate: string };
 
-export function slotLabel(slot: SlotRef): string {
-    if (slot.kind === "working") return "Working tree (current)";
-    return `${slot.shortSha} · ${new Date(slot.isoDate).toLocaleString()}`;
+/** Format a slot for display. Prefixes the env name when it differs from `defaultEnv`. */
+export function slotLabel(slot: SlotRef, defaultEnv?: string): string {
+    const envPart = slot.env && slot.env !== defaultEnv ? `${slot.env} · ` : "";
+    if (slot.kind === "working") return `${envPart}Working tree (current)`;
+    return `${envPart}${slot.shortSha} · ${new Date(slot.isoDate).toLocaleString()}`;
 }
 
 export interface VersionPickerProps {
     /** Environment name (e.g. "ide"). */
     environment: string;
+    /** Full environments list — enables per-slot env override in compare mode. */
+    environments?: Array<{ name: string }>;
     /** Path of the file, relative to that environment's configDir. */
     filePath: string | null;
     /** File name used to format the diff (JSON vs JS beautify). */
@@ -47,6 +51,7 @@ export interface VersionPickerProps {
 
 export function useVersionPicker({
     environment,
+    environments,
     filePath,
     fileName,
     workingContent,
@@ -54,10 +59,15 @@ export function useVersionPicker({
     renderBody,
 }: VersionPickerProps) {
     const [historyOpen, setHistoryOpen] = useState(false);
-    const [historyEntries, setHistoryEntries] = useState<FileCommit[] | null>(null);
-    const [historyLoading, setHistoryLoading] = useState(false);
-    const [historyError, setHistoryError] = useState<string | null>(null);
-    const [gitAvailable, setGitAvailable] = useState<boolean | null>(null);
+    // Per-env cache so a slot pointing at another env can show that env's git history.
+    // The non-compare Versions dropdown always reads the entry for `environment`.
+    type HistorySlice = { entries: FileCommit[] | null; loading: boolean; error: string | null; gitAvailable: boolean | null };
+    const [historyByEnv, setHistoryByEnv] = useState<Record<string, HistorySlice>>({});
+    const currentHistory: HistorySlice = historyByEnv[environment] ?? { entries: null, loading: false, error: null, gitAvailable: null };
+    const historyEntries = currentHistory.entries;
+    const historyLoading = currentHistory.loading;
+    const historyError = currentHistory.error;
+    const gitAvailable = currentHistory.gitAvailable;
     const [viewingSha, setViewingSha] = useState<string | null>(null);
     const [viewingShortSha, setViewingShortSha] = useState<string | null>(null);
     const [viewingDate, setViewingDate] = useState<string | null>(null);
@@ -74,13 +84,14 @@ export function useVersionPicker({
     const [slotBError, setSlotBError] = useState<string | null>(null);
     const [slotLoading, setSlotLoading] = useState(false);
     const [activeSlotMenu, setActiveSlotMenu] = useState<"A" | "B" | null>(null);
+    // Which env's history the open slot popover is showing. Defaults to the slot's env.
+    const [slotMenuEnv, setSlotMenuEnv] = useState<string>(environment);
     const slotMenuRef = useRef<HTMLDivElement | null>(null);
 
     // Reset all version state whenever the underlying file changes.
     useEffect(() => {
         setHistoryOpen(false);
-        setHistoryEntries(null);
-        setHistoryError(null);
+        setHistoryByEnv({});
         setViewingSha(null);
         setViewingShortSha(null);
         setViewingDate(null);
@@ -93,46 +104,57 @@ export function useVersionPicker({
         setSlotAError(null);
         setSlotBError(null);
         setActiveSlotMenu(null);
-    }, [filePath]);
+        setSlotMenuEnv(environment);
+    }, [filePath, environment]);
 
-    const loadHistory = useCallback(async (): Promise<FileCommit[]> => {
+    const loadHistoryForEnv = useCallback(async (env: string): Promise<FileCommit[]> => {
         if (!filePath) return [];
-        setHistoryLoading(true);
-        setHistoryError(null);
+        setHistoryByEnv((prev) => ({
+            ...prev,
+            [env]: { ...(prev[env] ?? { entries: null, loading: false, error: null, gitAvailable: null }), loading: true, error: null },
+        }));
         try {
             const res = await fetch(
-                `/api/configs/${environment}/file-history?path=${encodeURIComponent(filePath)}&limit=50`,
+                `/api/configs/${env}/file-history?path=${encodeURIComponent(filePath)}&limit=50`,
             );
             const data = await res.json();
             if (!res.ok) {
-                setHistoryError(data.error ?? `HTTP ${res.status}`);
-                setHistoryEntries([]);
+                const error = data.error ?? `HTTP ${res.status}`;
+                setHistoryByEnv((prev) => ({
+                    ...prev,
+                    [env]: { entries: [], loading: false, error, gitAvailable: prev[env]?.gitAvailable ?? null },
+                }));
                 return [];
             }
-            setGitAvailable(Boolean(data.gitAvailable));
             const entries = Array.isArray(data.entries) ? (data.entries as FileCommit[]) : [];
-            setHistoryEntries(entries);
+            setHistoryByEnv((prev) => ({
+                ...prev,
+                [env]: { entries, loading: false, error: null, gitAvailable: Boolean(data.gitAvailable) },
+            }));
             return entries;
         } catch (e) {
-            setHistoryError((e as Error).message);
-            setHistoryEntries([]);
+            const error = (e as Error).message;
+            setHistoryByEnv((prev) => ({
+                ...prev,
+                [env]: { entries: [], loading: false, error, gitAvailable: prev[env]?.gitAvailable ?? null },
+            }));
             return [];
-        } finally {
-            setHistoryLoading(false);
         }
-    }, [environment, filePath]);
+    }, [filePath]);
+
+    const loadHistory = useCallback(() => loadHistoryForEnv(environment), [loadHistoryForEnv, environment]);
 
     const fetchAtSha = useCallback(
-        async (sha: string): Promise<{ ok: boolean; content: string; exists: boolean; error?: string }> => {
+        async (env: string, sha: string): Promise<{ ok: boolean; content: string; exists: boolean; error?: string }> => {
             if (!filePath) return { ok: false, content: "", exists: false, error: "No file" };
             const res = await fetch(
-                `/api/configs/${environment}/file-at?path=${encodeURIComponent(filePath)}&sha=${encodeURIComponent(sha)}`,
+                `/api/configs/${env}/file-at?path=${encodeURIComponent(filePath)}&sha=${encodeURIComponent(sha)}`,
             );
             const data = await res.json();
             if (!res.ok) return { ok: false, content: "", exists: false, error: data.error ?? `HTTP ${res.status}` };
             return { ok: true, content: data.content ?? "", exists: Boolean(data.exists) };
         },
-        [environment, filePath],
+        [filePath],
     );
 
     const handleOpenHistory = () => {
@@ -148,7 +170,7 @@ export function useVersionPicker({
         setHistoryOpen(false);
         setVersionLoading(true);
         try {
-            const result = await fetchAtSha(entry.sha);
+            const result = await fetchAtSha(environment, entry.sha);
             if (!result.ok) {
                 setVersionContent(`// Failed to load version: ${result.error}`);
             } else if (!result.exists) {
@@ -204,14 +226,16 @@ export function useVersionPicker({
         setSlotAError(null);
         setSlotBError(null);
         const load = async (slot: SlotRef) => {
+            const slotEnv = slot.env ?? environment;
             if (slot.kind === "working") {
-                if (workingContent !== null) return { ok: true, content: workingContent };
-                const r = await fetch(`/api/configs/${environment}/file?path=${encodeURIComponent(filePath)}`);
+                // Working-tree of the picker's `environment` is already loaded by the caller.
+                if (slotEnv === environment && workingContent !== null) return { ok: true, content: workingContent };
+                const r = await fetch(`/api/configs/${slotEnv}/file?path=${encodeURIComponent(filePath)}`);
                 const d = await r.json();
-                if (!r.ok) return { ok: false, content: "", error: d.error ?? `HTTP ${r.status}` };
+                if (!r.ok) return { ok: false, content: "", error: d.error ?? `not present in ${slotEnv}` };
                 return { ok: true, content: d.content ?? "" };
             }
-            const res = await fetchAtSha(slot.sha);
+            const res = await fetchAtSha(slotEnv, slot.sha);
             if (!res.ok) return { ok: false, content: "", error: res.error };
             return { ok: true, content: res.exists ? res.content : "" };
         };
@@ -234,14 +258,14 @@ export function useVersionPicker({
     const handleEnterCompare = async () => {
         if (!filePath) return;
         setCompareMode(true);
-        setSlotA({ kind: "working" });
+        setSlotA({ kind: "working", env: environment });
         let entries = historyEntries;
         if (entries === null) entries = await loadHistory();
         if (entries.length > 0) {
             const newest = entries[0];
-            setSlotB({ kind: "sha", sha: newest.sha, shortSha: newest.shortSha, isoDate: newest.isoDate });
+            setSlotB({ kind: "sha", env: environment, sha: newest.sha, shortSha: newest.shortSha, isoDate: newest.isoDate });
         } else {
-            setSlotB({ kind: "working" });
+            setSlotB({ kind: "working", env: environment });
         }
     };
 
@@ -258,6 +282,25 @@ export function useVersionPicker({
         if (activeSlotMenu === "A") setSlotA(slot);
         else if (activeSlotMenu === "B") setSlotB(slot);
         setActiveSlotMenu(null);
+    };
+
+    // Open a slot menu and preselect that slot's env (or the current env when unset).
+    const openSlotMenu = (which: "A" | "B") => {
+        if (activeSlotMenu === which) { setActiveSlotMenu(null); return; }
+        const slot = which === "A" ? slotA : slotB;
+        const env = slot.env ?? environment;
+        setSlotMenuEnv(env);
+        if (filePath && historyByEnv[env]?.entries == null && !historyByEnv[env]?.loading) {
+            void loadHistoryForEnv(env);
+        }
+        setActiveSlotMenu(which);
+    };
+
+    const handleSlotMenuEnvChange = (env: string) => {
+        setSlotMenuEnv(env);
+        if (filePath && historyByEnv[env]?.entries == null && !historyByEnv[env]?.loading) {
+            void loadHistoryForEnv(env);
+        }
     };
 
     const swapSlots = () => {
@@ -291,12 +334,13 @@ export function useVersionPicker({
                 <div className="relative shrink-0 flex items-center gap-1" ref={slotMenuRef}>
                     <button
                         type="button"
-                        onClick={() => setActiveSlotMenu(activeSlotMenu === "A" ? null : "A")}
+                        onClick={() => openSlotMenu("A")}
                         className="px-2 py-0.5 text-[11px] font-medium rounded border border-rose-500/60 bg-rose-100 text-rose-800 hover:bg-rose-200 flex items-center gap-1 dark:bg-rose-900/30 dark:text-rose-100 dark:hover:bg-rose-800/40"
-                        title={`A: ${slotLabel(slotA)}`}
+                        title={`A: ${slotLabel(slotA, environment)}`}
                     >
                         <span className="font-mono">A</span>
-                        <span className="truncate max-w-[10rem]">
+                        <span className="truncate max-w-[12rem]">
+                            {slotA.env && slotA.env !== environment ? `${slotA.env} · ` : ""}
                             {slotA.kind === "working" ? "current" : slotA.shortSha}
                         </span>
                         <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -306,12 +350,13 @@ export function useVersionPicker({
                     <button type="button" onClick={swapSlots} title="Swap A and B" className={btnBase}>⇄</button>
                     <button
                         type="button"
-                        onClick={() => setActiveSlotMenu(activeSlotMenu === "B" ? null : "B")}
+                        onClick={() => openSlotMenu("B")}
                         className="px-2 py-0.5 text-[11px] font-medium rounded border border-emerald-500/60 bg-emerald-100 text-emerald-800 hover:bg-emerald-200 flex items-center gap-1 dark:bg-emerald-900/30 dark:text-emerald-100 dark:hover:bg-emerald-800/40"
-                        title={`B: ${slotLabel(slotB)}`}
+                        title={`B: ${slotLabel(slotB, environment)}`}
                     >
                         <span className="font-mono">B</span>
-                        <span className="truncate max-w-[10rem]">
+                        <span className="truncate max-w-[12rem]">
+                            {slotB.env && slotB.env !== environment ? `${slotB.env} · ` : ""}
                             {slotB.kind === "working" ? "current" : slotB.shortSha}
                         </span>
                         <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -321,25 +366,56 @@ export function useVersionPicker({
                     <button type="button" onClick={handleExitCompare} title="Exit compare mode" className={btnBase}>✕</button>
                     {activeSlotMenu && (
                         <div className={popoverCls}>
+                            {environments && environments.length > 1 && (
+                                <div className={cn(
+                                    "px-3 py-2 border-b flex items-center gap-1 flex-wrap",
+                                    isDark ? "border-slate-700 bg-slate-900/40" : "border-slate-200 bg-slate-50",
+                                )}>
+                                    <span className={cn("text-[10px] uppercase tracking-wide mr-1", isDark ? "text-slate-400" : "text-slate-500")}>Env</span>
+                                    {environments.map((env) => {
+                                        const active = env.name === slotMenuEnv;
+                                        return (
+                                            <button
+                                                key={env.name}
+                                                type="button"
+                                                onClick={() => handleSlotMenuEnvChange(env.name)}
+                                                className={cn(
+                                                    "px-1.5 py-0.5 text-[10px] rounded border",
+                                                    active
+                                                        ? (isDark ? "border-sky-400 bg-sky-700/40 text-sky-100" : "border-sky-500 bg-sky-100 text-sky-800")
+                                                        : (isDark ? "border-slate-600 hover:bg-slate-700/50" : "border-slate-300 hover:bg-slate-100"),
+                                                )}
+                                                title={env.name === environment ? `${env.name} (current view)` : env.name}
+                                            >
+                                                {env.name}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            )}
                             <button
                                 type="button"
-                                onClick={() => assignToActiveSlot({ kind: "working" })}
+                                onClick={() => assignToActiveSlot({ kind: "working", env: slotMenuEnv })}
                                 className={cn(
                                     "w-full text-left px-3 py-2 text-xs border-b",
                                     isDark ? "border-slate-700 hover:bg-slate-700/60" : "border-slate-200 hover:bg-slate-50",
                                 )}
                             >
-                                <div className="font-medium">Working tree (current)</div>
-                                <div className={cn("text-[10px]", isDark ? "text-slate-400" : "text-slate-500")}>Live file on disk</div>
+                                <div className="font-medium">
+                                    {slotMenuEnv !== environment ? `${slotMenuEnv} · ` : ""}Working tree (current)
+                                </div>
+                                <div className={cn("text-[10px]", isDark ? "text-slate-400" : "text-slate-500")}>
+                                    Live file on disk{slotMenuEnv !== environment ? ` in ${slotMenuEnv}` : ""}
+                                </div>
                             </button>
                             {renderHistoryRows({
-                                entries: historyEntries,
-                                loading: historyLoading,
-                                error: historyError,
+                                entries: historyByEnv[slotMenuEnv]?.entries ?? null,
+                                loading: historyByEnv[slotMenuEnv]?.loading ?? false,
+                                error: historyByEnv[slotMenuEnv]?.error ?? null,
                                 isDark,
                                 activeSha: null,
                                 onPick: (entry) =>
-                                    assignToActiveSlot({ kind: "sha", sha: entry.sha, shortSha: entry.shortSha, isoDate: entry.isoDate }),
+                                    assignToActiveSlot({ kind: "sha", env: slotMenuEnv, sha: entry.sha, shortSha: entry.shortSha, isoDate: entry.isoDate }),
                                 otherSlotSha: activeSlotMenu === "A" ? (slotB.kind === "sha" ? slotB.sha : null) : (slotA.kind === "sha" ? slotA.sha : null),
                                 otherSlotLabel: activeSlotMenu === "A" ? "B" : "A",
                             })}
@@ -439,14 +515,14 @@ export function useVersionPicker({
     let bodyNode: React.ReactNode = null;
     if (compareMode) {
         if (slotLoading) {
-            bodyNode = renderBody({ kind: "compare", aContent: "", bContent: "", aLabel: slotLabel(slotA), bLabel: slotLabel(slotB), loading: true });
+            bodyNode = renderBody({ kind: "compare", aContent: "", bContent: "", aLabel: slotLabel(slotA, environment), bLabel: slotLabel(slotB, environment), loading: true });
         } else if (slotAError || slotBError) {
             bodyNode = renderBody({
                 kind: "compare",
                 aContent: "",
                 bContent: "",
-                aLabel: slotLabel(slotA),
-                bLabel: slotLabel(slotB),
+                aLabel: slotLabel(slotA, environment),
+                bLabel: slotLabel(slotB, environment),
                 loading: false,
                 error: slotAError ? `A: ${slotAError}` : slotBError ? `B: ${slotBError}` : undefined,
             });
@@ -456,8 +532,8 @@ export function useVersionPicker({
                 kind: "compare",
                 aContent: slotAContent,
                 bContent: slotBContent,
-                aLabel: slotLabel(slotA),
-                bLabel: slotLabel(slotB),
+                aLabel: slotLabel(slotA, environment),
+                bLabel: slotLabel(slotB, environment),
                 loading: false,
             });
         }
