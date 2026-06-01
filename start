@@ -312,13 +312,48 @@ else
 fi
 
 # ── 5. Build ────────────────────────────────────────────────────────
+# Decide whether the existing .next is stale. We compute a SHA-256
+# fingerprint of every build-affecting input (src, configs, package.json,
+# Node major version, etc.) and compare it to the fingerprint stored next
+# to the build. Any mismatch — git pull, branch switch, manual edit, dep
+# bump, Node upgrade — wipes .next and rebuilds.
+FP_FILE=".next/.build-fingerprint"
+FP_SCRIPT="${APP_DIR}/scripts/build-fingerprint.mjs"
+NEED_BUILD=0
+
 if [ ! -f .next/standalone/server.js ]; then
+  step "no existing build — will build"
+  NEED_BUILD=1
+elif [ ! -f "$FP_SCRIPT" ]; then
+  # Older checkout without the helper — keep prior behaviour
+  step "✓ build present (fingerprint script missing; skipping staleness check)"
+else
+  WANT_FP=$("$NODE_EXE" "$FP_SCRIPT" 2>/dev/null || echo "")
+  HAVE_FP=""
+  [ -f "$FP_FILE" ] && HAVE_FP=$(tr -d '\r\n' < "$FP_FILE" 2>/dev/null || true)
+  if [ -z "$WANT_FP" ]; then
+    step "✓ build present (could not compute fingerprint; skipping staleness check)"
+  elif [ "$WANT_FP" = "$HAVE_FP" ]; then
+    step "✓ build up to date (fingerprint matches)"
+  else
+    step "source changed since last build — wiping .next"
+    rm -rf .next
+    NEED_BUILD=1
+  fi
+fi
+
+if [ "$NEED_BUILD" -eq 1 ]; then
   step "building app (npm run build)..."
   if ! "$NPM_EXE" run build; then
     fail "build failed — see output above"
   fi
-else
-  step "✓ build present"
+  # Record the fingerprint of the inputs that produced this build.
+  if [ -f "$FP_SCRIPT" ]; then
+    if WANT_FP=$("$NODE_EXE" "$FP_SCRIPT" 2>/dev/null) && [ -n "$WANT_FP" ]; then
+      mkdir -p .next
+      printf '%s' "$WANT_FP" > "$FP_FILE"
+    fi
+  fi
 fi
 
 # ── 6. Launch in background ─────────────────────────────────────────

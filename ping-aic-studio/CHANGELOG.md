@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-06-01
+
+### Added
+
+- **`start` / `start.cmd` auto-detect stale builds.** A new `ping-aic-studio/scripts/build-fingerprint.mjs` helper hashes every build-affecting input (source files, configs, `package*.json`, and the active Node major version). The launcher scripts compare the fingerprint against `.next/.build-fingerprint`; on any mismatch — `git pull`, branch switch, manual edit, dependency bump, or Node upgrade — they wipe `.next` and rebuild before launching.
+
 ## [0.3.3] - 2026-05-29
 
 ### Added

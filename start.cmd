@@ -205,7 +205,37 @@ if "%DEPS_STALE%"=="1" (
 )
 
 REM ── Build ─────────────────────────────────────────────────────────
+REM Decide whether the existing .next is stale. We compute a SHA-256
+REM fingerprint of every build-affecting input (src, configs, package.json,
+REM Node major version, etc.) and compare it to the fingerprint stored
+REM next to the build. Any mismatch — git pull, branch switch, manual edit,
+REM dep bump, Node upgrade — wipes .next and rebuilds.
+set "FP_FILE=.next\.build-fingerprint"
+set "FP_SCRIPT=%APP_DIR%\scripts\build-fingerprint.mjs"
+set "NEED_BUILD=0"
+
 if not exist ".next\standalone\server.js" (
+  echo %LOG% no existing build - will build
+  set "NEED_BUILD=1"
+) else if not exist "%FP_SCRIPT%" (
+  echo %LOG% build present ^(fingerprint script missing; skipping staleness check^)
+) else (
+  set "WANT_FP="
+  for /f "delims=" %%h in ('""%NODE_EXE%" "%FP_SCRIPT%" 2^>nul"') do set "WANT_FP=%%h"
+  set "HAVE_FP="
+  if exist "%FP_FILE%" set /p HAVE_FP=<"%FP_FILE%"
+  if not defined WANT_FP (
+    echo %LOG% build present ^(could not compute fingerprint; skipping staleness check^)
+  ) else if "!WANT_FP!"=="!HAVE_FP!" (
+    echo %LOG% build up to date ^(fingerprint matches^)
+  ) else (
+    echo %LOG% source changed since last build - wiping .next
+    if exist ".next" rmdir /s /q ".next"
+    set "NEED_BUILD=1"
+  )
+)
+
+if "!NEED_BUILD!"=="1" (
   echo %LOG% building app ^(npm run build^)...
   call npm run build
   if errorlevel 1 (
@@ -213,8 +243,15 @@ if not exist ".next\standalone\server.js" (
     popd
     exit /b 4
   )
-) else (
-  echo %LOG% build present
+  REM Record the fingerprint of the inputs that produced this build.
+  if exist "%FP_SCRIPT%" (
+    set "WANT_FP="
+    for /f "delims=" %%h in ('""%NODE_EXE%" "%FP_SCRIPT%" 2^>nul"') do set "WANT_FP=%%h"
+    if defined WANT_FP (
+      if not exist ".next" mkdir ".next"
+      >"%FP_FILE%" echo !WANT_FP!
+    )
+  )
 )
 
 popd
