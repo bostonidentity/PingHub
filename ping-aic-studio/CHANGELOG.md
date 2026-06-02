@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-06-02
+
+### Changed
+
+- **`start` / `start.cmd` â€” machine-wide running-instance check with a prompt.** Instead of failing fast when this checkout's PID file says something is running, the launcher now scans every `node.exe` / `node` process executing a `.next/standalone/server.js` on the machine (so sibling clones are detected too), lists them, and asks `Stop them and start a new one? [Y/n]`. Pass `--force-restart` to skip the prompt. Answering `n` exits cleanly without touching anything.
+
+### Fixed
+
+- **`start.cmd` â€” auto-recover from EBUSY during build.** When a previous standalone server still holds file handles on `.next/standalone/*`, `next build` now retries once after force-killing the offending PIDs instead of failing with `EBUSY` / `Can't resolve 'diff'`. Same behavior already shipped for the bash `start`.
+- **`start.cmd` â€” prompt path works under redirected stdin.** Replaced `timeout /t` with `ping -n` so piping answers into `start.cmd` no longer prints `ERROR: Input redirection is not supported`.
+
 ## [0.3.4] - 2026-06-01
 
 ### Added
