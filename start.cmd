@@ -76,11 +76,11 @@ echo %LOG% detected: windows-x64
 REM ── Optional --reinstall / --build ───────────────────────────────
 if "%REINSTALL%"=="1" (
   echo %LOG% --reinstall: wiping node_modules and .next
-  if exist "%APP_DIR%\node_modules" rmdir /s /q "%APP_DIR%\node_modules"
-  if exist "%APP_DIR%\.next"        rmdir /s /q "%APP_DIR%\.next"
+  if exist "%APP_DIR%\node_modules" rmdir /s /q "%APP_DIR%\node_modules" 2>nul
+  if exist "%APP_DIR%\.next"        rmdir /s /q "%APP_DIR%\.next"        2>nul
 ) else if "%REBUILD%"=="1" (
   echo %LOG% --build: wiping .next
-  if exist "%APP_DIR%\.next"        rmdir /s /q "%APP_DIR%\.next"
+  if exist "%APP_DIR%\.next"        rmdir /s /q "%APP_DIR%\.next"        2>nul
 )
 
 REM ── Ensure Node 20+ ───────────────────────────────────────────────
@@ -167,8 +167,8 @@ if "%SKIP_UPDATE%"=="0" (
           echo %LOG% pulling latest...
           git pull --ff-only --quiet
           if !errorlevel! EQU 0 (
-            echo %LOG% pulled - wiping .next to force rebuild
-            if exist "%APP_DIR%\.next" rmdir /s /q "%APP_DIR%\.next"
+            echo %LOG% pulled - marking build dir for rebuild
+            if exist "%APP_DIR%\.next" rmdir /s /q "%APP_DIR%\.next" 2>nul
           ) else (
             echo %LOG% ERROR: git pull failed - resolve manually then re-run
             popd
@@ -230,7 +230,12 @@ if not exist ".next\standalone\server.js" (
     echo %LOG% build up to date ^(fingerprint matches^)
   ) else (
     echo %LOG% source changed since last build - wiping .next
-    if exist ".next" rmdir /s /q ".next"
+    if exist ".next" rmdir /s /q ".next" 2>nul
+    if exist ".next" (
+      echo %LOG% .next locked - killing orphan standalone server and retrying wipe
+      call :kill_orphan_standalone
+      if exist ".next" rmdir /s /q ".next"
+    )
     set "NEED_BUILD=1"
   )
 )
@@ -239,9 +244,15 @@ if "!NEED_BUILD!"=="1" (
   echo %LOG% building app ^(npm run build^)...
   call npm run build
   if errorlevel 1 (
-    echo %LOG% ERROR: build failed
-    popd
-    exit /b 4
+    echo %LOG% build failed - attempting auto-recovery ^(kill orphans + retry^)
+    call :kill_orphan_standalone
+    if exist ".next" rmdir /s /q ".next" 2>nul
+    call npm run build
+    if errorlevel 1 (
+      echo %LOG% ERROR: build failed
+      popd
+      exit /b 4
+    )
   )
   REM Record the fingerprint of the inputs that produced this build.
   if exist "%FP_SCRIPT%" (
@@ -301,3 +312,20 @@ if errorlevel 1 (
 echo %LOG% Ping AIC Studio started successfully ^(PID %SERVER_PID%^)
 echo %LOG%   log:  %LOG_FILE%.out
 echo %LOG%   stop: stop.cmd
+exit /b 0
+
+REM ── kill_orphan_standalone ───────────────────────────────────────
+REM Even after stop.cmd, the standalone Node child can survive
+REM (crashed parent, killed terminal, etc.) and keep file locks on
+REM .next/standalone/* — which triggers EBUSY during rmdir and
+REM during `next build`. This subroutine force-kills any node.exe
+REM whose command line references THIS checkout's standalone
+REM server.js, then clears the stale PID file.
+:kill_orphan_standalone
+set "APP_DIR_ENV=%APP_DIR%"
+powershell -NoProfile -Command "$app = $env:APP_DIR_ENV; $needle = (Join-Path $app '.next\standalone\server.js'); $procs = Get-CimInstance Win32_Process -Filter \"name = 'node.exe'\" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($needle) }; foreach ($p in $procs) { Write-Host ('[Ping AIC Studio] killing orphan PID ' + $p.ProcessId); try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop } catch {} }"
+set "APP_DIR_ENV="
+if exist "%PID_FILE%" del "%PID_FILE%" 2>nul
+REM Give the OS a moment to release file handles
+timeout /t 1 /nobreak >nul
+exit /b 0

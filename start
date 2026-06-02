@@ -148,12 +148,15 @@ if [ ! -d "$APP_DIR" ]; then
 fi
 
 # ── Optional --reinstall / --build ──────────────────────────────────
+# Note: wipes that hit file locks are recovered later by wipe_next();
+# here we do a best-effort wipe and let the build-phase retry handle
+# any leftover EBUSY/ETXTBSY.
 if [ "$REINSTALL" -eq 1 ]; then
   step "--reinstall: wiping node_modules + .next"
-  rm -rf "${APP_DIR}/node_modules" "${APP_DIR}/.next"
+  rm -rf "${APP_DIR}/node_modules" "${APP_DIR}/.next" 2>/dev/null || true
 elif [ "$REBUILD" -eq 1 ]; then
   step "--build: wiping .next"
-  rm -rf "${APP_DIR}/.next"
+  rm -rf "${APP_DIR}/.next" 2>/dev/null || true
 fi
 
 # ── 2. Ensure Node 20+ ──────────────────────────────────────────────
@@ -274,8 +277,9 @@ if [ "$SKIP_UPDATE" -eq 0 ]; then
           if [ "$do_pull" -eq 1 ]; then
             step "pulling latest..."
             if git pull --ff-only --quiet; then
-              step "✓ pulled — wiping .next to force rebuild"
-              rm -rf "${APP_DIR}/.next"
+              step "✓ pulled — marking build dir for rebuild"
+              # Best-effort wipe; build-phase retry handles any lock.
+              rm -rf "${APP_DIR}/.next" 2>/dev/null || true
             else
               fail "git pull failed — resolve manually then re-run ./start"
             fi
@@ -300,6 +304,38 @@ deps_stale() {
   [ package.json -nt node_modules/.package-lock.json ] && return 0
   [ package-lock.json -nt node_modules/.package-lock.json ] && return 0
   return 1
+}
+
+# ── Auto-recovery: kill orphan standalone servers ──────────────────
+# Even after ./stop, the standalone Node child can survive (crashed
+# parent, killed terminal on Windows, etc.) and keep file locks on
+# .next/standalone/* — that triggers EBUSY during `rm -rf .next` and
+# during `next build`. This finds any node process running THIS
+# checkout's .next/standalone/server.js and force-kills it.
+kill_orphan_standalone() {
+  local target="${APP_DIR}/.next/standalone/server.js"
+  local pids=""
+  if command -v pgrep >/dev/null 2>&1; then
+    pids=$(pgrep -f "$target" 2>/dev/null || true)
+  elif command -v ps >/dev/null 2>&1; then
+    pids=$(ps -eo pid,args 2>/dev/null | awk -v t="$target" 'index($0,t){print $1}' || true)
+  fi
+  [ -z "$pids" ] && return 0
+  step "found orphan standalone server PID(s): $pids — terminating"
+  for p in $pids; do kill "$p" 2>/dev/null || true; done
+  sleep 1
+  for p in $pids; do kill -9 "$p" 2>/dev/null || true; done
+  rm -f "$PID_FILE" 2>/dev/null || true
+  sleep 1
+}
+
+# Wipe .next safely, retrying after killing orphans if the first
+# attempt fails (typical EBUSY on Windows, stale child elsewhere).
+wipe_next() {
+  if rm -rf .next 2>/dev/null; then return 0; fi
+  step "wipe of .next failed (file lock?) — killing orphans and retrying"
+  kill_orphan_standalone
+  rm -rf .next || fail "could not remove .next — close any process holding it and retry"
 }
 
 if deps_stale; then
@@ -337,7 +373,7 @@ else
     step "✓ build up to date (fingerprint matches)"
   else
     step "source changed since last build — wiping .next"
-    rm -rf .next
+    wipe_next
     NEED_BUILD=1
   fi
 fi
@@ -345,7 +381,14 @@ fi
 if [ "$NEED_BUILD" -eq 1 ]; then
   step "building app (npm run build)..."
   if ! "$NPM_EXE" run build; then
-    fail "build failed — see output above"
+    # Common cause: a leftover standalone server holds .next/standalone/*
+    # (EBUSY on Windows, ETXTBSY on Linux). Retry once after cleanup.
+    step "build failed — attempting auto-recovery (kill orphans + retry)"
+    kill_orphan_standalone
+    wipe_next
+    if ! "$NPM_EXE" run build; then
+      fail "build failed — see output above"
+    fi
   fi
   # Record the fingerprint of the inputs that produced this build.
   if [ -f "$FP_SCRIPT" ]; then
