@@ -23,15 +23,17 @@ set "BUNDLED_NODE=0"
 set "SKIP_UPDATE=0"
 set "REINSTALL=0"
 set "REBUILD=0"
+set "FORCE_RESTART=0"
 set "LAUNCHER_ARGS="
 :parse_args
 if "%~1"=="" goto parse_done
 if "%~1"=="-h"             goto print_help
 if "%~1"=="--help"         goto print_help
-if "%~1"=="--bundled-node" (set "BUNDLED_NODE=1" & shift & goto parse_args)
-if "%~1"=="--skip-update"  (set "SKIP_UPDATE=1"  & shift & goto parse_args)
-if "%~1"=="--reinstall"    (set "REINSTALL=1"    & shift & goto parse_args)
-if "%~1"=="--build"        (set "REBUILD=1"      & shift & goto parse_args)
+if "%~1"=="--bundled-node"  (set "BUNDLED_NODE=1"   & shift & goto parse_args)
+if "%~1"=="--skip-update"   (set "SKIP_UPDATE=1"    & shift & goto parse_args)
+if "%~1"=="--reinstall"     (set "REINSTALL=1"      & shift & goto parse_args)
+if "%~1"=="--build"         (set "REBUILD=1"        & shift & goto parse_args)
+if "%~1"=="--force-restart" (set "FORCE_RESTART=1"  & shift & goto parse_args)
 set "LAUNCHER_ARGS=!LAUNCHER_ARGS! %~1"
 shift
 goto parse_args
@@ -49,6 +51,7 @@ echo   --build            wipe .next and rebuild (keeps node_modules)
 echo   --reinstall        wipe node_modules + .next before bootstrapping
 echo   --bundled-node     force download of Node 20.18.0 (skip system Node)
 echo   --skip-update      skip the git fetch update check
+echo   --force-restart    if another instance is running, kill it without prompting
 echo   -h, --help         show this help and exit
 echo.
 echo RELATED
@@ -58,18 +61,76 @@ exit /b 0
 
 :parse_done
 
-REM ── Already running? ──────────────────────────────────────────────
+REM ── Already running? Offer to stop running instances and continue. ──
+set "TRACKED_PID="
 if exist "%PID_FILE%" (
-  set /p EXISTING_PID=<"%PID_FILE%"
-  tasklist /FI "PID eq !EXISTING_PID!" 2>nul | findstr /C:"!EXISTING_PID!" >nul
-  if !errorlevel! EQU 0 (
-    echo %LOG% ERROR: Ping AIC Studio is already running ^(PID !EXISTING_PID!^). Run stop.cmd first, or check %LOG_FILE%
-    exit /b 1
-  ) else (
-    echo %LOG% stale PID file ^(PID !EXISTING_PID! not running^); cleaning up
+  set /p TRACKED_PID=<"%PID_FILE%"
+  tasklist /FI "PID eq !TRACKED_PID!" 2>nul | findstr /C:"!TRACKED_PID!" >nul
+  if errorlevel 1 (
+    echo %LOG% stale PID file ^(PID !TRACKED_PID! not running^); cleaning up
     del "%PID_FILE%" 2>nul
+    set "TRACKED_PID="
   )
 )
+
+REM Broad scan: every Ping AIC Studio standalone server on this machine,
+REM regardless of which checkout it was launched from. Sibling clones are
+REM caught too — the user is asked before anything is killed.
+set "PID_LIST_FILE=%TEMP%\pinghub-pids-%RANDOM%.txt"
+call :list_standalone_pids "%PID_LIST_FILE%"
+set "ALL_PIDS="
+if exist "%PID_LIST_FILE%" (
+  for /f "usebackq delims=" %%p in ("%PID_LIST_FILE%") do set "ALL_PIDS=!ALL_PIDS! %%p"
+  del "%PID_LIST_FILE%" 2>nul
+)
+
+set "ANYTHING="
+if defined TRACKED_PID set "ANYTHING=1"
+if defined ALL_PIDS    set "ANYTHING=1"
+
+if defined ANYTHING (
+  echo %LOG% Ping AIC Studio is already running:
+  if defined TRACKED_PID (
+    echo %LOG%   tracked PID: !TRACKED_PID!
+    echo %LOG%     log:       %LOG_FILE%
+  )
+  if defined ALL_PIDS (
+    echo %LOG%   standalone PID^(s^):!ALL_PIDS!
+  )
+
+  set "DO_KILL=0"
+  if "%FORCE_RESTART%"=="1" (
+    echo %LOG% --force-restart: stopping running instance^(s^)
+    set "DO_KILL=1"
+  ) else (
+    set "REPLY="
+    set /p "REPLY=%LOG% Stop them and start a new one? [Y/n] "
+    if not defined REPLY   set "DO_KILL=1"
+    if /i "!REPLY!"=="y"   set "DO_KILL=1"
+    if /i "!REPLY!"=="yes" set "DO_KILL=1"
+  )
+
+  if "!DO_KILL!"=="0" (
+    echo %LOG% leaving running instance^(s^) alone; exiting
+    exit /b 0
+  )
+
+  REM Kill the tracked PID first (graceful), then any standalone
+  REM children still around.
+  if defined TRACKED_PID (
+    echo %LOG% stopping tracked PID !TRACKED_PID!
+    taskkill /PID !TRACKED_PID! >nul 2>&1
+    ping -n 2 127.0.0.1 >nul
+    taskkill /F /PID !TRACKED_PID! >nul 2>&1
+  )
+  call :kill_orphan_standalone
+  if exist "%PID_FILE%" del "%PID_FILE%" 2>nul
+  set "ANYTHING="
+)
+set "TRACKED_PID="
+set "ALL_PIDS="
+set "REPLY="
+set "DO_KILL="
 
 echo %LOG% detected: windows-x64
 
@@ -297,7 +358,7 @@ if not defined SERVER_PID (
 )
 
 REM Wait briefly, then verify it's still running
-timeout /t 3 /nobreak >nul
+ping -n 4 127.0.0.1 >nul
 tasklist /FI "PID eq %SERVER_PID%" 2>nul | findstr /C:"%SERVER_PID%" >nul
 if errorlevel 1 (
   echo %LOG% ERROR: Ping AIC Studio failed to start. Last lines of log:
@@ -314,18 +375,21 @@ echo %LOG%   log:  %LOG_FILE%.out
 echo %LOG%   stop: stop.cmd
 exit /b 0
 
+REM ── list_standalone_pids ─────────────────────────────────────────
+REM Write the PIDs of every node.exe running a .next\standalone\server.js
+REM (any checkout, any path separator) to the file given as %1, one per
+REM line. Empty file if none.
+:list_standalone_pids
+powershell -NoProfile -Command "$procs = Get-CimInstance Win32_Process -Filter \"name = 'node.exe'\" | Where-Object { $_.CommandLine -and ($_.CommandLine.Contains('standalone\server.js') -or $_.CommandLine.Contains('standalone/server.js')) }; foreach ($p in $procs) { $p.ProcessId }" > "%~1" 2>nul
+exit /b 0
+
 REM ── kill_orphan_standalone ───────────────────────────────────────
-REM Even after stop.cmd, the standalone Node child can survive
-REM (crashed parent, killed terminal, etc.) and keep file locks on
-REM .next/standalone/* — which triggers EBUSY during rmdir and
-REM during `next build`. This subroutine force-kills any node.exe
-REM whose command line references THIS checkout's standalone
-REM server.js, then clears the stale PID file.
+REM Force-kill every node.exe running any .next\standalone\server.js
+REM on this machine. Used as auto-recovery when file locks block the
+REM build (EBUSY) and after the user opts in to restarting.
 :kill_orphan_standalone
-set "APP_DIR_ENV=%APP_DIR%"
-powershell -NoProfile -Command "$app = $env:APP_DIR_ENV; $needle = (Join-Path $app '.next\standalone\server.js'); $procs = Get-CimInstance Win32_Process -Filter \"name = 'node.exe'\" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($needle) }; foreach ($p in $procs) { Write-Host ('[Ping AIC Studio] killing orphan PID ' + $p.ProcessId); try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop } catch {} }"
-set "APP_DIR_ENV="
+powershell -NoProfile -Command "$procs = Get-CimInstance Win32_Process -Filter \"name = 'node.exe'\" | Where-Object { $_.CommandLine -and ($_.CommandLine.Contains('standalone\server.js') -or $_.CommandLine.Contains('standalone/server.js')) }; foreach ($p in $procs) { Write-Host ('[Ping AIC Studio] killing standalone PID ' + $p.ProcessId); try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop } catch {} }"
 if exist "%PID_FILE%" del "%PID_FILE%" 2>nul
 REM Give the OS a moment to release file handles
-timeout /t 1 /nobreak >nul
+ping -n 2 127.0.0.1 >nul
 exit /b 0
