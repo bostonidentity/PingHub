@@ -66,6 +66,7 @@ OPTIONS
   --reinstall        wipe node_modules + .next before bootstrapping
   --bundled-node     force download of Node 20.18.0 (skip system Node)
   --skip-update      skip the git fetch update check
+  --force-restart    if another instance is running, kill it without prompting
   -h, --help         show this help and exit
 
 EXAMPLES
@@ -87,44 +88,122 @@ BUNDLED_NODE=0
 SKIP_UPDATE=0
 REINSTALL=0
 REBUILD=0
+FORCE_RESTART=0
 LAUNCHER_ARGS=()
 for arg in "$@"; do
   case "$arg" in
-    -h|--help)      print_help; exit 0 ;;
-    --bundled-node) BUNDLED_NODE=1 ;;
-    --skip-update)  SKIP_UPDATE=1 ;;
-    --reinstall)    REINSTALL=1 ;;
-    --build)        REBUILD=1 ;;
-    *)              LAUNCHER_ARGS+=("$arg") ;;
+    -h|--help)        print_help; exit 0 ;;
+    --bundled-node)   BUNDLED_NODE=1 ;;
+    --skip-update)    SKIP_UPDATE=1 ;;
+    --reinstall)      REINSTALL=1 ;;
+    --build)          REBUILD=1 ;;
+    --force-restart)  FORCE_RESTART=1 ;;
+    *)                LAUNCHER_ARGS+=("$arg") ;;
   esac
 done
 
-# ── Already running? Only one process allowed at a time. ────────────
+# ── Helpers used by both the pre-launch "already running?" gate and
+#    the build-time auto-recovery path. Defined early so the gate can
+#    call them before we touch Node or the build dir.
+# ───────────────────────────────────────────────────────────────────────
+
+# Print space-separated PIDs of every Ping AIC Studio standalone server
+# on this machine (matches any .next/standalone/server.js path, so
+# sibling clones are caught too). Empty if none.
+find_standalone_pids() {
+  local pids=""
+  if command -v pgrep >/dev/null 2>&1; then
+    pids=$(pgrep -f 'standalone[/\\]server\.js' 2>/dev/null || true)
+  elif command -v ps >/dev/null 2>&1; then
+    pids=$(ps -eo pid,args 2>/dev/null \
+      | awk '/standalone[\/\\]server\.js/{print $1}' || true)
+  fi
+  echo "$pids" | tr '\n' ' ' | sed 's/[[:space:]]\+$//'
+}
+
+# Kill a space-separated list of PIDs: TERM, wait 1s, then KILL.
+kill_pids() {
+  local pids="$1"
+  [ -z "$pids" ] && return 0
+  for p in $pids; do kill "$p" 2>/dev/null || true; done
+  sleep 1
+  for p in $pids; do kill -9 "$p" 2>/dev/null || true; done
+  sleep 1
+}
+
+# Auto-recovery: kill any Ping AIC Studio standalone server holding
+# .next/standalone/* file locks (caught by find_standalone_pids).
+kill_orphan_standalone() {
+  local pids
+  pids=$(find_standalone_pids)
+  [ -z "$pids" ] && return 0
+  step "found standalone server PID(s): $pids — terminating"
+  kill_pids "$pids"
+  rm -f "$PID_FILE" 2>/dev/null || true
+}
+
+# ── Already running? Offer to stop running instances and continue. ──
+TRACKED_PID=""
 if [ -f "$PID_FILE" ]; then
-  EXISTING_PID=$(cat "$PID_FILE" 2>/dev/null || true)
-  if [ -n "$EXISTING_PID" ] && kill -0 "$EXISTING_PID" 2>/dev/null; then
-    # Look up the URL it's serving — parse the most recent "ready at" line
-    # in the log file (last session wins).
+  TRACKED_PID=$(cat "$PID_FILE" 2>/dev/null || true)
+  if [ -n "$TRACKED_PID" ] && ! kill -0 "$TRACKED_PID" 2>/dev/null; then
+    step "found stale PID file (PID $TRACKED_PID is not running) — cleaning up"
+    rm -f "$PID_FILE"
+    TRACKED_PID=""
+  fi
+fi
+
+ALL_PIDS=$(find_standalone_pids)
+
+# Anything to report?
+if [ -n "$TRACKED_PID" ] || [ -n "$ALL_PIDS" ]; then
+  echo "$LOG_PREFIX Ping AIC Studio is already running:"
+  if [ -n "$TRACKED_PID" ]; then
     EXISTING_URL=""
     if [ -f "$LOG_FILE" ]; then
       EXISTING_URL=$(grep "ready at " "$LOG_FILE" | tail -1 | sed -E 's/.*ready at //')
     fi
-    # Start time (Linux supports `-o lstart=`, macOS supports `-o lstart`)
-    EXISTING_STARTED=$(ps -o lstart= -p "$EXISTING_PID" 2>/dev/null | sed 's/^ *//' || true)
-
-    echo "$LOG_PREFIX ERROR: Ping AIC Studio is already running" >&2
-    echo "$LOG_PREFIX   PID:      $EXISTING_PID" >&2
-    [ -n "$EXISTING_URL" ]     && echo "$LOG_PREFIX   serving:  $EXISTING_URL" >&2
-    [ -n "$EXISTING_STARTED" ] && echo "$LOG_PREFIX   started:  $EXISTING_STARTED" >&2
-    echo "$LOG_PREFIX   log:      $LOG_FILE" >&2
-    echo "$LOG_PREFIX" >&2
-    echo "$LOG_PREFIX Only one Ping AIC Studio process can run at a time." >&2
-    echo "$LOG_PREFIX Run './stop' to stop it, then './start' to start a new one." >&2
-    exit 1
-  else
-    step "found stale PID file (PID $EXISTING_PID is not running) — cleaning up"
-    rm -f "$PID_FILE"
+    EXISTING_STARTED=$(ps -o lstart= -p "$TRACKED_PID" 2>/dev/null | sed 's/^ *//' || true)
+    echo "$LOG_PREFIX   tracked PID: $TRACKED_PID"
+    [ -n "$EXISTING_URL" ]     && echo "$LOG_PREFIX     serving:   $EXISTING_URL"
+    [ -n "$EXISTING_STARTED" ] && echo "$LOG_PREFIX     started:   $EXISTING_STARTED"
+    echo "$LOG_PREFIX     log:       $LOG_FILE"
   fi
+  # Untracked = found by broad scan, minus the tracked PID.
+  UNTRACKED=""
+  for p in $ALL_PIDS; do
+    [ "$p" = "$TRACKED_PID" ] && continue
+    UNTRACKED="$UNTRACKED $p"
+  done
+  UNTRACKED=$(echo "$UNTRACKED" | xargs || true)
+  [ -n "$UNTRACKED" ] && echo "$LOG_PREFIX   untracked standalone PID(s): $UNTRACKED"
+
+  do_kill=0
+  if [ "$FORCE_RESTART" -eq 1 ]; then
+    step "--force-restart: stopping running instance(s)"
+    do_kill=1
+  elif [ -t 0 ] && [ -r /dev/tty ]; then
+    printf "%s Stop them and start a new one? [Y/n] " "$LOG_PREFIX"
+    read -r reply </dev/tty || reply=""
+    case "$reply" in ""|y|Y|yes|YES) do_kill=1 ;; esac
+  else
+    echo "$LOG_PREFIX (non-interactive shell — refusing to auto-kill)"
+    echo "$LOG_PREFIX Re-run with --force-restart, or run ./stop first."
+    exit 1
+  fi
+
+  if [ "$do_kill" -ne 1 ]; then
+    step "leaving running instance(s) alone; exiting"
+    exit 0
+  fi
+
+  ALL=""
+  [ -n "$TRACKED_PID" ] && ALL="$TRACKED_PID"
+  [ -n "$UNTRACKED"   ] && ALL="$ALL $UNTRACKED"
+  ALL=$(echo "$ALL" | xargs)
+  step "stopping PID(s): $ALL"
+  kill_pids "$ALL"
+  rm -f "$PID_FILE" 2>/dev/null || true
 fi
 
 # ── 1. Detect OS ────────────────────────────────────────────────────
@@ -148,12 +227,15 @@ if [ ! -d "$APP_DIR" ]; then
 fi
 
 # ── Optional --reinstall / --build ──────────────────────────────────
+# Note: wipes that hit file locks are recovered later by wipe_next();
+# here we do a best-effort wipe and let the build-phase retry handle
+# any leftover EBUSY/ETXTBSY.
 if [ "$REINSTALL" -eq 1 ]; then
   step "--reinstall: wiping node_modules + .next"
-  rm -rf "${APP_DIR}/node_modules" "${APP_DIR}/.next"
+  rm -rf "${APP_DIR}/node_modules" "${APP_DIR}/.next" 2>/dev/null || true
 elif [ "$REBUILD" -eq 1 ]; then
   step "--build: wiping .next"
-  rm -rf "${APP_DIR}/.next"
+  rm -rf "${APP_DIR}/.next" 2>/dev/null || true
 fi
 
 # ── 2. Ensure Node 20+ ──────────────────────────────────────────────
@@ -274,8 +356,9 @@ if [ "$SKIP_UPDATE" -eq 0 ]; then
           if [ "$do_pull" -eq 1 ]; then
             step "pulling latest..."
             if git pull --ff-only --quiet; then
-              step "✓ pulled — wiping .next to force rebuild"
-              rm -rf "${APP_DIR}/.next"
+              step "✓ pulled — marking build dir for rebuild"
+              # Best-effort wipe; build-phase retry handles any lock.
+              rm -rf "${APP_DIR}/.next" 2>/dev/null || true
             else
               fail "git pull failed — resolve manually then re-run ./start"
             fi
@@ -300,6 +383,15 @@ deps_stale() {
   [ package.json -nt node_modules/.package-lock.json ] && return 0
   [ package-lock.json -nt node_modules/.package-lock.json ] && return 0
   return 1
+}
+
+# Wipe .next safely, retrying after killing orphans if the first
+# attempt fails (typical EBUSY on Windows, stale child elsewhere).
+wipe_next() {
+  if rm -rf .next 2>/dev/null; then return 0; fi
+  step "wipe of .next failed (file lock?) — killing orphans and retrying"
+  kill_orphan_standalone
+  rm -rf .next || fail "could not remove .next — close any process holding it and retry"
 }
 
 if deps_stale; then
@@ -337,7 +429,7 @@ else
     step "✓ build up to date (fingerprint matches)"
   else
     step "source changed since last build — wiping .next"
-    rm -rf .next
+    wipe_next
     NEED_BUILD=1
   fi
 fi
@@ -345,7 +437,14 @@ fi
 if [ "$NEED_BUILD" -eq 1 ]; then
   step "building app (npm run build)..."
   if ! "$NPM_EXE" run build; then
-    fail "build failed — see output above"
+    # Common cause: a leftover standalone server holds .next/standalone/*
+    # (EBUSY on Windows, ETXTBSY on Linux). Retry once after cleanup.
+    step "build failed — attempting auto-recovery (kill orphans + retry)"
+    kill_orphan_standalone
+    wipe_next
+    if ! "$NPM_EXE" run build; then
+      fail "build failed — see output above"
+    fi
   fi
   # Record the fingerprint of the inputs that produced this build.
   if [ -f "$FP_SCRIPT" ]; then
