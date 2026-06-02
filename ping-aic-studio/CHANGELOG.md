@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-06-02
+
+### Added
+
+- **`start` / `start.cmd` — tiered build auto-recovery.** When `next build` fails, the launcher now classifies the error from the captured build log and self-heals:
+  - `Can't resolve` / `Cannot find module` / `MODULE_NOT_FOUND` → run `npm install` and retry (catches the common "pulled new code, forgot to install" case, e.g. missing `diff` package).
+  - `EBUSY` / `ETXTBSY` / `EPERM` → kill orphan standalone servers, wipe `.next`, retry.
+  - Anything else → kill orphans, wipe `.next`, retry.
+  - If the retry also fails, escalates to a full reinstall (delete `node_modules` + `.next`, fresh `npm install`) and one last build attempt before giving up.
+
 ## [0.3.5] - 2026-06-02
 
 ### Changed

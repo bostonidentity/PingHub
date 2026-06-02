@@ -302,18 +302,11 @@ if not exist ".next\standalone\server.js" (
 )
 
 if "!NEED_BUILD!"=="1" (
-  echo %LOG% building app ^(npm run build^)...
-  call npm run build
+  call :build_with_recovery
   if errorlevel 1 (
-    echo %LOG% build failed - attempting auto-recovery ^(kill orphans + retry^)
-    call :kill_orphan_standalone
-    if exist ".next" rmdir /s /q ".next" 2>nul
-    call npm run build
-    if errorlevel 1 (
-      echo %LOG% ERROR: build failed
-      popd
-      exit /b 4
-    )
+    echo %LOG% ERROR: build failed - see output above
+    popd
+    exit /b 4
   )
   REM Record the fingerprint of the inputs that produced this build.
   if exist "%FP_SCRIPT%" (
@@ -374,6 +367,84 @@ echo %LOG% Ping AIC Studio started successfully ^(PID %SERVER_PID%^)
 echo %LOG%   log:  %LOG_FILE%.out
 echo %LOG%   stop: stop.cmd
 exit /b 0
+
+REM ── build_with_recovery ──────────────────────────────────────────
+REM Run `npm run build` with tiered auto-recovery:
+REM   1. plain build
+REM   2. on failure, classify the error from the captured log:
+REM      - "Cannot find module" / "Can't resolve"  -> npm install + retry
+REM      - "EBUSY" / "ETXTBSY" / "EPERM"           -> kill orphans + wipe + retry
+REM      - anything else                            -> kill orphans + wipe + retry
+REM   3. on second failure, full reinstall (rm node_modules + .next), retry
+REM   4. final failure returns errorlevel 1
+:build_with_recovery
+set "BUILD_LOG=%TEMP%\pinghub-build-%RANDOM%.log"
+echo %LOG% building app ^(npm run build^)...
+call npm run build > "%BUILD_LOG%" 2>&1
+set "BUILD_RC=!errorlevel!"
+type "%BUILD_LOG%"
+if "!BUILD_RC!"=="0" (
+  del "%BUILD_LOG%" 2>nul
+  exit /b 0
+)
+
+set "RECOVERY="
+findstr /C:"Can't resolve" /C:"Cannot find module" /C:"ERR_MODULE_NOT_FOUND" /C:"MODULE_NOT_FOUND" "%BUILD_LOG%" >nul 2>&1
+if not errorlevel 1 set "RECOVERY=missing-dep"
+if not defined RECOVERY (
+  findstr /C:"EBUSY" /C:"ETXTBSY" /C:"EPERM" "%BUILD_LOG%" >nul 2>&1
+  if not errorlevel 1 set "RECOVERY=file-lock"
+)
+if not defined RECOVERY set "RECOVERY=unknown"
+
+if "!RECOVERY!"=="missing-dep" (
+  echo %LOG% build failed: missing dependency detected - reinstalling and retrying
+  call npm install
+  if errorlevel 1 (
+    echo %LOG% ERROR: npm install failed during recovery
+    del "%BUILD_LOG%" 2>nul
+    exit /b 1
+  )
+) else if "!RECOVERY!"=="file-lock" (
+  echo %LOG% build failed: file lock detected - killing orphans and retrying
+  call :kill_orphan_standalone
+  if exist ".next" rmdir /s /q ".next" 2>nul
+) else (
+  echo %LOG% build failed - attempting auto-recovery ^(kill orphans + wipe + retry^)
+  call :kill_orphan_standalone
+  if exist ".next" rmdir /s /q ".next" 2>nul
+)
+
+echo %LOG% retrying build...
+call npm run build > "%BUILD_LOG%" 2>&1
+set "BUILD_RC=!errorlevel!"
+type "%BUILD_LOG%"
+if "!BUILD_RC!"=="0" (
+  del "%BUILD_LOG%" 2>nul
+  exit /b 0
+)
+
+echo %LOG% build still failing - full reinstall ^(node_modules + .next^) and final retry
+call :kill_orphan_standalone
+if exist "node_modules" rmdir /s /q "node_modules" 2>nul
+if exist ".next"        rmdir /s /q ".next"        2>nul
+call npm install
+if errorlevel 1 (
+  echo %LOG% ERROR: npm install failed during full reinstall
+  del "%BUILD_LOG%" 2>nul
+  exit /b 1
+)
+
+call npm run build > "%BUILD_LOG%" 2>&1
+set "BUILD_RC=!errorlevel!"
+type "%BUILD_LOG%"
+if "!BUILD_RC!"=="0" (
+  del "%BUILD_LOG%" 2>nul
+  exit /b 0
+)
+
+del "%BUILD_LOG%" 2>nul
+exit /b 1
 
 REM ── list_standalone_pids ─────────────────────────────────────────
 REM Write the PIDs of every node.exe running a .next\standalone\server.js

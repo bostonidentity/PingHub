@@ -394,6 +394,68 @@ wipe_next() {
   rm -rf .next || fail "could not remove .next — close any process holding it and retry"
 }
 
+# Run `npm run build` with tiered auto-recovery.
+#   1. plain build
+#   2. on failure, classify from the captured log:
+#      - "Cannot find module" / "Can't resolve"  -> npm install + retry
+#      - "EBUSY" / "ETXTBSY" / "EPERM"           -> kill orphans + wipe + retry
+#      - anything else                            -> kill orphans + wipe + retry
+#   3. on second failure, full reinstall (rm node_modules + .next), retry
+#   4. final failure: fail
+build_with_recovery() {
+  local log
+  log=$(mktemp 2>/dev/null || echo "/tmp/pinghub-build-$$.log")
+
+  _run_build() {
+    set -o pipefail
+    "$NPM_EXE" run build 2>&1 | tee "$log"
+    local rc=${PIPESTATUS[0]}
+    set +o pipefail
+    return $rc
+  }
+
+  step "building app (npm run build)..."
+  if _run_build; then rm -f "$log"; return 0; fi
+
+  local cause="unknown"
+  if grep -qE "Can't resolve|Cannot find module|ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND" "$log"; then
+    cause="missing-dep"
+  elif grep -qE "EBUSY|ETXTBSY|EPERM" "$log"; then
+    cause="file-lock"
+  fi
+
+  case "$cause" in
+    missing-dep)
+      step "build failed: missing dependency detected — reinstalling and retrying"
+      "$NPM_EXE" install || { rm -f "$log"; fail "npm install failed during recovery"; }
+      ;;
+    file-lock)
+      step "build failed: file lock detected — killing orphans and retrying"
+      kill_orphan_standalone
+      wipe_next
+      ;;
+    *)
+      step "build failed — attempting auto-recovery (kill orphans + wipe + retry)"
+      kill_orphan_standalone
+      wipe_next
+      ;;
+  esac
+
+  step "retrying build..."
+  if _run_build; then rm -f "$log"; return 0; fi
+
+  step "build still failing — full reinstall (node_modules + .next) and final retry"
+  kill_orphan_standalone
+  rm -rf node_modules
+  wipe_next
+  "$NPM_EXE" install || { rm -f "$log"; fail "npm install failed during full reinstall"; }
+
+  if _run_build; then rm -f "$log"; return 0; fi
+
+  rm -f "$log"
+  fail "build failed after auto-recovery — see output above"
+}
+
 if deps_stale; then
   step "installing dependencies (npm install)..."
   if ! "$NPM_EXE" install; then
@@ -435,17 +497,7 @@ else
 fi
 
 if [ "$NEED_BUILD" -eq 1 ]; then
-  step "building app (npm run build)..."
-  if ! "$NPM_EXE" run build; then
-    # Common cause: a leftover standalone server holds .next/standalone/*
-    # (EBUSY on Windows, ETXTBSY on Linux). Retry once after cleanup.
-    step "build failed — attempting auto-recovery (kill orphans + retry)"
-    kill_orphan_standalone
-    wipe_next
-    if ! "$NPM_EXE" run build; then
-      fail "build failed — see output above"
-    fi
-  fi
+  build_with_recovery
   # Record the fingerprint of the inputs that produced this build.
   if [ -f "$FP_SCRIPT" ]; then
     if WANT_FP=$("$NODE_EXE" "$FP_SCRIPT" 2>/dev/null) && [ -n "$WANT_FP" ]; then
