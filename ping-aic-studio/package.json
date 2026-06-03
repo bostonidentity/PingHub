@@ -18,6 +18,8 @@
     "dev:dir": "node cli.mjs dev --data-dir",
     "build": "next build",
     "postbuild": "node scripts/copy-standalone-assets.mjs",
+    "build:release": "node scripts/build-release.mjs",
+    "build:release:bundled": "node scripts/build-release.mjs --bundle-node",
     "start": "next start",
     "start:dir": "node cli.mjs start --data-dir",
     "lint": "eslint",
