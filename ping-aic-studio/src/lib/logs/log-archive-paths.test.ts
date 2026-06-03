@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import path from "node:path";
-import { dayKey, sourceDir, dayNdjsonPath, dayDbPath, manifestPath } from "./log-archive-paths";
+import { dayKey, sourceDir, dayNdjsonPath, dayDbPath, manifestPath, logDataDir } from "./log-archive-paths";
 
 describe("log-archive-paths", () => {
     it("derives a UTC day key from an ISO timestamp with nanoseconds", () => {
@@ -28,5 +28,13 @@ describe("log-archive-paths", () => {
     it("rejects path-traversal in source names", () => {
         expect(() => sourceDir("/tmp/log-data", "../evil")).toThrow(/invalid source/);
         expect(() => dayNdjsonPath("/tmp/log-data", "am-access", "../../etc")).toThrow(/invalid day/);
+    });
+
+    it("rejects a lone dot as a segment", () => {
+        expect(() => sourceDir("/tmp/log-data", ".")).toThrow(/invalid source/);
+    });
+
+    it("logDataDir rejects an env with path separators", () => {
+        expect(() => logDataDir("../evil")).toThrow(/invalid env/);
     });
 });

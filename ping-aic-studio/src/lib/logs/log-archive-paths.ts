@@ -13,7 +13,7 @@ export function dayKey(isoTimestamp: string): string {
 
 /** A single, safe path segment: no separators, no traversal. */
 function safeSeg(value: string, label: string): string {
-    if (!value || value.includes("/") || value.includes("\\") || value.includes("..")) {
+    if (!value || value === "." || value.includes("/") || value.includes("\\") || value.includes("..")) {
         throw new Error(`invalid ${label}: ${value}`);
     }
     return value;

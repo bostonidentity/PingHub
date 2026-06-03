@@ -27,6 +27,7 @@ export interface LogArchiveManifest {
 
 /** A row as stored in the per-day SQLite index. */
 export interface LogIndexRow {
+    /** Dedup key — the value of the entry's `payload._id`. */
     id: string;
     timestamp: string;
     transactionId: string;
