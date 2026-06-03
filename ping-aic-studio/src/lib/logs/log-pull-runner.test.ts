@@ -78,6 +78,8 @@ describe("runLogPull", () => {
         const manifest = readManifest(baseOpts(root).archiveRoot);
         expect(manifest.sources["am-authentication"].coveredRanges).toEqual([{ from: FROM, to: TO }]);
         expect(manifest.sources["am-authentication"].entryCount).toBe(3);
+
+        expect(fetchFn).toHaveBeenCalledTimes(2);
     });
 
     it("dedupes on a re-pull of the same window (stored 0, range unchanged)", async () => {
@@ -131,5 +133,46 @@ describe("runLogPull", () => {
 
         expect(fetchFn).not.toHaveBeenCalled();
         expect(reg.getJob(job.id)!.status).toBe("aborted");
+    });
+
+    it("resumes a source from its persisted cookie", async () => {
+        const root = tmpEnvsRoot();
+        const reg = createLogRegistry(root);
+        const job = reg.startJob("prod", ["am-authentication"], FROM, TO);
+        // Simulate an interrupted run that saved a mid-source cursor.
+        reg.updateProgress(job.id, "am-authentication", { status: "running", fetched: 5, stored: 5, cookie: "mid-cookie" });
+        const resumed = reg.getJob(job.id)!;
+
+        const seenUrls: string[] = [];
+        const fetchFn = vi.fn(async (url: RequestInfo | URL) => {
+            seenUrls.push(String(url));
+            return jsonRes({ result: [logEntry("z", "2026-06-02T05:00:00Z")], pagedResultsCookie: null });
+        });
+
+        await runLogPull({ ...baseOpts(root), job: resumed, registry: reg, fetchFn });
+
+        expect(seenUrls[0]).toContain("_pagedResultsCookie=mid-cookie");
+        const j = reg.getJob(job.id)!;
+        expect(j.status).toBe("completed");
+        expect(j.progress[0]).toMatchObject({ status: "done", fetched: 6, stored: 6 });
+    });
+
+    it("marks a source failed (not stuck on running) when a page body fails to parse", async () => {
+        const root = tmpEnvsRoot();
+        const reg = createLogRegistry(root);
+        const job = reg.startJob("prod", ["am-authentication"], FROM, TO);
+        const fetchFn = vi.fn(async () => ({
+            status: 200, ok: true,
+            headers: { get: () => null },
+            json: async () => { throw new SyntaxError("Unexpected token < in JSON"); },
+            text: async () => "<html>error</html>",
+        } as unknown as Response));
+
+        await runLogPull({ ...baseOpts(root), job, registry: reg, fetchFn });
+
+        const j = reg.getJob(job.id)!;
+        expect(j.status).toBe("completed"); // terminal, NOT stuck on "running"
+        expect(j.progress[0].status).toBe("failed");
+        expect(j.progress[0].error).toContain("JSON");
     });
 });
