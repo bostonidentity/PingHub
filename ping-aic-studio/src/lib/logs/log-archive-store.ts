@@ -8,11 +8,11 @@ function str(v: unknown): string {
 }
 
 /**
- * Build an index row from a raw entry. `offset` is the byte position the line
- * will occupy in the day NDJSON. Returns null when the entry has no
- * `payload._id` (no stable dedup key — skip it).
+ * Build the indexable columns from a raw entry (everything except the NDJSON
+ * byte offset, which is only known at append time). Returns null when the entry
+ * has no `payload._id` (no stable dedup key — skip it).
  */
-export function extractRow(entry: RawLogEntry, offset: number): LogIndexRow | null {
+export function extractRow(entry: RawLogEntry): Omit<LogIndexRow, "offset"> | null {
     const p = entry.payload ?? {};
     const id = str(p._id);
     if (!id) return null;
@@ -25,7 +25,7 @@ export function extractRow(entry: RawLogEntry, offset: number): LogIndexRow | nu
     const length = Buffer.byteLength(payloadJson, "utf-8");
     const searchable = [eventName, transactionId, userId, realm, str(p.result)]
         .filter(Boolean).join(" ").toLowerCase();
-    return { id, timestamp: entry.timestamp, transactionId, eventName, level, realm, userId, offset, length, payloadJson, searchable };
+    return { id, timestamp: entry.timestamp, transactionId, eventName, level, realm, userId, length, payloadJson, searchable };
 }
 
 export interface AppendResult {
@@ -42,9 +42,14 @@ export interface AppendResult {
  *
  * Dedup authority is the per-day SQLite (`payload._id` PK, INSERT OR IGNORE).
  * Only entries that were newly inserted get appended to the day's NDJSON, so
- * overlapping pulls don't duplicate lines. The SQLite index is derived and
- * rebuildable from NDJSON, so a crash between the DB commit and the NDJSON
- * append self-heals on the next (idempotent) pull.
+ * overlapping pulls don't duplicate lines.
+ *
+ * Ordering caveat: the DB row is committed before its NDJSON line is appended.
+ * A crash between the two leaves an orphaned DB row whose offset points to
+ * absent NDJSON bytes; INSERT OR IGNORE then treats that id as a duplicate and
+ * never re-appends it. The index is derived, so recovery is a rebuild from
+ * NDJSON followed by re-pulling the affected window — a path the Phase A2 pull
+ * runner will own.
  */
 export function appendEntries(archiveRoot: string, source: string, entries: RawLogEntry[]): AppendResult {
     const result: AppendResult = { inserted: 0, duplicates: 0, skipped: 0, days: [] };
@@ -64,10 +69,11 @@ export function appendEntries(archiveRoot: string, source: string, entries: RawL
         result.days.push(day);
         const ndjsonPath = dayNdjsonPath(archiveRoot, source, day);
 
-        // Build candidate rows (skipping those without _id).
-        const rows: LogIndexRow[] = [];
+        // Build candidate rows (skipping those without _id). Offsets are
+        // assigned at insert time below, once we know each row is new.
+        const rows: Omit<LogIndexRow, "offset">[] = [];
         for (const e of dayEntries) {
-            const row = extractRow(e, 0); // offset assigned during insert below
+            const row = extractRow(e);
             if (!row) { result.skipped++; continue; }
             rows.push(row);
         }
@@ -84,7 +90,7 @@ export function appendEntries(archiveRoot: string, source: string, entries: RawL
             // Offsets must reflect the on-disk NDJSON, so start from the current
             // file size and advance only for rows that are actually new.
             let writeOffset = fs.existsSync(ndjsonPath) ? fs.statSync(ndjsonPath).size : 0;
-            const tx = db.transaction((batch: LogIndexRow[]) => {
+            const tx = db.transaction((batch: Omit<LogIndexRow, "offset">[]) => {
                 for (const r of batch) {
                     const probe = stmt.run(
                         r.id, r.timestamp, r.transactionId, r.eventName, r.level, r.realm,

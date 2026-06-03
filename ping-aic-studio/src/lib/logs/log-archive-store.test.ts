@@ -3,7 +3,8 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { extractRow, appendEntries } from "./log-archive-store";
-import { dayNdjsonPath } from "./log-archive-paths";
+import { dayNdjsonPath, dayDbPath } from "./log-archive-paths";
+import { openDayDb, queryDay } from "./log-index";
 import type { RawLogEntry } from "./log-types";
 
 function tmpRoot(): string {
@@ -23,7 +24,7 @@ function entry(id: string, ts: string, over: Record<string, unknown> = {}): RawL
 
 describe("extractRow", () => {
     it("pulls indexable columns from payload, preferring userId then principal", () => {
-        const r = extractRow(entry("a", "2026-06-02T00:00:00Z", { userId: "bob" }), 0);
+        const r = extractRow(entry("a", "2026-06-02T00:00:00Z", { userId: "bob" }));
         expect(r).toMatchObject({
             id: "a", transactionId: "txn-1", eventName: "AM-TREE-LOGIN-COMPLETED",
             level: "INFO", realm: "/alpha", userId: "bob",
@@ -32,12 +33,12 @@ describe("extractRow", () => {
     });
 
     it("falls back to principal when userId is absent", () => {
-        expect(extractRow(entry("a", "2026-06-02T00:00:00Z"), 0)!.userId).toBe("alice");
+        expect(extractRow(entry("a", "2026-06-02T00:00:00Z"))!.userId).toBe("alice");
     });
 
     it("returns null when payload._id is missing (no stable dedup key)", () => {
         const e: RawLogEntry = { timestamp: "2026-06-02T00:00:00Z", payload: { eventName: "X" } };
-        expect(extractRow(e, 0)).toBeNull();
+        expect(extractRow(e)).toBeNull();
     });
 });
 
@@ -81,5 +82,32 @@ describe("appendEntries", () => {
         ]);
         expect(res.inserted).toBe(1);
         expect(res.skipped).toBe(1);
+    });
+
+    it("stores byte offsets that point to the correct NDJSON bytes (interleaved new/dup)", () => {
+        const root = tmpRoot();
+        appendEntries(root, "am-authentication", [entry("a", "2026-06-02T00:00:00Z")]);
+        const res = appendEntries(root, "am-authentication", [
+            entry("b", "2026-06-02T01:00:00Z"),
+            entry("a", "2026-06-02T00:00:00Z"), // duplicate
+            entry("c", "2026-06-02T02:00:00Z"),
+        ]);
+        expect(res.inserted).toBe(2);
+        expect(res.duplicates).toBe(1);
+
+        const ndjsonPath = dayNdjsonPath(root, "am-authentication", "2026-06-02");
+        const buf = fs.readFileSync(ndjsonPath);
+        expect(buf.toString("utf-8").trim().split("\n").map((l) => JSON.parse(l).payload._id))
+            .toEqual(["a", "b", "c"]);
+
+        // Every stored offset/length must slice the exact entry bytes back out.
+        const db = openDayDb(dayDbPath(root, "am-authentication", "2026-06-02"));
+        const rows = queryDay(db, {});
+        expect(rows).toHaveLength(3);
+        for (const r of rows) {
+            const slice = buf.subarray(r.offset, r.offset + r.length).toString("utf-8");
+            expect(JSON.parse(slice).payload._id).toBe(r.id);
+        }
+        db.close();
     });
 });
