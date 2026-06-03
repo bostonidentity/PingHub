@@ -97,11 +97,13 @@ export async function main(argv = process.argv.slice(2)) {
   const port = opts.port ?? await getPort({ port: PREFERRED_PORT });
 
   // Resolve standalone server.js location.
-  // In tarball install: <INSTALL_DIR>/app/.next/standalone/server.js
-  // In source dev:      <repo>/ping-aic-studio/.next/standalone/server.js
+  // In packaged release: <dist>/app/server.js              (build-release.mjs layout)
+  // In legacy tarball:   <install>/app/.next/standalone/server.js
+  // In source dev:       <repo>/ping-aic-studio/.next/standalone/server.js
   const launcherDir = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    path.resolve(launcherDir, "..", "app", ".next", "standalone", "server.js"),   // tarball
+    path.resolve(launcherDir, "..", "app", "server.js"),                           // packaged release
+    path.resolve(launcherDir, "..", "app", ".next", "standalone", "server.js"),   // legacy tarball
     path.resolve(launcherDir, "..", ".next", "standalone", "server.js")           // source
   ];
   const serverJs = candidates.find((c) => existsSync(c));
@@ -113,9 +115,15 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   // The Next.js app's project root (where package.json + src/lib/paths.ts
-  // live). For dev/source: <repo>/ping-aic-studio. For tarball: <install>/app.
-  const appDir = path.resolve(path.dirname(serverJs), "..", "..");
-  const isTarball = appDir.endsWith(`${path.sep}app`)
+  // live).
+  //   - Packaged release: server.js at <dist>/app/server.js   → appDir = <dist>/app
+  //   - Legacy tarball:   server.js at <root>/app/.next/standalone/server.js → appDir = <root>/app
+  //   - Source dev:       server.js at <repo>/ping-aic-studio/.next/standalone/server.js → appDir = <repo>/ping-aic-studio
+  const serverParent = path.dirname(serverJs);
+  const appDir = path.basename(serverParent) === "app"
+    ? serverParent                                        // packaged release
+    : path.resolve(serverParent, "..", "..");             // legacy tarball or source
+  const isTarball = (path.basename(appDir) === "app")
     && existsSync(path.join(launcherDir, "..", "node"));
 
   // Data dir resolution. We must compute the absolute path HERE because

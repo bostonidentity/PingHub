@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-06-02
+
+### Changed
+
+- **Logs tab — terminal view now shows the full date and time.** Timestamps in the terminal view (both rendering and copy/save output) include `YYYY-MM-DD` in addition to `HH:MM:SS.mmm`, matching what's available in the table view.
+- **Logs tab — click a timestamp to open ±5s context in a new tab.** In both the terminal and table views, plain-clicking the timestamp on a log entry now opens the same ±5-second context tab as the "Context ±5s" toolbar button. Previously the table-view timestamp click opened a ±1-minute, all-sources context tab (that older behavior is removed).
+
 ## [0.3.6] - 2026-06-02
 
 ### Added

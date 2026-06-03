@@ -1,6 +1,6 @@
 {
   "name": "pinghub",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "private": true,
   "license": "Apache-2.0",
   "description": "A web UI for managing Ping Advanced Identity Cloud (AIC) tenant configurations — pull, push, and promote configs across environments.",
@@ -18,6 +18,8 @@
     "dev:dir": "node cli.mjs dev --data-dir",
     "build": "next build",
     "postbuild": "node scripts/copy-standalone-assets.mjs",
+    "build:release": "node scripts/build-release.mjs",
+    "build:release:bundled": "node scripts/build-release.mjs --bundle-node",
     "start": "next start",
     "start:dir": "node cli.mjs start --data-dir",
     "lint": "eslint",

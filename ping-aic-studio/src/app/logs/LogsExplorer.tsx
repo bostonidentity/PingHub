@@ -1620,8 +1620,9 @@ function formatTerminalLine(entry: LogEntry, defaultSource: string): string {
   try {
     const d = new Date(entry.timestamp);
     const pad = (n: number) => String(n).padStart(2, "0");
-    const ts = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, "0")}`;
-    return `${ts}  ${src}  ${lvl}  ${msg}`;
+    const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, "0")}`;
+    return `${date} ${time}  ${src}  ${lvl}  ${msg}`;
   } catch {
     return `${entry.timestamp}  ${src}  ${lvl}  ${msg}`;
   }
@@ -1648,7 +1649,7 @@ function terminalMsgClass(level: string): string {
 const TailTerminal = memo(function TailTerminal({
   entries, defaultSource, searchTerm, keywords, wrapLines = false,
   scrollRequest = null, activeMatchIndex = null, matchCase = false, wholeWord = false,
-  dupeCounts, autoScroll = true, onEntryClick, contextAnchorIdx = null,
+  dupeCounts, autoScroll = true, onEntryClick, onTimestampClick, contextAnchorIdx = null,
   expandCommand = null, matchIndices = null, filterActive = false, selectedEntryIdx = null,
   evictedCount = 0,
 }: {
@@ -1664,6 +1665,8 @@ const TailTerminal = memo(function TailTerminal({
   wholeWord?: boolean;
   autoScroll?: boolean;
   onEntryClick?: (idx: number) => void;
+  /** Click on the formatted timestamp opens a ±5s context tab for that entry. */
+  onTimestampClick?: (idx: number) => void;
   contextAnchorIdx?: number | null;
   /** Bulk expand/collapse signal from parent. Bumped via nonce to retrigger. */
   expandCommand?: { kind: "all" | "none"; nonce: number } | null;
@@ -2151,7 +2154,7 @@ const TailTerminal = memo(function TailTerminal({
     );
   }
 
-  function renderStructuredLine(entry: LogEntry, isActive: boolean) {
+  function renderStructuredLine(entry: LogEntry, isActive: boolean, idx: number) {
     const src = entry.source ?? defaultSource;
     const lvl = getLevel(entry);
     const msg = getMessage(entry);
@@ -2159,13 +2162,26 @@ const TailTerminal = memo(function TailTerminal({
     try {
       const d = new Date(entry.timestamp);
       const pad = (n: number) => String(n).padStart(2, "0");
-      ts = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, "0")}`;
+      const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, "0")}`;
+      ts = `${date} ${time}`;
     } catch {
       ts = entry.timestamp;
     }
     return (
       <>
-        <span className="text-slate-400 select-text">{ts}</span>
+        {onTimestampClick ? (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onTimestampClick(idx); }}
+            title="Open ±5s context in new tab"
+            className="text-slate-400 select-text hover:text-sky-600 hover:underline transition-colors"
+          >
+            {ts}
+          </button>
+        ) : (
+          <span className="text-slate-400 select-text">{ts}</span>
+        )}
         <span className="text-slate-400 select-none">{"  "}</span>
         <span className="text-sky-600/80 select-text">{src.padEnd(15)}</span>
         <span className="text-slate-400 select-none">{"  "}</span>
@@ -2232,7 +2248,7 @@ const TailTerminal = memo(function TailTerminal({
                       "whitespace-pre-wrap break-all",
                       !isRowExpanded && "line-clamp-3",
                     )}>
-                      {renderStructuredLine(entry, isActive)}
+                      {renderStructuredLine(entry, isActive, vRow.index)}
                     </span>
                     {count > 1 && (
                       <span className="ml-2 inline-block px-1.5 py-0 rounded bg-amber-100 text-amber-700 text-[10px] font-semibold align-middle">
@@ -2284,7 +2300,7 @@ const TailTerminal = memo(function TailTerminal({
                       selectedEntryIdx !== absIdx && !isActive && isCtxAnchor && "border-l-[3px] border-violet-400 pl-2.5 bg-violet-50",
                     )}
                   >
-                    {renderStructuredLine(entry, isActive)}
+                    {renderStructuredLine(entry, isActive, absIdx)}
                     {count > 1 && (
                       <span className="ml-2 inline-block px-1.5 rounded bg-amber-100 text-amber-700 text-[10px] font-semibold align-middle">
                         ×{count}
@@ -2425,7 +2441,7 @@ const EntryRow = memo(function EntryRow({
               type="button"
               onClick={(e) => { e.stopPropagation(); onTimestampClick(entry.timestamp, effectiveSource); }}
               className="hover:text-sky-600 hover:underline transition-colors text-left"
-              title="Open ±1 min context in new tab"
+              title="Open ±5s context in new tab"
             >
               <span className="text-slate-300 text-[10px]">{date} </span>{time}
             </button>
@@ -4558,6 +4574,7 @@ export function LogsExplorer({
                 wholeWord={highlightWholeWord}
                 autoScroll={autoScroll}
                 onEntryClick={handleEntrySelect}
+                onTimestampClick={handleContextEntry}
                 contextAnchorIdx={contextAnchorDisplay}
                 expandCommand={expandCmd}
                 matchIndices={matchIndices}
@@ -5115,33 +5132,6 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
     setActiveId(id);
   }
 
-  function openContextTab(timestamp: string, source: string) {
-    const id = _nextTabId++;
-    const ts = new Date(timestamp).getTime();
-    const begin = toDatetimeLocal(new Date(ts - 60000).toISOString(), tzMode);
-    const end = toDatetimeLocal(new Date(ts + 60000).toISOString(), tzMode);
-    const isIDM = source.startsWith("idm-");
-    const contextSources = isIDM ? ["idm-everything"] : ["am-everything"];
-    const shortTime = new Date(timestamp).toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    const sourceLabel = isIDM ? "idm-everything" : "am-everything";
-    const tabEnv = tabs.find((t) => t.id === activeId)?.config.env ?? "";
-    const label = `${sourceLabel} (${tabEnv}) ±1m @${shortTime}`;
-    const baseConfig = makeDefaultConfig(environments);
-    const config: TabConfig = {
-      ...baseConfig,
-      env: (tabs.find((t) => t.id === activeId)?.config.env) ?? baseConfig.env,
-      selectedSources: contextSources,
-      mode: "search",
-      preset: "custom",
-      customBegin: begin,
-      customEnd: end,
-      searchSeq: 1,
-      searching: false,
-    };
-    setTabs((prev) => [...prev, { id, label, config }]);
-    setActiveId(id);
-  }
-
   function openEntryContextTab(anchorTs: string, beginTs: string, endTs: string) {
     const id = _nextTabId++;
     const tabEnv = tabs.find((t) => t.id === activeId)?.config.env ?? "";
@@ -5369,7 +5359,16 @@ export function LogsExplorerTabs({ environments }: { environments: EnvWithLogApi
                   onTabSwitch={setActiveId}
                   fullscreen={fullscreen}
                   onFullscreenChange={setFullscreen}
-                  onOpenContextTab={openContextTab}
+                  onOpenContextTab={(timestamp) => {
+                    // Plain click on a timestamp opens ±5 seconds of context
+                    // in a new tab — same behavior as the "Context ±5s" toolbar button.
+                    const ts = new Date(timestamp).getTime();
+                    openEntryContextTab(
+                      timestamp,
+                      new Date(ts - 5000).toISOString(),
+                      new Date(ts + 5000).toISOString(),
+                    );
+                  }}
                   onOpenEntryContextTab={openEntryContextTab}
                   anchorTimestamp={tab.anchorTimestamp}
                 />
