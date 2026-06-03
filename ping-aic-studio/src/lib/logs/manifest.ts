@@ -45,7 +45,10 @@ export function readManifest(archiveRoot: string): LogArchiveManifest {
     if (!fs.existsSync(p)) return { sources: {} };
     try {
         const parsed = JSON.parse(fs.readFileSync(p, "utf-8")) as LogArchiveManifest;
-        return parsed && typeof parsed === "object" && parsed.sources ? parsed : { sources: {} };
+        const ok = parsed && typeof parsed === "object"
+            && typeof parsed.sources === "object" && parsed.sources !== null
+            && !Array.isArray(parsed.sources);
+        return ok ? parsed : { sources: {} };
     } catch {
         return { sources: {} };
     }
@@ -53,5 +56,8 @@ export function readManifest(archiveRoot: string): LogArchiveManifest {
 
 export function writeManifest(archiveRoot: string, manifest: LogArchiveManifest): void {
     fs.mkdirSync(archiveRoot, { recursive: true });
-    fs.writeFileSync(manifestPath(archiveRoot), JSON.stringify(manifest, null, 2));
+    const finalPath = manifestPath(archiveRoot);
+    const tmpPath = `${finalPath}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(manifest, null, 2));
+    fs.renameSync(tmpPath, finalPath);
 }

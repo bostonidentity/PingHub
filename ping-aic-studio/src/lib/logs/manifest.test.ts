@@ -3,6 +3,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { mergeRanges, addCoveredRange, readManifest, writeManifest } from "./manifest";
+import type { LogArchiveManifest } from "./log-types";
 
 function tmpRoot(): string {
     return fs.mkdtempSync(path.join(os.tmpdir(), "log-manifest-"));
@@ -35,9 +36,11 @@ describe("mergeRanges", () => {
             { from: "2026-06-03T00:00:00Z", to: "2026-06-03T01:00:00Z" },
         ]);
     });
+});
 
-    it("addCoveredRange folds a new range into a source and advances lastPulledTo", () => {
-        const m = { sources: {} };
+describe("addCoveredRange", () => {
+    it("folds a new range into a source and advances lastPulledTo", () => {
+        const m: LogArchiveManifest = { sources: {} };
         const updated = addCoveredRange(m, "am-access", { from: "2026-06-01T00:00:00Z", to: "2026-06-02T00:00:00Z" });
         expect(updated.sources["am-access"].coveredRanges).toEqual([
             { from: "2026-06-01T00:00:00Z", to: "2026-06-02T00:00:00Z" },
@@ -45,22 +48,55 @@ describe("mergeRanges", () => {
         expect(updated.sources["am-access"].lastPulledTo).toBe("2026-06-02T00:00:00Z");
     });
 
-    it("addCoveredRange does not move lastPulledTo backwards", () => {
-        let m = { sources: {} };
+    it("does not move lastPulledTo backwards", () => {
+        let m: LogArchiveManifest = { sources: {} };
         m = addCoveredRange(m, "am-access", { from: "2026-06-05T00:00:00Z", to: "2026-06-06T00:00:00Z" });
         m = addCoveredRange(m, "am-access", { from: "2026-06-01T00:00:00Z", to: "2026-06-02T00:00:00Z" });
         expect(m.sources["am-access"].lastPulledTo).toBe("2026-06-06T00:00:00Z");
     });
 
-    it("readManifest returns an empty manifest when the file is absent", () => {
+    it("merges a new range into a source that already has disjoint ranges", () => {
+        let m: LogArchiveManifest = { sources: {} };
+        m = addCoveredRange(m, "am-access", { from: "2026-06-01T00:00:00Z", to: "2026-06-01T06:00:00Z" });
+        m = addCoveredRange(m, "am-access", { from: "2026-06-01T18:00:00Z", to: "2026-06-02T00:00:00Z" });
+        // [A, C] disjoint — now add B that overlaps both.
+        m = addCoveredRange(m, "am-access", { from: "2026-06-01T05:00:00Z", to: "2026-06-01T19:00:00Z" });
+        expect(m.sources["am-access"].coveredRanges).toEqual([
+            { from: "2026-06-01T00:00:00Z", to: "2026-06-02T00:00:00Z" },
+        ]);
+    });
+
+    it("does not mutate the input manifest", () => {
+        const m: LogArchiveManifest = { sources: {} };
+        addCoveredRange(m, "am-access", { from: "2026-06-01T00:00:00Z", to: "2026-06-02T00:00:00Z" });
+        expect(m).toEqual({ sources: {} });
+    });
+});
+
+describe("readManifest / writeManifest", () => {
+    it("returns an empty manifest when the file is absent", () => {
         const root = tmpRoot();
         expect(readManifest(root)).toEqual({ sources: {} });
     });
 
-    it("writeManifest then readManifest round-trips", () => {
+    it("round-trips write then read", () => {
         const root = tmpRoot();
         const m = addCoveredRange({ sources: {} }, "am-core", { from: "2026-06-01T00:00:00Z", to: "2026-06-02T00:00:00Z" });
         writeManifest(root, m);
         expect(readManifest(root)).toEqual(m);
+    });
+
+    it("returns an empty manifest when the file is corrupt JSON", () => {
+        const root = tmpRoot();
+        fs.mkdirSync(root, { recursive: true });
+        fs.writeFileSync(path.join(root, "manifest.json"), "{ not valid json");
+        expect(readManifest(root)).toEqual({ sources: {} });
+    });
+
+    it("returns an empty manifest when sources is not an object", () => {
+        const root = tmpRoot();
+        fs.mkdirSync(root, { recursive: true });
+        fs.writeFileSync(path.join(root, "manifest.json"), JSON.stringify({ sources: "nope" }));
+        expect(readManifest(root)).toEqual({ sources: {} });
     });
 });
