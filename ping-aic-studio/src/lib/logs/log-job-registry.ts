@@ -54,6 +54,11 @@ export function createLogRegistry(envsRoot: string): LogRegistry {
                 if (!f.endsWith(".json")) continue;
                 try {
                     const job = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8")) as LogPullJob;
+                    // A user-suspended job stays suspended (same persistent paused
+                    // state). Everything else non-terminal — including a job in the
+                    // transient "suspending" state (server died mid-suspend before
+                    // the runner finalized) — becomes "interrupted" so a resume can
+                    // continue from each source's persisted cookie.
                     if (isActive(job) && job.status !== "suspended") {
                         job.status = "interrupted";
                         writeJobFile(envsRoot, job);

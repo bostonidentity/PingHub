@@ -74,4 +74,34 @@ describe("log-job-registry", () => {
         expect(reg2.getJob(running.id)!.status).toBe("interrupted");
         expect(reg2.getJob(suspended.id)!.status).toBe("suspended");
     });
+
+    it("getActiveJobForEnv returns undefined once the job is terminal", () => {
+        const root = tmpEnvsRoot();
+        const reg = createLogRegistry(root);
+        const job = reg.startJob("prod", ["am-authentication"], WINDOW.from, WINDOW.to);
+        expect(reg.getActiveJobForEnv("prod")?.id).toBe(job.id);
+        reg.setJobStatus(job.id, "completed");
+        expect(reg.getActiveJobForEnv("prod")).toBeUndefined();
+    });
+
+    it("listJobs filters by env and respects includeFinished", () => {
+        const root = tmpEnvsRoot();
+        const reg = createLogRegistry(root);
+        const prod = reg.startJob("prod", ["am-authentication"], WINDOW.from, WINDOW.to);
+        reg.startJob("uat", ["am-access"], WINDOW.from, WINDOW.to);
+        reg.setJobStatus(prod.id, "completed");
+
+        expect(reg.listJobs({ env: "prod", includeFinished: false })).toHaveLength(0);
+        expect(reg.listJobs({ env: "prod", includeFinished: true }).map((j) => j.id)).toEqual([prod.id]);
+        expect(reg.listJobs({ includeFinished: true })).toHaveLength(2);
+    });
+
+    it("updateProgress is a no-op for an unknown id or source", () => {
+        const root = tmpEnvsRoot();
+        const reg = createLogRegistry(root);
+        const job = reg.startJob("prod", ["am-authentication"], WINDOW.from, WINDOW.to);
+        expect(() => reg.updateProgress("does-not-exist", "am-authentication", { fetched: 1 })).not.toThrow();
+        expect(() => reg.updateProgress(job.id, "no-such-source", { fetched: 1 })).not.toThrow();
+        expect(reg.getJob(job.id)!.progress[0].fetched).toBe(0); // unchanged
+    });
 });
