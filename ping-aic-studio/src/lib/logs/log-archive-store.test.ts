@@ -129,4 +129,22 @@ describe("readRange", () => {
         const root = tmpRoot();
         expect(readRange(root, "am-access", "2026-06-01T00:00:00Z", "2026-06-02T00:00:00Z")).toEqual([]);
     });
+
+    it("includes an entry exactly at the `to` boundary", () => {
+        const root = tmpRoot();
+        appendEntries(root, "am-authentication", [
+            entry("a", "2026-06-02T00:00:00Z"),
+            entry("e", "2026-06-02T12:00:00Z"),
+        ]);
+        const got = readRange(root, "am-authentication", "2026-06-02T00:00:00Z", "2026-06-02T12:00:00Z");
+        expect(got.map((e) => e.payload._id)).toEqual(["a", "e"]);
+    });
+
+    it("skips a malformed NDJSON line rather than throwing", () => {
+        const root = tmpRoot();
+        appendEntries(root, "am-authentication", [entry("a", "2026-06-02T00:00:00Z")]);
+        fs.appendFileSync(dayNdjsonPath(root, "am-authentication", "2026-06-02"), "{ not json\n");
+        const got = readRange(root, "am-authentication", "2026-06-02T00:00:00Z", "2026-06-02T23:59:59Z");
+        expect(got.map((e) => e.payload._id)).toEqual(["a"]);
+    });
 });

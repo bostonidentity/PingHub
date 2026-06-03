@@ -131,13 +131,18 @@ export function readRange(archiveRoot: string, source: string, from: string, to:
     const days = fs.readdirSync(dir)
         .filter((f) => f.endsWith(".ndjson"))
         .map((f) => f.slice(0, -".ndjson".length))
-        .filter((day) => day >= fromDay && day <= toDay)
+        .filter((day) => day && day >= fromDay && day <= toDay)
         .sort();
     for (const day of days) {
         const content = fs.readFileSync(dayNdjsonPath(archiveRoot, source, day), "utf-8");
         for (const line of content.split("\n")) {
             if (!line) continue;
-            const entry = JSON.parse(line) as RawLogEntry;
+            let entry: RawLogEntry;
+            try {
+                entry = JSON.parse(line) as RawLogEntry;
+            } catch {
+                continue; // skip a malformed/partial line rather than failing the whole read
+            }
             if (entry.timestamp >= from && entry.timestamp <= to) out.push(entry);
         }
     }
