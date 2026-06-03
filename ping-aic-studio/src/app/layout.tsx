@@ -6,6 +6,7 @@ import { NavBar } from "@/components/NavBar";
 import { DialogProvider } from "@/components/ConfirmDialog";
 import { GlobalJobBanner } from "@/components/GlobalJobBanner";
 import { MonitorWarningBanner } from "@/components/MonitorWarningBanner";
+import { UpdateBanner } from "@/components/UpdateBanner";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -40,6 +41,7 @@ export default function RootLayout({
             <NavBar />
             <GlobalJobBanner />
             <MonitorWarningBanner />
+            <UpdateBanner />
             <main className="flex-1 px-6 sm:px-10 lg:px-16 py-10 w-full max-w-[1600px] mx-auto">
               {children}
             </main>

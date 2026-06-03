@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-06-02
+
+### Added
+
+- **In-app one-click auto-upgrade.** When a newer GitHub release is available, an emerald banner appears at the top of every page: *"Update available: vX.Y.Z (you have vA.B.C, download N.N MB) — [Upgrade & restart]"*. Clicking the button drives the entire upgrade end-to-end:
+  1. The server downloads the matching release archive (correct platform + arch + bundled-node flavor) and verifies the `.sha256` sidecar.
+  2. It stages a detached updater script (`scripts/release/updater.cmd` on Windows, `updater.sh` on macOS/Linux) to `%TEMP%`/`/tmp`.
+  3. The server exits cleanly so the launcher releases file handles.
+  4. The updater waits for the old PID to exit (force-kills after 60 s), swaps the install directory (`pinghub-X.Y.Z/` → `pinghub-X.Y.Z.bak-<rand>/` + new contents in place), and relaunches `start.cmd --port <same> --no-open`.
+  5. The browser polls `/api/system/version` until it returns the new version, then auto-reloads.
+- **`GET /api/system/version`** — returns `{ installed, latest, canUpdate, newerAvailable, reason? }` with a 5-minute cache (force-refresh with `?force=1`).
+- **`POST /api/system/update`** — kicks off the upgrade; returns `202 { ok, targetVersion, workDir, restartingAt }` and schedules `process.exit(0)` after 1.5 s.
+- **Packaged distributions now ship `<distRoot>/scripts/updater.{cmd,sh}`** so the upgrade flow works on a clean install.
+
+### Notes
+
+- Auto-upgrade is only enabled for packaged installs (those with a `version.json` at the dist root). In source-dev mode the banner is hidden and `canUpdate` is `false`.
+- The banner is dismissible per browser session (✕ button). New release versions re-show it.
+- If the release page lacks a matching asset for the install's platform/arch/bundled-node combo, the banner shows "View release" linking to GitHub instead of the auto-upgrade button.
+
 ## [0.3.7] - 2026-06-02
 
 ### Changed
