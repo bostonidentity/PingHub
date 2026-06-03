@@ -195,4 +195,40 @@ describe("runLogPull", () => {
         expect(j.progress[0].cookie).toBe("c2");     // cursor persisted for resume
         expect(fetchFn).toHaveBeenCalledTimes(1);    // stopped after the first page
     });
+
+    it("finalizes to 'suspended' when an external suspend flips status mid-pull", async () => {
+        const root = tmpEnvsRoot();
+        const reg = createLogRegistry(root);
+        const job = reg.startJob("prod", ["am-authentication"], FROM, TO);
+        const ac = new AbortController();
+        // Simulate the suspend endpoint firing during the first page: flip the
+        // status to "suspending", then abort the controller.
+        const fetchFn = vi.fn(async () => {
+            reg.setJobStatus(job.id, "suspending");
+            ac.abort();
+            return jsonRes({ result: [logEntry("a", "2026-06-02T01:00:00Z")], pagedResultsCookie: "c2" });
+        });
+
+        await runLogPull({ ...baseOpts(root), job, registry: reg, fetchFn, signal: ac.signal });
+
+        const j = reg.getJob(job.id)!;
+        expect(j.status).toBe("suspended");        // resumable, not "aborted"
+        expect(j.finishedAt).toBeUndefined();      // not terminal
+        expect(j.progress[0].cookie).toBe("c2");   // cursor persisted for resume
+    });
+
+    it("finalizes to 'aborted' on a plain abort (no external suspend)", async () => {
+        const root = tmpEnvsRoot();
+        const reg = createLogRegistry(root);
+        const job = reg.startJob("prod", ["am-authentication"], FROM, TO);
+        const ac = new AbortController();
+        const fetchFn = vi.fn(async () => {
+            ac.abort();
+            return jsonRes({ result: [logEntry("a", "2026-06-02T01:00:00Z")], pagedResultsCookie: "c2" });
+        });
+
+        await runLogPull({ ...baseOpts(root), job, registry: reg, fetchFn, signal: ac.signal });
+
+        expect(reg.getJob(job.id)!.status).toBe("aborted");
+    });
 });

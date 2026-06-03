@@ -68,8 +68,16 @@ export async function runLogPull(opts: RunLogPullOpts): Promise<void> {
     const base = tenantBaseUrl.replace(/\/+$/, "");
     const headers = { "x-api-key": apiKey, "x-api-secret": apiSecret };
 
+    // On abort, distinguish a user-initiated suspend (status pre-flipped to
+    // "suspending" by the suspend endpoint) from a true abort. Suspended is the
+    // stable, resumable state; the per-source cookies are already persisted.
+    const finalizeAborted = () => {
+        const current = registry.getJob(job.id);
+        registry.setJobStatus(job.id, current?.status === "suspending" ? "suspended" : "aborted");
+    };
+
     if (signal.aborted) {
-        registry.setJobStatus(job.id, "aborted");
+        finalizeAborted();
         return;
     }
     registry.setJobStatus(job.id, "running");
@@ -167,7 +175,7 @@ export async function runLogPull(opts: RunLogPullOpts): Promise<void> {
     }
 
     if (signal.aborted) {
-        registry.setJobStatus(job.id, "aborted");
+        finalizeAborted();
         return;
     }
     registry.setJobStatus(job.id, "completed");
