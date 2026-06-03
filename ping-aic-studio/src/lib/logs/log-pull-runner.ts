@@ -36,6 +36,8 @@ export interface RunLogPullOpts {
     sleepFn?: (ms: number, signal?: AbortSignal) => Promise<void>;
     /** Current epoch ms — injected for deterministic pacing in tests. */
     nowMs?: () => number;
+    /** Returns true when memory pressure warrants suspending. Injectable for tests. */
+    heapPressureFn?: () => boolean;
     pageSize?: number;
 }
 
@@ -59,6 +61,7 @@ export async function runLogPull(opts: RunLogPullOpts): Promise<void> {
         fetchFn = fetch,
         sleepFn = defaultSleep,
         nowMs = () => Date.now(),
+        heapPressureFn = () => heapUnderPressure(DEFAULT_HEAP_SUSPEND_FRACTION),
         pageSize = DEFAULT_PAGE_SIZE,
     } = opts;
 
@@ -121,8 +124,11 @@ export async function runLogPull(opts: RunLogPullOpts): Promise<void> {
                 // Pace to stay under the rate limit, then check heap pressure.
                 const wait = paceDelayMs(res, nowMs());
                 if (wait > 0) await sleepFn(wait, signal);
-                if (heapUnderPressure(DEFAULT_HEAP_SUSPEND_FRACTION)) {
-                    registry.setJobStatus(job.id, "suspending");
+                if (heapPressureFn()) {
+                    // Persist as the stable, resumable paused state — the cookie was
+                    // already saved above. Leaving it "suspending" (transient) would
+                    // keep the env blocked by the conflict guard until a restart.
+                    registry.setJobStatus(job.id, "suspended");
                     suspended = true;
                     break;
                 }

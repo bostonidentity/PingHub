@@ -175,4 +175,24 @@ describe("runLogPull", () => {
         expect(j.progress[0].status).toBe("failed");
         expect(j.progress[0].error).toContain("JSON");
     });
+
+    it("suspends to a resumable state under heap pressure, persisting the cursor", async () => {
+        const root = tmpEnvsRoot();
+        const reg = createLogRegistry(root);
+        const job = reg.startJob("prod", ["am-authentication"], FROM, TO);
+        const fetchFn = pagingFetch([
+            { result: [logEntry("a", "2026-06-02T01:00:00Z")], pagedResultsCookie: "c2" },
+            { result: [logEntry("b", "2026-06-02T02:00:00Z")], pagedResultsCookie: null },
+        ]);
+
+        // Heap pressure trips right after the first page is stored.
+        await runLogPull({ ...baseOpts(root), job, registry: reg, fetchFn, heapPressureFn: () => true });
+
+        const j = reg.getJob(job.id)!;
+        expect(j.status).toBe("suspended");          // stable resumable state, not "suspending"
+        expect(j.finishedAt).toBeUndefined();        // not terminal
+        expect(j.progress[0].status).toBe("running");
+        expect(j.progress[0].cookie).toBe("c2");     // cursor persisted for resume
+        expect(fetchFn).toHaveBeenCalledTimes(1);    // stopped after the first page
+    });
 });
