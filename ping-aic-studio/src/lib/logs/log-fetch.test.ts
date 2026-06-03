@@ -50,6 +50,28 @@ describe("fetchLogPage", () => {
         expect(r.status).toBe(429);
         expect(fetchFn).toHaveBeenCalledTimes(3); // initial + 2 retries
     });
+
+    it("invokes onThrottle with the wait and attempt number on each 429", async () => {
+        const fetchFn = vi.fn()
+            .mockResolvedValueOnce(res(429, { "retry-after": "3" }))
+            .mockResolvedValueOnce(res(200));
+        const throttles: Array<[number, number]> = [];
+        await fetchLogPage("http://x", {}, {
+            fetchFn,
+            sleepFn: async () => {},
+            onThrottle: (waitMs, attempt) => throttles.push([waitMs, attempt]),
+        });
+        expect(throttles).toEqual([[3000, 1]]);
+    });
+
+    it("resolves the backoff sleep early when the signal aborts (default sleep)", async () => {
+        const ac = new AbortController();
+        const fetchFn = vi.fn().mockResolvedValue(res(429, { "retry-after": "300" }));
+        // Abort almost immediately; the real default sleep must resolve instead of waiting 300s.
+        setTimeout(() => ac.abort(), 5);
+        const r = await fetchLogPage("http://x", {}, { fetchFn, signal: ac.signal, maxRetries: 1 });
+        expect(r.status).toBe(429); // gave up after maxRetries, but did NOT hang for 300s
+    });
 });
 
 describe("paceDelayMs", () => {
