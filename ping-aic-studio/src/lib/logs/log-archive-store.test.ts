@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
-import { extractRow, appendEntries } from "./log-archive-store";
+import { extractRow, appendEntries, readRange } from "./log-archive-store";
 import { dayNdjsonPath, dayDbPath } from "./log-archive-paths";
 import { openDayDb, queryDay } from "./log-index";
 import type { RawLogEntry } from "./log-types";
@@ -109,5 +109,24 @@ describe("appendEntries", () => {
             expect(JSON.parse(slice).payload._id).toBe(r.id);
         }
         db.close();
+    });
+});
+
+describe("readRange", () => {
+    it("returns entries across day partitions, filtered to [from,to] and sorted by timestamp", () => {
+        const root = tmpRoot();
+        appendEntries(root, "am-authentication", [
+            entry("a", "2026-06-02T01:00:00Z"),
+            entry("b", "2026-06-02T23:30:00Z"),
+            entry("c", "2026-06-03T00:30:00Z"),
+            entry("d", "2026-06-04T00:30:00Z"),
+        ]);
+        const got = readRange(root, "am-authentication", "2026-06-02T12:00:00Z", "2026-06-03T12:00:00Z");
+        expect(got.map((e) => e.payload._id)).toEqual(["b", "c"]);
+    });
+
+    it("returns an empty array when the source has no data", () => {
+        const root = tmpRoot();
+        expect(readRange(root, "am-access", "2026-06-01T00:00:00Z", "2026-06-02T00:00:00Z")).toEqual([]);
     });
 });

@@ -115,3 +115,32 @@ export function appendEntries(archiveRoot: string, source: string, entries: RawL
     }
     return result;
 }
+
+/**
+ * Read all stored entries for `source` whose timestamp falls in [from, to], by
+ * reading the day-partition NDJSON files that overlap the range. NDJSON is the
+ * source of truth, so reads go straight to it (the SQLite index is for
+ * filtered/indexed queries, added in Phase B).
+ */
+export function readRange(archiveRoot: string, source: string, from: string, to: string): RawLogEntry[] {
+    const dir = sourceDir(archiveRoot, source);
+    if (!fs.existsSync(dir)) return [];
+    const fromDay = dayKey(from);
+    const toDay = dayKey(to);
+    const out: RawLogEntry[] = [];
+    const days = fs.readdirSync(dir)
+        .filter((f) => f.endsWith(".ndjson"))
+        .map((f) => f.slice(0, -".ndjson".length))
+        .filter((day) => day >= fromDay && day <= toDay)
+        .sort();
+    for (const day of days) {
+        const content = fs.readFileSync(dayNdjsonPath(archiveRoot, source, day), "utf-8");
+        for (const line of content.split("\n")) {
+            if (!line) continue;
+            const entry = JSON.parse(line) as RawLogEntry;
+            if (entry.timestamp >= from && entry.timestamp <= to) out.push(entry);
+        }
+    }
+    out.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    return out;
+}
