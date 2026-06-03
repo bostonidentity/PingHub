@@ -1,0 +1,111 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release as (e.g. v0.3.7). If empty, uses the current ref."
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: win-x64
+            platform: win32
+            arch: x64
+            bundle: false
+          - os: windows-latest
+            label: win-x64-bundled-node
+            platform: win32
+            arch: x64
+            bundle: true
+          - os: macos-14
+            label: macos-arm64-bundled-node
+            platform: darwin
+            arch: arm64
+            bundle: true
+          - os: macos-13
+            label: macos-x64-bundled-node
+            platform: darwin
+            arch: x64
+            bundle: true
+          - os: ubuntu-latest
+            label: linux-x64-bundled-node
+            platform: linux
+            arch: x64
+            bundle: true
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: ping-aic-studio
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: ping-aic-studio/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (Next.js standalone)
+        run: npm run build
+
+      - name: Assemble release
+        shell: bash
+        run: |
+          ARGS=( "--platform" "${{ matrix.platform }}" "--arch" "${{ matrix.arch }}" )
+          if [ "${{ matrix.bundle }}" = "true" ]; then ARGS+=( "--bundle-node" ); fi
+          node scripts/build-release.mjs "${ARGS[@]}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pinghub-${{ matrix.label }}
+          path: |
+            ping-aic-studio/dist/*.zip
+            ping-aic-studio/dist/*.tar.gz
+            ping-aic-studio/dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts
+
+      - name: Create / update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/*.zip
+            artifacts/*.tar.gz
+            artifacts/*.sha256
