@@ -20,10 +20,19 @@ export function openDayDb(dbPath: string): Database.Database {
     db.pragma("synchronous = NORMAL");
     db.prepare("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)").run();
 
+    // Detect a stale schema BEFORE (re)creating `entries` so we can wipe it.
+    // Two cases: (1) a recorded version that differs, or (2) an `entries` table
+    // exists but no version was ever stamped (crash-orphaned / pre-versioning).
+    const entriesExists = db.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='entries'",
+    ).get() !== undefined;
     const existing = db.prepare("SELECT value FROM meta WHERE key='schemaVersion'").get() as
         | { value: string }
         | undefined;
-    if (existing && existing.value !== String(LOG_SCHEMA_VERSION)) {
+    const stale =
+        (existing && existing.value !== String(LOG_SCHEMA_VERSION)) ||
+        (entriesExists && !existing);
+    if (stale) {
         db.prepare("DROP TABLE IF EXISTS entries").run();
         db.prepare(
             "INSERT INTO meta(key,value) VALUES ('schemaVersion', ?) " +
@@ -94,11 +103,12 @@ export function queryDay(db: Database.Database, filters: LogQueryFilters): LogIn
     if (filters.transactionId) { where.push("transaction_id = ?"); params.push(filters.transactionId); }
     if (filters.userId) { where.push("user_id = ?"); params.push(filters.userId); }
     if (filters.text) { where.push("searchable LIKE ?"); params.push(`%${filters.text.toLowerCase()}%`); }
+    const limit = Number.isFinite(filters.limit) ? Math.max(1, Math.floor(filters.limit as number)) : null;
     const sql =
         "SELECT id, timestamp, transaction_id AS transactionId, event_name AS eventName, level, realm," +
         " user_id AS userId, offset, length, payload_json AS payloadJson, searchable FROM entries" +
         (where.length ? ` WHERE ${where.join(" AND ")}` : "") +
         " ORDER BY timestamp ASC" +
-        (filters.limit ? ` LIMIT ${Math.max(1, Math.floor(filters.limit))}` : "");
+        (limit !== null ? ` LIMIT ${limit}` : "");
     return db.prepare(sql).all(...params) as LogIndexRow[];
 }

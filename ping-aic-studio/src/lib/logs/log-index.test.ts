@@ -54,4 +54,36 @@ describe("log-index", () => {
         expect(byText.map((r) => r.payloadJson)).toEqual(['{"u":"alice"}']);
         db.close();
     });
+
+    it("drops entries on a stale schemaVersion and re-opens clean", () => {
+        const p = tmpDb();
+        const db1 = openDayDb(p);
+        insertRows(db1, [row({ id: "a" })]);
+        db1.prepare("UPDATE meta SET value='0' WHERE key='schemaVersion'").run();
+        db1.close();
+        const db2 = openDayDb(p);
+        expect(countEntries(db2)).toBe(0);
+        db2.close();
+    });
+
+    it("queryDay filters by transactionId", () => {
+        const db = openDayDb(tmpDb());
+        insertRows(db, [
+            row({ id: "a", transactionId: "txn-1" }),
+            row({ id: "b", transactionId: "txn-2" }),
+        ]);
+        expect(queryDay(db, { transactionId: "txn-2" }).map((r) => r.id)).toEqual(["b"]);
+        db.close();
+    });
+
+    it("queryDay respects limit", () => {
+        const db = openDayDb(tmpDb());
+        insertRows(db, [
+            row({ id: "a", timestamp: "2026-06-02T00:00:00Z" }),
+            row({ id: "b", timestamp: "2026-06-02T01:00:00Z" }),
+            row({ id: "c", timestamp: "2026-06-02T02:00:00Z" }),
+        ]);
+        expect(queryDay(db, { limit: 2 })).toHaveLength(2);
+        db.close();
+    });
 });
