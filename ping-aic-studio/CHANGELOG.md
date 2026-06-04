@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-06-04
+
+### Added
+
+- **Local log archive under Data → Pull.** Pull `am-authentication`/other sources from AIC into a local NDJSON archive (resumable background jobs with per-source progress, suspend/resume/abort), then search them offline via a Local | Remote toggle. Supersedes the standalone Log explorer/archive tabs on the Report page.
+- **Resumable background Journey-history report (live).** The "Journey execution history" report now runs as a server-side background job — it retries AIC 429s with backoff, can be suspended/resumed, survives a server restart, and re-attaches when you return to the tab. Archive source stays synchronous.
+- **Data → Pull console UX.** Unified Browse/Pull sub-navigation, a cross-app "Unfinished jobs" panel listing every in-progress pull across environments (click a row to jump to the job), and live progress bars on each job card — count ratio for managed objects, time-window coverage for logs, with an overall job bar.
+- **Journey report: Live | Archive source toggle** with archive coverage banner; attempts are reconstructed even when `AM-TREE-LOGIN-INITIATED` is absent.
+
+### Changed
+
+- **Log-pull rate-limit resilience.** 429 handling distinguishes a per-tenant volume-quota (terminal, actionable message) from a throughput limit (retried with exponential backoff + `Retry-After`), and adaptively slows inter-page pacing after each throttle. The journey report inherits the same path.
+- **Managed-object count probe survives navigation.** The probe now runs in a module store: switching tabs no longer orphans it or loses progress, results persist as they arrive, and it is cancellable.
+
+### Fixed
+
+- **Environment names no longer collide with API routes.** Action endpoints moved to `/api/environment-ops/*`, so an env named `test` (or `reorder`/`restart`/`export`/`import`/`backups`/`test-log-api`) loads, saves, and deletes correctly instead of returning `405`. Env names are validated on create.
+- **`./start` no longer shows a false "already running" prompt** after cleaning a dead PID file (BSD `sed` quirk).
+
 ## [0.3.8] - 2026-06-02
 
 ### Added
