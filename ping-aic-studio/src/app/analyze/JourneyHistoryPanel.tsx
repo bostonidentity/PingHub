@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { JourneyHistoryReport, JourneyAttempt } from "@/lib/reports/journey-history";
+import { useJourneyReportJobs } from "@/hooks/useJourneyReportJobs";
 
 /** Default window: last 24 hours, rounded to the second. */
 function defaultWindow(): { from: string; to: string } {
@@ -113,19 +114,61 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     const [scope, setScope] = useState<ScopeFilter>("outer");
     const [maxEvents, setMaxEvents] = useState(20000);
     const [dataSource, setDataSource] = useState<"live" | "archive">("live");
-    const [loading, setLoading] = useState(false);
+    const [loading, setLoading] = useState(false); // archive (synchronous) only
     const [error, setError] = useState<string | null>(null);
     const [report, setReport] = useState<ScanReport | null>(null);
     const [attemptFilter, setAttemptFilter] = useState<AttemptFilter>("all");
     const [scanProgress, setScanProgress] = useState<{ page: number; rawFetched: number; matched: number } | null>(null);
+    // Track which completed job's report we've already loaded into `report`.
+    const [loadedReportJobId, setLoadedReportJobId] = useState<string | null>(null);
+
+    // Live reports run as resumable background jobs (retry, suspend/resume).
+    const { jobs, start, suspend, resume, abort, fetchReport } = useJourneyReportJobs({ pollMs: 2000, includeFinished: true, env });
+    const job = useMemo(() => jobs.filter((j) => j.env === env)[0] ?? null, [jobs, env]);
+    const jobActive = !!job && ["queued", "running", "aborting", "suspending"].includes(job.status);
+    const jobPaused = !!job && ["suspended", "interrupted"].includes(job.status);
+
+    // When the live job finishes, pull its report into view (once).
+    useEffect(() => {
+        if (!job || job.status !== "completed" || !job.reportReady || loadedReportJobId === job.id) return;
+        let cancelled = false;
+        fetchReport(job.id).then((rep) => {
+            if (cancelled || !rep) return;
+            setReport(rep as ScanReport);
+            setLoadedReportJobId(job.id);
+            setError(null);
+        });
+        return () => { cancelled = true; };
+    }, [job, loadedReportJobId, fetchReport]);
+
+    const displayError = error ?? (job?.status === "failed" ? job.fatalError ?? "Report failed." : null);
 
     async function run() {
         if (!env || !from || !to) {
             setError("Environment, From, and To are required.");
             return;
         }
-        setLoading(true);
         setError(null);
+        if (dataSource === "archive") { await runArchive(); return; }
+
+        // Live → start (or surface) a resumable background job.
+        setReport(null);
+        setLoadedReportJobId(null);
+        const res = await start(env, {
+            from: localToIso(from),
+            to: localToIso(to),
+            treeName: treeName.trim() || undefined,
+            maxEvents,
+        });
+        // 409 = a job is already active for this env; polling will display it.
+        if (!res.ok && res.status !== 409) {
+            setError(res.body.error ?? `Failed to start report (${res.status}).`);
+        }
+    }
+
+    /** Archive source: local NDJSON, instant, no 429 — keep the synchronous stream. */
+    async function runArchive() {
+        setLoading(true);
         setReport(null);
         setScanProgress(null);
         try {
@@ -138,11 +181,9 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                     to: localToIso(to),
                     treeName: treeName.trim() || undefined,
                     maxEvents,
-                    source: dataSource,
+                    source: "archive",
                 }),
             });
-            // Validation failures come back as a plain JSON error with a non-2xx
-            // status; a successful run streams NDJSON progress lines.
             if (!res.ok || !res.body) {
                 let msg = `HTTP ${res.status}`;
                 try {
@@ -317,10 +358,13 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                     <button
                         type="button"
                         onClick={run}
-                        disabled={loading}
+                        disabled={dataSource === "archive" ? loading : jobActive}
+                        title={jobActive ? "A report is already running for this environment" : undefined}
                         className="rounded bg-sky-600 px-4 py-1.5 text-white text-sm font-medium hover:bg-sky-700 disabled:opacity-50"
                     >
-                        {loading ? "Running..." : "Run report"}
+                        {dataSource === "archive"
+                            ? (loading ? "Running..." : "Run report")
+                            : (jobActive ? "Running…" : "Run report")}
                     </button>
                     {report ? (
                         <button
@@ -331,7 +375,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                             Export attempts CSV
                         </button>
                     ) : null}
-                    {loading ? (
+                    {dataSource === "archive" && loading ? (
                         <div className="flex items-center gap-2 text-sm text-slate-600">
                             <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-300 border-t-sky-600" />
                             {scanProgress
@@ -340,7 +384,43 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                         </div>
                     ) : null}
                 </div>
-                {error ? <div className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded px-3 py-2">{error}</div> : null}
+
+                {/* Live background-job status — runs server-side, survives navigation, resumable. */}
+                {dataSource === "live" && job && job.status !== "completed" ? (
+                    <div className="flex flex-wrap items-center gap-2 rounded border border-slate-200 bg-white px-3 py-2 text-sm">
+                        <span className={`px-1.5 py-0.5 rounded text-[11px] font-semibold ${jobPaused ? "bg-amber-100 text-amber-800"
+                            : job.status === "failed" ? "bg-rose-100 text-rose-700" : "bg-sky-100 text-sky-700"}`}>
+                            {job.status}
+                        </span>
+                        {jobActive ? (
+                            <span className="flex items-center gap-2 text-slate-600">
+                                <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-300 border-t-sky-600" />
+                                page {job.progress.page} · {job.progress.rawFetched.toLocaleString()} raw · {job.progress.matched.toLocaleString()} journey events
+                            </span>
+                        ) : jobPaused ? (
+                            <span className="text-slate-600">
+                                {job.progress.matched.toLocaleString()} journey events staged
+                                {job.progress.truncated ? " · cap reached" : ""} — resume to continue
+                            </span>
+                        ) : null}
+                        <div className="ml-auto flex items-center gap-2">
+                            {(job.status === "running" || job.status === "queued") ? (
+                                <button type="button" onClick={() => suspend(job.id)}
+                                    className="rounded border border-indigo-300 bg-indigo-50 px-2 py-0.5 text-xs text-indigo-800 hover:bg-indigo-100">Suspend</button>
+                            ) : null}
+                            {jobPaused ? (
+                                <button type="button" onClick={() => resume(job.id)}
+                                    className="rounded border border-amber-400 bg-amber-50 px-2 py-0.5 text-xs text-amber-800 hover:bg-amber-100">Resume</button>
+                            ) : null}
+                            {(jobActive || jobPaused) ? (
+                                <button type="button" onClick={() => abort(job.id)}
+                                    className="rounded border border-slate-300 bg-white px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-50">Abort</button>
+                            ) : null}
+                        </div>
+                    </div>
+                ) : null}
+
+                {displayError ? <div className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded px-3 py-2">{displayError}</div> : null}
             </div>
 
             {report && scopedSummary ? (
