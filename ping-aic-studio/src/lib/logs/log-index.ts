@@ -91,24 +91,49 @@ export interface LogQueryFilters {
     eventName?: string;
     transactionId?: string;
     userId?: string;
+    level?: string;
+    /** Inclusive ISO lower bound on timestamp. */
+    from?: string;
+    /** Inclusive ISO upper bound on timestamp. */
+    to?: string;
     text?: string;
     limit?: number;
+    offset?: number;
 }
 
-/** Query a single day DB. Returns matching rows' payload JSON + key columns, ordered by timestamp. */
-export function queryDay(db: Database.Database, filters: LogQueryFilters): LogIndexRow[] {
+/** Build the shared WHERE clause + params for queryDay/countDay. */
+function buildWhere(filters: LogQueryFilters): { sql: string; params: unknown[] } {
     const where: string[] = [];
     const params: unknown[] = [];
     if (filters.eventName) { where.push("event_name = ?"); params.push(filters.eventName); }
     if (filters.transactionId) { where.push("transaction_id = ?"); params.push(filters.transactionId); }
     if (filters.userId) { where.push("user_id = ?"); params.push(filters.userId); }
+    if (filters.level) { where.push("level = ?"); params.push(filters.level); }
+    if (filters.from) { where.push("timestamp >= ?"); params.push(filters.from); }
+    if (filters.to) { where.push("timestamp <= ?"); params.push(filters.to); }
     if (filters.text) { where.push("searchable LIKE ?"); params.push(`%${filters.text.toLowerCase()}%`); }
+    return { sql: where.length ? ` WHERE ${where.join(" AND ")}` : "", params };
+}
+
+/** Query a single day DB; rows ordered by timestamp, with optional limit/offset. */
+export function queryDay(db: Database.Database, filters: LogQueryFilters): LogIndexRow[] {
+    const { sql: whereSql, params } = buildWhere(filters);
     const limit = Number.isFinite(filters.limit) ? Math.max(1, Math.floor(filters.limit as number)) : null;
+    const offset = Number.isFinite(filters.offset) ? Math.max(0, Math.floor(filters.offset as number)) : 0;
     const sql =
         "SELECT id, timestamp, transaction_id AS transactionId, event_name AS eventName, level, realm," +
         " user_id AS userId, offset, length, payload_json AS payloadJson, searchable FROM entries" +
-        (where.length ? ` WHERE ${where.join(" AND ")}` : "") +
+        whereSql +
         " ORDER BY timestamp ASC" +
-        (limit !== null ? ` LIMIT ${limit}` : "");
+        // SQLite requires LIMIT before OFFSET; use -1 (no limit) when only offset is set.
+        (limit !== null ? ` LIMIT ${limit}` : (offset > 0 ? " LIMIT -1" : "")) +
+        (offset > 0 ? ` OFFSET ${offset}` : "");
     return db.prepare(sql).all(...params) as LogIndexRow[];
+}
+
+/** Count rows in a day DB matching the filters (ignores limit/offset). */
+export function countDay(db: Database.Database, filters: LogQueryFilters): number {
+    const { sql: whereSql, params } = buildWhere(filters);
+    const r = db.prepare(`SELECT COUNT(*) AS n FROM entries${whereSql}`).get(...params) as { n: number };
+    return r.n;
 }

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
-import { openDayDb, insertRows, countEntries, queryDay, LOG_SCHEMA_VERSION } from "./log-index";
+import { openDayDb, insertRows, countEntries, queryDay, countDay, LOG_SCHEMA_VERSION } from "./log-index";
 import type { LogIndexRow } from "./log-types";
 
 function tmpDb(): string {
@@ -84,6 +84,47 @@ describe("log-index", () => {
             row({ id: "c", timestamp: "2026-06-02T02:00:00Z" }),
         ]);
         expect(queryDay(db, { limit: 2 })).toHaveLength(2);
+        db.close();
+    });
+});
+
+describe("log-index range/level filters + count", () => {
+    function seed(db: ReturnType<typeof openDayDb>) {
+        insertRows(db, [
+            row({ id: "a", timestamp: "2026-06-02T01:00:00Z", level: "INFO", eventName: "AM-NODE-LOGIN-COMPLETED" }),
+            row({ id: "b", timestamp: "2026-06-02T05:00:00Z", level: "ERROR", eventName: "AM-TREE-LOGIN-COMPLETED" }),
+            row({ id: "c", timestamp: "2026-06-02T09:00:00Z", level: "INFO", eventName: "AM-TREE-LOGIN-COMPLETED" }),
+        ]);
+    }
+
+    it("filters queryDay by timestamp range [from,to]", () => {
+        const db = openDayDb(tmpDb());
+        seed(db);
+        const rows = queryDay(db, { from: "2026-06-02T02:00:00Z", to: "2026-06-02T06:00:00Z" });
+        expect(rows.map((r) => r.id)).toEqual(["b"]);
+        db.close();
+    });
+
+    it("filters queryDay by level", () => {
+        const db = openDayDb(tmpDb());
+        seed(db);
+        expect(queryDay(db, { level: "ERROR" }).map((r) => r.id)).toEqual(["b"]);
+        db.close();
+    });
+
+    it("supports offset for pagination (ordered by timestamp)", () => {
+        const db = openDayDb(tmpDb());
+        seed(db);
+        expect(queryDay(db, { limit: 1, offset: 1 }).map((r) => r.id)).toEqual(["b"]);
+        db.close();
+    });
+
+    it("countDay counts matches with the same filters (ignoring limit/offset)", () => {
+        const db = openDayDb(tmpDb());
+        seed(db);
+        expect(countDay(db, {})).toBe(3);
+        expect(countDay(db, { level: "INFO" })).toBe(2);
+        expect(countDay(db, { from: "2026-06-02T02:00:00Z", to: "2026-06-02T23:00:00Z" })).toBe(2);
         db.close();
     });
 });
