@@ -111,7 +111,7 @@ export function EnvImportModal({ open, onOpenChange, liveEnvironments, onImporte
                 renameTo: rowState[e.meta.name]?.renameTo,
                 preserveLiveSecrets: rowState[e.meta.name]?.preserveLiveSecrets ?? true,
             }));
-            const res = await fetch("/api/environments/import", {
+            const res = await fetch("/api/environment-ops/import", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({

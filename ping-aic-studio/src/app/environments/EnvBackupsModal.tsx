@@ -28,7 +28,7 @@ export function EnvBackupsModal({ open, onOpenChange, onChanged }: Props) {
         setLoading(true);
         setErr(null);
         try {
-            const res = await fetch("/api/environments/backups");
+            const res = await fetch("/api/environment-ops/backups");
             const body = await res.json();
             if (!res.ok) throw new Error(body.error || `failed (${res.status})`);
             setBackups(body.backups as BackupFile[]);
@@ -45,7 +45,7 @@ export function EnvBackupsModal({ open, onOpenChange, onChanged }: Props) {
 
     async function handleDelete(file: string) {
         if (!confirm(`Delete backup ${file}?`)) return;
-        const res = await fetch(`/api/environments/backups?file=${encodeURIComponent(file)}`, {
+        const res = await fetch(`/api/environment-ops/backups?file=${encodeURIComponent(file)}`, {
             method: "DELETE",
         });
         if (res.ok) {
@@ -58,7 +58,7 @@ export function EnvBackupsModal({ open, onOpenChange, onChanged }: Props) {
     }
 
     async function handleDownload(file: string) {
-        const res = await fetch(`/api/environments/backups?file=${encodeURIComponent(file)}`);
+        const res = await fetch(`/api/environment-ops/backups?file=${encodeURIComponent(file)}`);
         if (!res.ok) {
             alert("download failed");
             return;
@@ -80,7 +80,7 @@ export function EnvBackupsModal({ open, onOpenChange, onChanged }: Props) {
         // Run prune per unique env
         const envNames = [...new Set(backups.map((b) => b.envName))];
         for (const n of envNames) {
-            await fetch(`/api/environments/backups?prune=${encodeURIComponent(n)}`, { method: "DELETE" });
+            await fetch(`/api/environment-ops/backups?prune=${encodeURIComponent(n)}`, { method: "DELETE" });
         }
         load();
         onChanged?.();

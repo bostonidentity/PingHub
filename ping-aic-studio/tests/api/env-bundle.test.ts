@@ -44,10 +44,10 @@ afterEach(() => {
     vi.resetModules();
 });
 
-describe("POST /api/environments/export", () => {
+describe("POST /api/environment-ops/export", () => {
     it("returns a redacted bundle for selected envs", async () => {
-        const { POST } = await import("@/app/api/environments/export/route");
-        const req = new Request("http://x/api/environments/export", {
+        const { POST } = await import("@/app/api/environment-ops/export/route");
+        const req = new Request("http://x/api/environment-ops/export", {
             method: "POST",
             body: JSON.stringify({ names: ["ide3"], secretsMode: "exclude" }),
         });
@@ -63,8 +63,8 @@ describe("POST /api/environments/export", () => {
     });
 
     it("includes plaintext secrets when requested", async () => {
-        const { POST } = await import("@/app/api/environments/export/route");
-        const req = new Request("http://x/api/environments/export", {
+        const { POST } = await import("@/app/api/environment-ops/export/route");
+        const req = new Request("http://x/api/environment-ops/export", {
             method: "POST",
             body: JSON.stringify({ names: ["ide3"], secretsMode: "plain" }),
         });
@@ -75,8 +75,8 @@ describe("POST /api/environments/export", () => {
     });
 
     it("rejects encrypted mode without passphrase", async () => {
-        const { POST } = await import("@/app/api/environments/export/route");
-        const req = new Request("http://x/api/environments/export", {
+        const { POST } = await import("@/app/api/environment-ops/export/route");
+        const req = new Request("http://x/api/environment-ops/export", {
             method: "POST",
             body: JSON.stringify({ names: ["ide3"], secretsMode: "encrypted" }),
         });
@@ -85,8 +85,8 @@ describe("POST /api/environments/export", () => {
     });
 
     it("encrypts secrets when passphrase given", async () => {
-        const { POST } = await import("@/app/api/environments/export/route");
-        const req = new Request("http://x/api/environments/export", {
+        const { POST } = await import("@/app/api/environment-ops/export/route");
+        const req = new Request("http://x/api/environment-ops/export", {
             method: "POST",
             body: JSON.stringify({
                 names: ["ide3", "uat"],
@@ -104,14 +104,14 @@ describe("POST /api/environments/export", () => {
     });
 });
 
-describe("POST /api/environments/import", () => {
+describe("POST /api/environment-ops/import", () => {
     it("creates a new env from a bundle", async () => {
-        const { POST: exportPost } = await import("@/app/api/environments/export/route");
-        const { POST: importPost } = await import("@/app/api/environments/import/route");
+        const { POST: exportPost } = await import("@/app/api/environment-ops/export/route");
+        const { POST: importPost } = await import("@/app/api/environment-ops/import/route");
 
         // First export ide3 in plaintext
         const exportRes = await exportPost(
-            new Request("http://x/api/environments/export", {
+            new Request("http://x/api/environment-ops/export", {
                 method: "POST",
                 body: JSON.stringify({ names: ["ide3"], secretsMode: "plain" }),
             }) as unknown as Parameters<typeof exportPost>[0],
@@ -123,7 +123,7 @@ describe("POST /api/environments/import", () => {
         bundle.environments[0].meta.label = "ide3-clone";
 
         const importRes = await importPost(
-            new Request("http://x/api/environments/import", {
+            new Request("http://x/api/environment-ops/import", {
                 method: "POST",
                 body: JSON.stringify({
                     bundle,
@@ -145,11 +145,11 @@ describe("POST /api/environments/import", () => {
     });
 
     it("auto-backs up before overwrite", async () => {
-        const { POST: exportPost } = await import("@/app/api/environments/export/route");
-        const { POST: importPost } = await import("@/app/api/environments/import/route");
+        const { POST: exportPost } = await import("@/app/api/environment-ops/export/route");
+        const { POST: importPost } = await import("@/app/api/environment-ops/import/route");
 
         const exportRes = await exportPost(
-            new Request("http://x/api/environments/export", {
+            new Request("http://x/api/environment-ops/export", {
                 method: "POST",
                 body: JSON.stringify({ names: ["ide3"], secretsMode: "exclude" }),
             }) as unknown as Parameters<typeof exportPost>[0],
@@ -157,7 +157,7 @@ describe("POST /api/environments/import", () => {
         const bundle = JSON.parse(await exportRes.text());
 
         const importRes = await importPost(
-            new Request("http://x/api/environments/import", {
+            new Request("http://x/api/environment-ops/import", {
                 method: "POST",
                 body: JSON.stringify({
                     bundle,
@@ -178,7 +178,7 @@ describe("POST /api/environments/import", () => {
     });
 
     it("imports many new envs and persists all of them in environments.json (regression)", async () => {
-        const { POST: importPost } = await import("@/app/api/environments/import/route");
+        const { POST: importPost } = await import("@/app/api/environment-ops/import/route");
 
         // Build a synthetic bundle with 5 brand-new envs (no overlap with seed).
         const bundle = {
@@ -197,7 +197,7 @@ describe("POST /api/environments/import", () => {
         }));
 
         const res = await importPost(
-            new Request("http://x/api/environments/import", {
+            new Request("http://x/api/environment-ops/import", {
                 method: "POST",
                 body: JSON.stringify({ bundle, decisions }),
             }) as unknown as Parameters<typeof importPost>[0],
@@ -215,11 +215,11 @@ describe("POST /api/environments/import", () => {
     });
 
     it("rejects encrypted bundle without passphrase", async () => {
-        const { POST: exportPost } = await import("@/app/api/environments/export/route");
-        const { POST: importPost } = await import("@/app/api/environments/import/route");
+        const { POST: exportPost } = await import("@/app/api/environment-ops/export/route");
+        const { POST: importPost } = await import("@/app/api/environment-ops/import/route");
 
         const exportRes = await exportPost(
-            new Request("http://x/api/environments/export", {
+            new Request("http://x/api/environment-ops/export", {
                 method: "POST",
                 body: JSON.stringify({
                     names: ["ide3"],
@@ -231,7 +231,7 @@ describe("POST /api/environments/import", () => {
         const bundle = JSON.parse(await exportRes.text());
 
         const res = await importPost(
-            new Request("http://x/api/environments/import", {
+            new Request("http://x/api/environment-ops/import", {
                 method: "POST",
                 body: JSON.stringify({
                     bundle,
