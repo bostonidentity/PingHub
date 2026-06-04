@@ -29,14 +29,19 @@ function toLogModel(job: LogPullJob): JobCardModel {
         status: job.status,
         startedAt: job.startedAt,
         fatalError: job.fatalError,
-        progress: job.progress.map((p) => ({
-            label: p.source,
-            fetched: p.fetched,
-            expected: null,
-            status: p.status,
-            error: p.error,
-            detail: `${p.stored.toLocaleString()} stored`,
-        })),
+        progress: job.progress.map((p) => {
+            const live = p.status === "running" && p.lastTimestamp
+                ? `${new Date(p.lastTimestamp).toLocaleTimeString()} · ${p.lastMessage ?? ""}`.trim()
+                : `${p.stored.toLocaleString()} stored`;
+            return {
+                label: p.source,
+                fetched: p.fetched,
+                expected: null,
+                status: p.status,
+                error: p.error,
+                detail: live,
+            };
+        }),
     };
 }
 
