@@ -193,7 +193,7 @@ export function EnvironmentsManager({
 
     // Persist the new order
     try {
-      await fetch("/api/environments/reorder", {
+      await fetch("/api/environment-ops/reorder", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ order: reordered.map((e) => e.name) }),

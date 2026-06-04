@@ -4,26 +4,40 @@
 import { useEffect, useState, useMemo } from "react";
 import { useDataPullJobs } from "@/hooks/useDataPullJobs";
 import { useDataEnv, timeAgoShort } from "@/hooks/useDataEnv";
-import { JobCard } from "./JobCard";
+import { JobCard, type JobCardModel } from "./JobCard";
+import { getFocus, subscribeFocus, clearFocus, type PullFocus } from "./job-focus";
+import {
+  startProbe, abortProbe, getProbeState, subscribeProbe,
+  loadProbes, probeKey, PROBE_MAX_AGE_MS, type ProbedEntry,
+} from "./probe-store";
 import type { Environment } from "@/lib/fr-config";
-import type { SnapshotType } from "@/lib/data/types";
+import type { SnapshotType, DataPullJob } from "@/lib/data/types";
 import { cn } from "@/lib/utils";
 
-// Probe results persist across reloads, keyed by "<env>::<type>".
-const PROBE_STORE_KEY = "data-probe-counts-v1";
-type ProbedEntry = { count: number | null; reason?: string; probedAt?: number };
-const PROBE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 1 week
-function loadProbes(): Record<string, ProbedEntry> {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = localStorage.getItem(PROBE_STORE_KEY);
-    return raw ? JSON.parse(raw) as Record<string, ProbedEntry> : {};
-  } catch { return {}; }
+/** Denominator for a type: server total, else a probed count, else unknown. */
+function expectedFor(pTotal: number | null, probed: number | null | undefined): number | null {
+  if (typeof pTotal === "number" && pTotal >= 0) return pTotal;
+  if (typeof probed === "number" && probed >= 0) return probed;
+  return null;
 }
-function saveProbes(store: Record<string, ProbedEntry>): void {
-  try { localStorage.setItem(PROBE_STORE_KEY, JSON.stringify(store)); } catch { /* quota */ }
+
+/** Map a managed DataPullJob (+ probed counts) to the generalized JobCard model. */
+function toManagedModel(job: DataPullJob, probed: Record<string, number | null>): JobCardModel {
+  return {
+    id: job.id,
+    env: job.env,
+    status: job.status,
+    startedAt: job.startedAt,
+    fatalError: job.fatalError,
+    kind: "managed",
+    progress: job.progress.map((p) => {
+      const expected = expectedFor(p.total, probed[p.type]);
+      const expectedFromProbe = (p.total === null || p.total === undefined) && expected !== null;
+      return { label: p.type, fetched: p.fetched, expected, expectedFromProbe, status: p.status, error: p.error };
+    }),
+  };
 }
-const probeKey = (env: string, type: string) => `${env}::${type}`;
+
 
 export function PullPanel({
   environments,
@@ -37,12 +51,17 @@ export function PullPanel({
   const [filter, setFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [envLastPulledAt, setEnvLastPulledAt] = useState<number | null>(null);
+  // Live probe state (env, progress, errors) from the module store — survives
+  // tab/route changes, so navigating away and back keeps showing a probe.
+  const [probe, setProbe] = useState(getProbeState);
+  useEffect(() => subscribeProbe(() => setProbe(getProbeState())), []);
+
   // Counts are sparse: undefined = never probed, null = probed but tenant
   // declined to count, number = real count. Keyed by type within the current env.
-  // All probed counts across envs, mirrored to localStorage so they survive reloads.
+  // The store persists results to localStorage; re-read them whenever it signals
+  // a new result (and once on mount), so denominators stay live.
   const [allProbes, setAllProbes] = useState<Record<string, ProbedEntry>>({});
-  // Rehydrate after mount (avoid SSR/CSR mismatch).
-  useEffect(() => { setAllProbes(loadProbes()); }, []);
+  useEffect(() => { setAllProbes(loadProbes()); }, [probe.resultsVersion]);
 
   // Derive per-env views from the store for the current env.
   const counts = useMemo(() => {
@@ -64,20 +83,11 @@ export function PullPanel({
     return m;
   }, [allProbes, env]);
 
-  function recordProbe(t: string, count: number | null, reason?: string): void {
-    setAllProbes((prev) => {
-      const now = Date.now();
-      const next = { ...prev, [probeKey(env, t)]: reason ? { count, reason, probedAt: now } : { count, probedAt: now } };
-      saveProbes(next);
-      return next;
-    });
-  }
-
-  const [probing, setProbing] = useState(false);
-  const [probeError, setProbeError] = useState<string | null>(null);
-  const [currentlyProbing, setCurrentlyProbing] = useState<string | null>(null);
-  // Live pagination progress per type (ephemeral, only populated during active probe).
-  const [probeProgress, setProbeProgress] = useState<Record<string, { fetched: number; pages: number }>>({});
+  // Scope the store's probe view to the env on screen.
+  const probingThisEnv = probe.probing && probe.env === env;
+  const currentlyProbing = probe.env === env ? probe.currentlyProbing : null;
+  const probeProgress = probe.env === env ? probe.progress : {};
+  const probeError = probe.env === env ? probe.error : null;
   const [prePullChecking, setPrePullChecking] = useState(false);
 
   const { jobs, start, abort, resume, suspend } = useDataPullJobs({ pollMs: 2000, includeFinished: true });
@@ -98,6 +108,24 @@ export function PullPanel({
     () => jobs.slice((jobsPage - 1) * JOBS_PAGE_SIZE, jobsPage * JOBS_PAGE_SIZE),
     [jobs, jobsPage],
   );
+
+  // "Go to this job" from the unfinished-jobs panel. Active jobs are newest, so
+  // they live on page 1; jump there and briefly highlight the target card.
+  const [focusedJobId, setFocusedJobId] = useState<string | null>(null);
+  useEffect(() => {
+    const act = (f: PullFocus) => { if (f.mode !== "managed") return; setJobsPage(1); setFocusedJobId(f.jobId); };
+    const pending = getFocus();
+    if (pending) { act(pending); clearFocus(); }
+    return subscribeFocus(act);
+  }, []);
+  useEffect(() => {
+    if (!focusedJobId) return;
+    const el = document.getElementById(`job-${focusedJobId}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    const t = setTimeout(() => setFocusedJobId(null), 2500);
+    return () => clearTimeout(t);
+  }, [focusedJobId, pagedJobs]);
   const visibleTypes = useMemo(() => {
     const q = filter.trim().toLowerCase();
     return q ? types.filter((t) => t.toLowerCase().includes(q)) : types;
@@ -151,75 +179,9 @@ export function PullPanel({
     return next;
   });
 
-  type ProbeEvent =
-    | { event: "start"; type: string }
-    | { event: "progress"; type: string; fetched: number; pages: number }
-    | { event: "done"; type: string; count: number | null; reason?: string }
-    | { event: "fatal"; error: string }
-    | { event: "end" };
-
-  /** Run a probe for the given types. Returns true on success, false on error. */
-  const runProbe = async (typesToProbe: string[]): Promise<boolean> => {
-    if (!env || typesToProbe.length === 0) return true;
-    setProbing(true);
-    setProbeError(null);
-    setProbeProgress((prev) => {
-      const next = { ...prev };
-      for (const t of typesToProbe) delete next[t];
-      return next;
-    });
-
-    try {
-      const res = await fetch(`/api/data/count/${env}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ types: typesToProbe }),
-      });
-      if (!res.ok || !res.body) {
-        setProbeError(`Probe failed (${res.status}).`);
-        return false;
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let idx: number;
-        while ((idx = buffer.indexOf("\n")) >= 0) {
-          const line = buffer.slice(0, idx).trim();
-          buffer = buffer.slice(idx + 1);
-          if (!line) continue;
-          try {
-            const ev = JSON.parse(line) as ProbeEvent;
-            if (ev.event === "start") {
-              setCurrentlyProbing(ev.type);
-            } else if (ev.event === "progress") {
-              setProbeProgress((prev) => ({ ...prev, [ev.type]: { fetched: ev.fetched, pages: ev.pages } }));
-            } else if (ev.event === "done") {
-              recordProbe(ev.type, ev.count, ev.reason);
-            } else if (ev.event === "fatal") {
-              setProbeError(ev.error);
-              return false;
-            }
-          } catch { /* ignore malformed line */ }
-        }
-      }
-      return true;
-    } catch (e) {
-      setProbeError((e as Error).message);
-      return false;
-    } finally {
-      setProbing(false);
-      setCurrentlyProbing(null);
-    }
-  };
-
   const probeCounts = async () => {
-    if (!env || selected.size === 0 || probing) return;
-    await runProbe([...selected]);
+    if (!env || selected.size === 0 || probingThisEnv) return;
+    await startProbe(env, [...selected]);
   };
 
   const canStart = !active && selected.size > 0 && !prePullChecking;
@@ -236,7 +198,7 @@ export function PullPanel({
 
       // Re-probe stale types before starting the pull.
       if (staleTypes.length > 0) {
-        await runProbe(staleTypes);
+        await startProbe(env, staleTypes);
       }
 
       const res = await start(env, [...selected]);
@@ -271,8 +233,8 @@ export function PullPanel({
                 setEnv(e.target.value);
                 setSelected(new Set());
                 setFilter("");
-                setProbeProgress({});
-                setProbeError(null);
+                // Probe state is env-scoped in the store, so it self-hides for
+                // the new env; an in-flight probe for the old env keeps running.
               }}
               className="px-3 py-1.5 text-sm border border-slate-300 rounded bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-400"
             >
@@ -295,7 +257,7 @@ export function PullPanel({
             <button
               type="button"
               onClick={probeCounts}
-              disabled={probing || prePullChecking || selected.size === 0}
+              disabled={probingThisEnv || prePullChecking || selected.size === 0}
               title={
                 selected.size === 0
                   ? "Check one or more types above to probe"
@@ -303,8 +265,16 @@ export function PullPanel({
               }
               className="px-2 py-1 text-xs border border-slate-300 rounded bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {probing ? "Probing…" : `Probe counts${selected.size > 0 ? ` (${selected.size})` : ""}`}
+              {probingThisEnv ? "Probing…" : `Probe counts${selected.size > 0 ? ` (${selected.size})` : ""}`}
             </button>
+            {probingThisEnv && (
+              <button
+                type="button"
+                onClick={abortProbe}
+                title="Cancel the running probe"
+                className="px-2 py-1 text-xs border border-rose-300 rounded bg-white text-rose-700 hover:bg-rose-50"
+              >Cancel</button>
+            )}
           </div>
           <button
             type="button"
@@ -438,14 +408,21 @@ export function PullPanel({
             if (key.slice(0, sep) === j.env) probedForJob[key.slice(sep + 2)] = entry.count;
           }
           return (
-            <JobCard
+            <div
               key={j.id}
-              job={j}
-              probedCounts={probedForJob}
-              onAbort={() => abort(j.id)}
-              onResume={() => resume(j.id)}
-              onSuspend={() => suspend(j.id)}
-            />
+              id={`job-${j.id}`}
+              className={cn(
+                "rounded-xl transition-shadow",
+                focusedJobId === j.id && "ring-2 ring-indigo-400 ring-offset-2 ring-offset-slate-50",
+              )}
+            >
+              <JobCard
+                model={toManagedModel(j, probedForJob)}
+                onAbort={() => abort(j.id)}
+                onResume={() => resume(j.id)}
+                onSuspend={() => suspend(j.id)}
+              />
+            </div>
           );
         })}
         {jobs.length > JOBS_PAGE_SIZE && (

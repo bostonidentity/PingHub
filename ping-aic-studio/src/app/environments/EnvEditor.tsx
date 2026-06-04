@@ -301,7 +301,7 @@ function TestLogApiButton({
     setExitCode(null);
     setRunning(true);
     try {
-      const res = await fetch("/api/environments/test-log-api", {
+      const res = await fetch("/api/environment-ops/test-log-api", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tenantBaseUrl, apiKey, apiSecret, debug: isDebug }),
@@ -493,7 +493,7 @@ function FrConfigControls({
       lines: [],
     });
     try {
-      const res = await fetch("/api/environments/test", {
+      const res = await fetch("/api/environment-ops/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ envVars: liveValues, debug: testDebug }),
@@ -547,7 +547,7 @@ function FrConfigControls({
 
   // ── Poll / Restart ───────────────────────────────────────────────────────
   const callRestart = async (action: "restart" | "status") => {
-    const res = await fetch("/api/environments/restart", {
+    const res = await fetch("/api/environment-ops/restart", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ environment: environmentName, action }),

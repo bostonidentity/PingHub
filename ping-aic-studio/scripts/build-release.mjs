@@ -159,18 +159,24 @@ async function main() {
     // Strip lockfile noise from the dist.
     fs.rmSync(path.join(distLauncher, "package-lock.json"), { force: true });
 
-    // 3. Top-level scripts (slim, no git/install/build)
+    // 3. Top-level scripts (slim, no git/install/build) + bundled updater script.
     const scriptSrc = path.join(APP_ROOT, "scripts", "release");
+    const distScriptsDir = path.join(distRoot, "scripts");
+    fs.mkdirSync(distScriptsDir, { recursive: true });
     if (platform === "win32") {
         for (const f of ["start.cmd", "stop.cmd", "status.cmd"]) {
             fs.copyFileSync(path.join(scriptSrc, f), path.join(distRoot, f));
         }
+        fs.copyFileSync(path.join(scriptSrc, "updater.cmd"), path.join(distScriptsDir, "updater.cmd"));
     } else {
         for (const f of ["start.sh", "stop.sh", "status.sh"]) {
             const dst = path.join(distRoot, f);
             fs.copyFileSync(path.join(scriptSrc, f), dst);
             fs.chmodSync(dst, 0o755);
         }
+        const updaterDst = path.join(distScriptsDir, "updater.sh");
+        fs.copyFileSync(path.join(scriptSrc, "updater.sh"), updaterDst);
+        fs.chmodSync(updaterDst, 0o755);
     }
 
     // 4. version.json (consumed by launcher --version)

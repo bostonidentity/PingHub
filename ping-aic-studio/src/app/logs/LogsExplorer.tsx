@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { logEntryMatchKey } from "@/lib/log-match-navigation";
 import { parseQuery } from "@/lib/log-query";
 import { useBusyState } from "@/hooks/useBusyState";
+import { DEFAULT_LOG_SOURCES } from "@/lib/logs/log-sources";
 
 // ── Timezone ──────────────────────────────────────────────────────────────────
 
@@ -254,6 +255,8 @@ export interface TabConfig {
   wrapLines?: boolean;
   dedupe?: boolean;
   autoScroll?: boolean;
+  /** Search-mode data source: live AIC ("remote") or the local archive ("local"). */
+  dataSource?: "remote" | "local";
 
 }
 
@@ -336,6 +339,58 @@ function getComponent(entry: LogEntry, source: string): string {
   const req = p.request as Record<string, unknown> | undefined;
   if (typeof req?.protocol === "string") return req.protocol;
   return source;
+}
+
+/** Expand the Logs source picker's aliases to the archive's real sources. */
+function toArchiveSources(selected: string[]): string[] {
+    const out = new Set<string>();
+    for (const s of selected) {
+        if (s === "am-everything") DEFAULT_LOG_SOURCES.filter((x) => x.startsWith("am-")).forEach((x) => out.add(x));
+        else if (s === "idm-everything") DEFAULT_LOG_SOURCES.filter((x) => x.startsWith("idm-")).forEach((x) => out.add(x));
+        else if (DEFAULT_LOG_SOURCES.includes(s)) out.add(s);
+    }
+    return [...out];
+}
+
+/** Map an archive query row (payloadJson = full entry JSON) to a displayed LogEntry. */
+function mapArchiveRowToEntry(row: { payloadJson: string; timestamp: string; source: string }): LogEntry & { source: string } {
+    try {
+        const e = JSON.parse(row.payloadJson) as { timestamp?: string; type?: string; source?: string; payload?: unknown };
+        return {
+            timestamp: e.timestamp ?? row.timestamp,
+            type: e.type ?? "",
+            source: e.source ?? row.source,
+            payload: (e.payload ?? {}) as Record<string, unknown> | string,
+        };
+    } catch {
+        return { timestamp: row.timestamp, type: "", source: row.source, payload: { __raw: row.payloadJson } };
+    }
+}
+
+/** Page the archive query (capped) and return mapped entries + total. */
+async function fetchLocalSearchEntries(params: {
+    env: string; sources: string[]; from: string; to: string; text?: string; level?: string;
+}): Promise<{ entries: (LogEntry & { source: string })[]; total: number; capped: boolean }> {
+    const LIMIT = 1000;
+    const MAX = 5000;
+    const entries: (LogEntry & { source: string })[] = [];
+    let total = 0;
+    let offset = 0;
+    for (;;) {
+        const res = await fetch("/api/logs/archive/query", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...params, offset, limit: LIMIT }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
+        total = typeof data.total === "number" ? data.total : 0;
+        const rows: { payloadJson: string; timestamp: string; source: string }[] = Array.isArray(data.rows) ? data.rows : [];
+        for (const r of rows) entries.push(mapArchiveRowToEntry(r));
+        offset += rows.length;
+        if (rows.length < LIMIT || entries.length >= MAX || offset >= total) break;
+    }
+    return { entries, total, capped: entries.length < total };
 }
 
 function getTransactionId(entry: LogEntry): string {
@@ -3237,6 +3292,34 @@ export function LogsExplorer({
       wholeWord: searchWholeWord,
     });
     onConfigChange({ searching: true });
+
+        if (config.dataSource === "local") {
+            const text = searchKeywordsRawRef.current.trim() || undefined;
+            const lv = resolveLevels(levelFilter);
+            const level = lv && lv.length === 1 ? lv[0] : undefined;
+            const archiveSources = toArchiveSources(selectedSources);
+            void fetchLocalSearchEntries({ env, sources: archiveSources, from: beginTime, to: endTime, text, level })
+                .then(({ entries, total, capped }) => {
+                    setEntries(entries);
+                    setFetched(true);
+                    setLastUpdated(new Date());
+                    setFetchProgress({
+                        loaded: entries.length,
+                        page: 1,
+                        done: true,
+                        paused: false,
+                        source: "local archive",
+                        window: capped ? `first ${entries.length.toLocaleString()} of ${total.toLocaleString()} — refine to see more` : undefined,
+                    });
+                    onConfigChange({ searching: false });
+                })
+                .catch((err) => {
+                    setError(err instanceof Error ? err.message : String(err));
+                    onConfigChange({ searching: false });
+                });
+            return doCleanup; // skip the worker (remote) path
+        }
+
     workerRef.current?.postMessage({ type: "fetch", env, sources: selectedSources, beginTime, endTime, queryFilter, levels: resolveLevels(levelFilter) });
     return doCleanup;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3992,6 +4075,27 @@ export function LogsExplorer({
                         searchWholeWord ? "bg-slate-900 text-white" : "bg-white text-slate-500 hover:bg-slate-50"
                       )}
                     >[W]</button>
+                  </div>
+                  <div className="flex rounded border border-slate-300 overflow-hidden shrink-0">
+                    {(["remote", "local"] as const).map((ds) => (
+                      <button
+                        key={ds}
+                        type="button"
+                        onClick={() => onConfigChange({ dataSource: ds })}
+                        disabled={loading || searching}
+                        title={ds === "local"
+                          ? "Search the local archive (offline; text matches indexed fields only — pull data first via Data → Pull → Logs)"
+                          : "Search live AIC"}
+                        className={cn(
+                          "px-2 py-0.5 text-[11px] font-medium transition-colors",
+                          (config.dataSource ?? "remote") === ds
+                            ? "bg-slate-900 text-white"
+                            : "bg-white text-slate-500 hover:bg-slate-50",
+                        )}
+                      >
+                        {ds === "remote" ? "Remote" : "Local"}
+                      </button>
+                    ))}
                   </div>
                 </div>
               );
@@ -5006,6 +5110,7 @@ function makeDefaultConfig(environments: EnvWithLogApi[]): TabConfig {
     customEnd: toDatetimeLocal(new Date().toISOString()),
     searchSeq: 0,
     searching: false,
+    dataSource: "remote",
   };
 }
 

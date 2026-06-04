@@ -118,7 +118,10 @@ find_standalone_pids() {
     pids=$(ps -eo pid,args 2>/dev/null \
       | awk '/standalone[\/\\]server\.js/{print $1}' || true)
   fi
-  echo "$pids" | tr '\n' ' ' | sed 's/[[:space:]]\+$//'
+  # xargs normalizes whitespace and, crucially, yields an empty string for
+  # empty input — unlike `sed 's/...\+$//'`, whose `\+` is a literal under
+  # BSD sed (macOS), leaving a phantom " " that reads as "still running".
+  echo "$pids" | tr '\n' ' ' | xargs
 }
 
 # Kill a space-separated list of PIDs: TERM, wait 1s, then KILL.
