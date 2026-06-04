@@ -4,10 +4,33 @@
 import { useEffect, useState, useMemo } from "react";
 import { useDataPullJobs } from "@/hooks/useDataPullJobs";
 import { useDataEnv, timeAgoShort } from "@/hooks/useDataEnv";
-import { JobCard } from "./JobCard";
+import { JobCard, type JobCardModel } from "./JobCard";
 import type { Environment } from "@/lib/fr-config";
-import type { SnapshotType } from "@/lib/data/types";
+import type { SnapshotType, DataPullJob } from "@/lib/data/types";
 import { cn } from "@/lib/utils";
+
+/** Denominator for a type: server total, else a probed count, else unknown. */
+function expectedFor(pTotal: number | null, probed: number | null | undefined): number | null {
+  if (typeof pTotal === "number" && pTotal >= 0) return pTotal;
+  if (typeof probed === "number" && probed >= 0) return probed;
+  return null;
+}
+
+/** Map a managed DataPullJob (+ probed counts) to the generalized JobCard model. */
+function toManagedModel(job: DataPullJob, probed: Record<string, number | null>): JobCardModel {
+  return {
+    id: job.id,
+    env: job.env,
+    status: job.status,
+    startedAt: job.startedAt,
+    fatalError: job.fatalError,
+    progress: job.progress.map((p) => {
+      const expected = expectedFor(p.total, probed[p.type]);
+      const expectedFromProbe = (p.total === null || p.total === undefined) && expected !== null;
+      return { label: p.type, fetched: p.fetched, expected, expectedFromProbe, status: p.status, error: p.error };
+    }),
+  };
+}
 
 // Probe results persist across reloads, keyed by "<env>::<type>".
 const PROBE_STORE_KEY = "data-probe-counts-v1";
@@ -440,8 +463,7 @@ export function PullPanel({
           return (
             <JobCard
               key={j.id}
-              job={j}
-              probedCounts={probedForJob}
+              model={toManagedModel(j, probedForJob)}
               onAbort={() => abort(j.id)}
               onResume={() => resume(j.id)}
               onSuspend={() => suspend(j.id)}

@@ -4,7 +4,32 @@
 import type { DataPullJob } from "@/lib/data/types";
 import { cn } from "@/lib/utils";
 
-const STATUS_STYLE: Record<DataPullJob["status"], string> = {
+export type JobCardStatus = DataPullJob["status"];
+
+export interface JobCardRow {
+  /** Type (managed) or source (logs). */
+  label: string;
+  fetched: number;
+  /** Known denominator → progress bar + ETA. null → no bar (e.g. logs have no total). */
+  expected: number | null;
+  /** Marks the expected value as probe-sourced (managed only) → renders a `*`. */
+  expectedFromProbe?: boolean;
+  status: "pending" | "running" | "done" | "failed";
+  error?: string;
+  /** Extra inline note shown when there's no bar (e.g. "8,001 stored" for logs). */
+  detail?: string;
+}
+
+export interface JobCardModel {
+  id: string;
+  env: string;
+  status: JobCardStatus;
+  startedAt: number;
+  fatalError?: string;
+  progress: JobCardRow[];
+}
+
+const STATUS_STYLE: Record<JobCardStatus, string> = {
   queued: "bg-slate-100 text-slate-600",
   running: "bg-sky-100 text-sky-700",
   aborting: "bg-amber-100 text-amber-700",
@@ -36,49 +61,33 @@ function formatDuration(ms: number): string {
   return mr ? `${h}h ${mr}m` : `${h}h`;
 }
 
-/**
- * Resolve the denominator for a type's progress. Prefer the server-side total
- * (set by the pull-runner preflight); fall back to a user-probed count
- * (collected via the "Probe counts" button and stored in localStorage), which
- * is the only source for tenants that reject _countPolicy. null means we
- * genuinely don't know how many records are expected.
- */
-function expectedFor(pTotal: number | null, probed: number | null | undefined): number | null {
-  if (typeof pTotal === "number" && pTotal >= 0) return pTotal;
-  if (typeof probed === "number" && probed >= 0) return probed;
-  return null;
-}
-
+/** Presentation-only job card over a normalized model (managed + log pulls). */
 export function JobCard({
-  job,
-  probedCounts = {},
+  model,
   onAbort,
   onResume,
   onSuspend,
 }: {
-  job: DataPullJob;
-  probedCounts?: Record<string, number | null>;
+  model: JobCardModel;
   onAbort: () => void;
   onResume?: () => void;
   onSuspend?: () => void;
 }) {
-  const canAbort = job.status === "running" || job.status === "queued" || job.status === "interrupted" || job.status === "suspended";
-  const canSuspend = job.status === "running" || job.status === "queued";
-  const canResume = job.status === "interrupted" || job.status === "suspended";
-  const isRunning = job.status === "running" || job.status === "queued" || job.status === "aborting" || job.status === "suspending";
-  const elapsedMs = Date.now() - job.startedAt;
+  const canAbort = model.status === "running" || model.status === "queued" || model.status === "interrupted" || model.status === "suspended";
+  const canSuspend = model.status === "running" || model.status === "queued";
+  const canResume = model.status === "interrupted" || model.status === "suspended";
+  const isRunning = model.status === "running" || model.status === "queued" || model.status === "aborting" || model.status === "suspending";
+  // eslint-disable-next-line react-hooks/purity
+  const elapsedMs = Date.now() - model.startedAt;
 
-  // Aggregate progress across types for the header ETA. We only display an ETA
-  // when every per-type expected is known — otherwise a partial total would
-  // underestimate and mislead.
+  // Header ETA only when every row's expected is known (else a partial total misleads).
   let totalFetched = 0;
   let totalExpected = 0;
   let anyUnknown = false;
-  for (const p of job.progress) {
+  for (const p of model.progress) {
     totalFetched += p.fetched;
-    const exp = expectedFor(p.total, probedCounts[p.type]);
-    if (exp === null) anyUnknown = true;
-    else totalExpected += exp;
+    if (p.expected === null) anyUnknown = true;
+    else totalExpected += p.expected;
   }
   const etaMs = (
     isRunning
@@ -96,11 +105,11 @@ export function JobCard({
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
       <div className="flex items-center gap-3 flex-wrap">
-        <span className="font-mono text-xs text-slate-500">{job.env}</span>
-        <span className={cn("px-1.5 py-0.5 text-[10px] font-semibold rounded", STATUS_STYLE[job.status])}>
-          {job.status}
+        <span className="font-mono text-xs text-slate-500">{model.env}</span>
+        <span className={cn("px-1.5 py-0.5 text-[10px] font-semibold rounded", STATUS_STYLE[model.status])}>
+          {model.status}
         </span>
-        <span className="text-xs text-slate-500">started {timeAgo(job.startedAt)}</span>
+        <span className="text-xs text-slate-500">started {timeAgo(model.startedAt)}</span>
         {etaMs !== null && (
           <span
             className="text-xs text-sky-700"
@@ -135,41 +144,43 @@ export function JobCard({
           )}
         </div>
       </div>
-      {job.fatalError && (
+      {model.fatalError && (
         <div className={cn(
           "px-2 py-1.5 border text-xs rounded font-mono break-all",
-          job.status === "suspended" || job.status === "suspending"
+          model.status === "suspended" || model.status === "suspending"
             ? "bg-indigo-50 border-indigo-200 text-indigo-800"
             : "bg-rose-50 border-rose-200 text-rose-700",
         )}>
-          {job.fatalError}
+          {model.fatalError}
         </div>
       )}
       <div className="space-y-1">
-        {job.progress.map((p) => {
-          const expected = expectedFor(p.total, probedCounts[p.type]);
-          const pct = expected !== null && expected > 0
-            ? Math.min(100, Math.round((p.fetched / expected) * 100))
+        {model.progress.map((p) => {
+          const pct = p.expected !== null && p.expected > 0
+            ? Math.min(100, Math.round((p.fetched / p.expected) * 100))
             : null;
-          const denomFromProbe = (p.total === null || p.total === undefined) && expected !== null;
           return (
-            <div key={p.type} className="space-y-0.5">
+            <div key={p.label} className="space-y-0.5">
               <div className="flex items-center gap-2 text-xs">
-                <span className="font-mono text-slate-700 w-40 truncate" title={p.type}>{p.type}</span>
-                <div className="flex-1 h-1.5 bg-slate-100 rounded overflow-hidden">
-                  {pct !== null && (
-                    <div
-                      className={cn("h-full", p.status === "failed" ? "bg-rose-400" : "bg-sky-500")}
-                      style={{ width: `${pct}%` }}
-                    />
-                  )}
-                </div>
+                <span className="font-mono text-slate-700 w-40 truncate" title={p.label}>{p.label}</span>
+                {p.expected !== null ? (
+                  <div className="flex-1 h-1.5 bg-slate-100 rounded overflow-hidden">
+                    {pct !== null && (
+                      <div
+                        className={cn("h-full", p.status === "failed" ? "bg-rose-400" : "bg-sky-500")}
+                        style={{ width: `${pct}%` }}
+                      />
+                    )}
+                  </div>
+                ) : (
+                  <span className="flex-1 text-[10px] text-slate-400 truncate">{p.detail ?? ""}</span>
+                )}
                 <span
                   className="text-slate-500 tabular-nums w-28 text-right"
-                  title={denomFromProbe ? "Denominator from the Probe counts value" : undefined}
+                  title={p.expectedFromProbe ? "Denominator from the Probe counts value" : undefined}
                 >
                   {p.fetched.toLocaleString()}
-                  {expected !== null ? ` / ${expected.toLocaleString()}${denomFromProbe ? "*" : ""}` : ""}
+                  {p.expected !== null ? ` / ${p.expected.toLocaleString()}${p.expectedFromProbe ? "*" : ""}` : ""}
                 </span>
                 <span className={cn("text-[10px] w-16", p.status === "failed" ? "text-rose-600 font-semibold" : "text-slate-400")}>
                   {p.status}
