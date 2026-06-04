@@ -2,7 +2,7 @@
 import fs from "fs";
 import path from "path";
 import { getEnvironments, getConfigDir } from "@/lib/fr-config";
-import { PullPanel } from "./PullPanel";
+import { PullSwitcher } from "./PullSwitcher";
 
 export default function DataPullPage() {
   const environments = getEnvironments();
@@ -21,5 +21,5 @@ export default function DataPullPage() {
       .sort();
   }
 
-  return <PullPanel environments={environments} typesByEnv={typesByEnv} />;
+  return <PullSwitcher environments={environments} typesByEnv={typesByEnv} />;
 }
