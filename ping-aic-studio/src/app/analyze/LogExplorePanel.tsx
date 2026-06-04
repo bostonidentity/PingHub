@@ -73,9 +73,13 @@ export function LogExplorePanel({ environments }: { environments: { name: string
                     limit: PAGE,
                 }),
             });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
-            setResults(data as ArchiveQueryResult);
+            if (!res.ok) {
+                let msg = `HTTP ${res.status}`;
+                try { const d = await res.json(); if (d?.error) msg = d.error; } catch { /* non-JSON body */ }
+                throw new Error(msg);
+            }
+            const data = (await res.json()) as ArchiveQueryResult;
+            setResults(data);
             setOffset(nextOffset);
         } catch (e) {
             setError((e as Error).message);
@@ -90,7 +94,7 @@ export function LogExplorePanel({ environments }: { environments: { name: string
 
     return (
         <div className="space-y-4">
-            <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
+            <form className="bg-white border border-slate-200 rounded-lg p-4 space-y-3" onSubmit={(e) => { e.preventDefault(); run(0); }}>
                 <div className="flex flex-wrap items-end gap-3">
                     <label className="text-sm">
                         <span className="block text-slate-600 mb-1">Environment</span>
@@ -113,8 +117,7 @@ export function LogExplorePanel({ environments }: { environments: { name: string
                         </select>
                     </label>
                     <button
-                        type="button"
-                        onClick={() => run(0)}
+                        type="submit"
                         disabled={loading}
                         className="ml-auto rounded bg-sky-600 px-4 py-1.5 text-white text-sm font-medium hover:bg-sky-700 disabled:opacity-50"
                     >
@@ -154,7 +157,7 @@ export function LogExplorePanel({ environments }: { environments: { name: string
                 </div>
 
                 {error ? <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</div> : null}
-            </div>
+            </form>
 
             {results ? (
                 <div className="space-y-2">
