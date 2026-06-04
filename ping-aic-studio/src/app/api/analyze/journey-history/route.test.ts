@@ -4,6 +4,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@/lib/fr-config", () => ({
     getLogApiCredentials: () => ({ apiKey: "k", apiSecret: "s" }),
     getEnvFileContent: () => "TENANT_BASE_URL=https://tenant.example.com",
+    getEnvironments: () => [{ name: "prod" }],
+}));
+vi.mock("@/lib/logs/log-archive-store", () => ({
+    readRange: () => [
+        { timestamp: "2026-06-02T10:00:00Z", source: "am-authentication", payload: { eventName: "AM-TREE-LOGIN-INITIATED", transactionId: "t1", entries: [{ info: { treeName: "Login" } }] } },
+        { timestamp: "2026-06-02T10:00:01Z", source: "am-authentication", payload: { eventName: "AM-NODE-LOGIN-COMPLETED", transactionId: "t1", entries: [{ info: { displayName: "User/Pass", nodeOutcome: "success" } }] } },
+        { timestamp: "2026-06-02T10:00:02Z", source: "am-authentication", payload: { eventName: "AM-TREE-LOGIN-COMPLETED", transactionId: "t1", result: "SUCCESSFUL", entries: [{ info: { treeName: "Login" } }] } },
+    ],
 }));
 vi.mock("@/lib/env-parser", () => ({
     parseEnvFile: () => ({ TENANT_BASE_URL: "https://tenant.example.com" }),
@@ -68,6 +76,26 @@ describe("journey-history route pagination", () => {
             rawFetched: 3,
             summary: expect.objectContaining({ attempts: 3 }),
         });
+    });
+
+    it("source=archive reads journey events from the local archive (no AIC paging)", async () => {
+        const fetchMock = vi.fn();
+        vi.stubGlobal("fetch", fetchMock);
+
+        const res = await POST(req({
+            env: "prod", from: "2026-06-02T00:00:00Z", to: "2026-06-03T00:00:00Z", source: "archive",
+        }));
+        const messages = await readNdjson(res);
+
+        expect(fetchMock).not.toHaveBeenCalled(); // archive never hits AIC
+        const done = messages.find((m) => m.type === "done");
+        expect(done).toBeDefined();
+        expect(done).toMatchObject({
+            source: "archive",
+            summary: expect.objectContaining({ attempts: 1, success: 1 }),
+        });
+        // No manifest on disk for this test env → coverage is "none".
+        expect(done!.coverage).toBe("none");
     });
 });
 
