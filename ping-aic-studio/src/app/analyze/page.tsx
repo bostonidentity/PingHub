@@ -1,6 +1,7 @@
 import { getEnvironments } from "@/lib/fr-config";
 import { AnalyzePanel } from "./AnalyzePanel";
 import { JourneyHistoryPanel } from "./JourneyHistoryPanel";
+import { LogArchivePanel } from "./LogArchivePanel";
 import { ReportTabs } from "./ReportTabs";
 
 export default function AnalyzePage() {
@@ -15,6 +16,7 @@ export default function AnalyzePage() {
       </div>
       <ReportTabs
         journeyPanel={<JourneyHistoryPanel environments={environments} />}
+        logArchivePanel={<LogArchivePanel environments={environments} />}
         esvPanel={<AnalyzePanel environments={environments} />}
       />
     </div>
