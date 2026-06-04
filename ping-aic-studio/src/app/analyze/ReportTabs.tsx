@@ -2,17 +2,15 @@
 
 import { useState, type ReactNode } from "react";
 
-type TabKey = "journeys" | "logs" | "explore" | "esv";
+type TabKey = "journeys" | "explore" | "esv";
 
 export function ReportTabs({
     esvPanel,
     journeyPanel,
-    logArchivePanel,
     logExplorePanel,
 }: {
     esvPanel: ReactNode;
     journeyPanel: ReactNode;
-    logArchivePanel: ReactNode;
     logExplorePanel: ReactNode;
 }) {
     const [tab, setTab] = useState<TabKey>("journeys");
@@ -21,7 +19,6 @@ export function ReportTabs({
             <div className="border-b border-slate-200 flex gap-1">
                 {([
                     { key: "journeys", label: "Journey execution history" },
-                    { key: "logs", label: "Log archive" },
                     { key: "explore", label: "Log explorer" },
                     { key: "esv", label: "ESV orphans" },
                 ] as { key: TabKey; label: string }[]).map((t) => (
@@ -42,9 +39,8 @@ export function ReportTabs({
             </div>
             <div>
                 {tab === "esv" ? esvPanel
-                    : tab === "logs" ? logArchivePanel
-                        : tab === "explore" ? logExplorePanel
-                            : journeyPanel}
+                    : tab === "explore" ? logExplorePanel
+                        : journeyPanel}
             </div>
         </div>
     );
