@@ -158,19 +158,28 @@ export async function runLogPull(opts: RunLogPullOpts): Promise<void> {
         if (signal.aborted) break;
 
         if (!sourceFailed && cookie === null) {
-            // Source fully covered for [from,to]: fold the range into the manifest.
-            // This read-modify-write is safe because the registry allows only one
-            // active job per env (LogJobConflictError), so there is no concurrent
-            // manifest writer.
-            const manifest = readManifest(archiveRoot);
-            const updated = addCoveredRange(manifest, source, { from: job.from, to: job.to });
-            const sm = updated.sources[source];
-            // `stored` is cumulative new inserts across all (resumed) runs of this
-            // source; entryCount is only written here on full exhaustion, so adding
-            // `stored` counts every session, not just the final one.
-            sm.entryCount = (sm.entryCount ?? 0) + stored;
-            writeManifest(archiveRoot, updated);
-            registry.updateProgress(job.id, source, { status: "done" });
+            try {
+                // Source fully covered for [from,to]: fold the range into the
+                // manifest. This read-modify-write is safe because the registry
+                // allows only one active job per env (LogJobConflictError), so
+                // there is no concurrent manifest writer.
+                const manifest = readManifest(archiveRoot);
+                const updated = addCoveredRange(manifest, source, { from: job.from, to: job.to });
+                const sm = updated.sources[source];
+                // `stored` is cumulative new inserts across all (resumed) runs of
+                // this source; entryCount is only written here on full exhaustion,
+                // so adding `stored` counts every session, not just the final one.
+                sm.entryCount = (sm.entryCount ?? 0) + stored;
+                writeManifest(archiveRoot, updated);
+                registry.updateProgress(job.id, source, { status: "done" });
+            } catch (err) {
+                // A manifest fs error (ENOSPC, EROFS, …) must not escape and leave
+                // the job stuck "running" — record the source failed instead.
+                registry.updateProgress(job.id, source, {
+                    status: "failed",
+                    error: `manifest update failed: ${(err as Error).message}`,
+                });
+            }
         }
     }
 

@@ -231,4 +231,24 @@ describe("runLogPull", () => {
 
         expect(reg.getJob(job.id)!.status).toBe("aborted");
     });
+
+    it("marks the source failed (not stuck on running) if the manifest write fails", async () => {
+        const root = tmpEnvsRoot();
+        const archiveRoot = path.join(root, "prod", "log-data");
+        fs.mkdirSync(archiveRoot, { recursive: true });
+        // Make manifest.json a directory so writeManifest's rename-onto-it throws.
+        fs.mkdirSync(path.join(archiveRoot, "manifest.json"));
+        const reg = createLogRegistry(root);
+        const job = reg.startJob("prod", ["am-authentication"], FROM, TO);
+        const fetchFn = pagingFetch([
+            { result: [logEntry("a", "2026-06-02T01:00:00Z")], pagedResultsCookie: null },
+        ]);
+
+        await runLogPull({ ...baseOpts(root), job, registry: reg, fetchFn });
+
+        const j = reg.getJob(job.id)!;
+        expect(j.status).toBe("completed");          // terminal, NOT stuck "running"
+        expect(j.progress[0].status).toBe("failed");
+        expect(j.progress[0].error).toContain("manifest");
+    });
 });
