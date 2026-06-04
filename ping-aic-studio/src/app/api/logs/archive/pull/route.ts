@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getLogApiCredentials, getEnvFileContent } from "@/lib/fr-config";
+import { getLogApiCredentials, getEnvFileContent, getEnvironments } from "@/lib/fr-config";
 import { parseEnvFile } from "@/lib/env-parser";
 import { logDataDir } from "@/lib/logs/log-archive-paths";
 import { getLogRegistry, LogJobConflictError } from "@/lib/logs/log-job-registry";
@@ -32,6 +32,11 @@ export async function POST(req: NextRequest) {
 
     if (!env || !from || !to) {
         return NextResponse.json({ error: "env, from, and to are required" }, { status: 400 });
+    }
+    // Allowlist the env against real configured environments before it reaches
+    // any file-path construction (logDataDir / getEnvFileContent / log-api creds).
+    if (!getEnvironments().some((e) => e.name === env)) {
+        return NextResponse.json({ error: "unknown environment" }, { status: 400 });
     }
     const invalid = sources.filter((s) => !ALLOWED.has(s));
     if (invalid.length) {

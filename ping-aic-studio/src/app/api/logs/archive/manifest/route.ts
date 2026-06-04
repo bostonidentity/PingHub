@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { logDataDir } from "@/lib/logs/log-archive-paths";
 import { readManifest } from "@/lib/logs/manifest";
+import { getEnvironments } from "@/lib/fr-config";
 
 export const dynamic = "force-dynamic";
 
@@ -8,5 +9,8 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
     const env = req.nextUrl.searchParams.get("env");
     if (!env) return NextResponse.json({ error: "env is required" }, { status: 400 });
+    if (!getEnvironments().some((e) => e.name === env)) {
+        return NextResponse.json({ error: "unknown environment" }, { status: 400 });
+    }
     return NextResponse.json({ manifest: readManifest(logDataDir(env)) });
 }
