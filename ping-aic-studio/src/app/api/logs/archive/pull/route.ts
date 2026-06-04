@@ -5,14 +5,10 @@ import { logDataDir } from "@/lib/logs/log-archive-paths";
 import { getLogRegistry, LogJobConflictError } from "@/lib/logs/log-job-registry";
 import { runLogPull } from "@/lib/logs/log-pull-runner";
 import { setController, deleteController } from "../route-controllers";
+import { DEFAULT_LOG_SOURCES } from "@/lib/logs/log-sources";
 
 export const dynamic = "force-dynamic";
 
-/** The log sources the archive supports (AM + IDM). */
-export const DEFAULT_LOG_SOURCES = [
-    "am-authentication", "am-access", "am-core",
-    "idm-access", "idm-activity", "idm-authentication",
-];
 const ALLOWED = new Set(DEFAULT_LOG_SOURCES);
 
 /**
