@@ -24,20 +24,21 @@ export interface ArchiveQueryRow extends LogIndexRow {
 }
 
 export interface ArchiveQueryResult {
-    /** Total matches across all sources/days (accurate even when capped). */
+    /** Total matches across all sources/days (exact via per-day COUNT, even when capped). */
     total: number;
     /** The requested page, timestamp-ordered. */
     rows: ArchiveQueryRow[];
-    /** True when matches exceeded MAX_SCAN; rows beyond the cap aren't paginated. */
+    /** True when matches exceeded maxScan; the cap-triggering day is partially included. */
     capped: boolean;
 }
 
 /**
  * Filtered, paginated query across the archive's day partitions for the given
  * sources. Counts are exact (per-day COUNT); rows are materialized up to
- * MAX_SCAN, merged timestamp-ordered, then sliced for the page.
+ * `maxScan` (default MAX_SCAN), merged timestamp-ordered, then sliced for the page.
+ * The cap-triggering day is partially included; `total` stays exact regardless.
  */
-export function queryArchive(archiveRoot: string, q: ArchiveQuery): ArchiveQueryResult {
+export function queryArchive(archiveRoot: string, q: ArchiveQuery, maxScan: number = MAX_SCAN): ArchiveQueryResult {
     const fromDay = dayKey(q.from);
     const toDay = dayKey(q.to);
     const filters: LogQueryFilters = {
@@ -69,7 +70,7 @@ export function queryArchive(archiveRoot: string, q: ArchiveQuery): ArchiveQuery
                 if (!capped) {
                     for (const r of queryDay(db, filters)) {
                         collected.push({ ...r, source });
-                        if (collected.length >= MAX_SCAN) { capped = true; break; }
+                        if (collected.length >= maxScan) { capped = true; break; }
                     }
                 }
             } finally {

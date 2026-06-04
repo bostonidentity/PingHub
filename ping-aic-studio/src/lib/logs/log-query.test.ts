@@ -64,4 +64,28 @@ describe("queryArchive", () => {
         const res = queryArchive(root, { sources: ["am-core"], from: "2026-06-02T00:00:00Z", to: "2026-06-03T00:00:00Z" });
         expect(res).toEqual({ total: 0, rows: [], capped: false });
     });
+
+    it("caps row materialization while keeping total exact", () => {
+        const root = tmpRoot();
+        appendEntries(root, "am-authentication", [
+            entry("a", "2026-06-02T01:00:00Z"),
+            entry("b", "2026-06-02T02:00:00Z"),
+            entry("c", "2026-06-02T03:00:00Z"),
+        ]);
+        // Force the cap at 2 rows.
+        const res = queryArchive(root, { sources: ["am-authentication"], from: "2026-06-02T00:00:00Z", to: "2026-06-03T00:00:00Z" }, 2);
+        expect(res.capped).toBe(true);
+        expect(res.total).toBe(3);          // exact, via per-day COUNT
+        expect(res.rows.length).toBe(2);    // materialized up to the cap
+    });
+
+    it("filters by free text at the archive layer", () => {
+        const root = tmpRoot();
+        appendEntries(root, "am-authentication", [
+            entry("a", "2026-06-02T01:00:00Z", { principal: "alice" }),
+            entry("b", "2026-06-02T02:00:00Z", { principal: "bob" }),
+        ]);
+        const res = queryArchive(root, { sources: ["am-authentication"], from: "2026-06-02T00:00:00Z", to: "2026-06-03T00:00:00Z", text: "alice" });
+        expect(res.rows.map((r) => r.id)).toEqual(["a"]);
+    });
 });
