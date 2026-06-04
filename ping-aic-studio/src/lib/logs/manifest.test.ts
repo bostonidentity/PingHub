@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
-import { mergeRanges, addCoveredRange, readManifest, writeManifest } from "./manifest";
+import { mergeRanges, addCoveredRange, readManifest, writeManifest, rangeCoverage } from "./manifest";
 import type { LogArchiveManifest } from "./log-types";
 
 function tmpRoot(): string {
@@ -98,5 +98,25 @@ describe("readManifest / writeManifest", () => {
         fs.mkdirSync(root, { recursive: true });
         fs.writeFileSync(path.join(root, "manifest.json"), JSON.stringify({ sources: "nope" }));
         expect(readManifest(root)).toEqual({ sources: {} });
+    });
+});
+
+describe("rangeCoverage", () => {
+    const ranges = [
+        { from: "2026-06-01T00:00:00Z", to: "2026-06-02T00:00:00Z" },
+        { from: "2026-06-04T00:00:00Z", to: "2026-06-05T00:00:00Z" },
+    ];
+    it("returns 'none' when the window is outside every covered range", () => {
+        expect(rangeCoverage(ranges, "2026-06-03T00:00:00Z", "2026-06-03T12:00:00Z")).toBe("none");
+        expect(rangeCoverage([], "2026-06-01T00:00:00Z", "2026-06-02T00:00:00Z")).toBe("none");
+    });
+    it("returns 'full' when a single covered range contains the window", () => {
+        expect(rangeCoverage(ranges, "2026-06-01T06:00:00Z", "2026-06-01T18:00:00Z")).toBe("full");
+        expect(rangeCoverage(ranges, "2026-06-01T00:00:00Z", "2026-06-02T00:00:00Z")).toBe("full");
+    });
+    it("returns 'partial' when the window only overlaps part of the coverage", () => {
+        expect(rangeCoverage(ranges, "2026-06-01T12:00:00Z", "2026-06-03T00:00:00Z")).toBe("partial");
+        // spans the gap between the two ranges
+        expect(rangeCoverage(ranges, "2026-06-01T12:00:00Z", "2026-06-04T12:00:00Z")).toBe("partial");
     });
 });

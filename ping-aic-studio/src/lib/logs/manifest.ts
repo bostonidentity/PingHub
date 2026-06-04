@@ -54,6 +54,18 @@ export function readManifest(archiveRoot: string): LogArchiveManifest {
     }
 }
 
+/**
+ * How well a set of (merged, disjoint) covered ranges covers the window
+ * [from, to]: "full" if one range contains it, "none" if no range overlaps it,
+ * else "partial".
+ */
+export function rangeCoverage(ranges: TimeRange[], from: string, to: string): "full" | "partial" | "none" {
+    const overlapping = ranges.filter((r) => r.from <= to && r.to >= from);
+    if (overlapping.length === 0) return "none";
+    if (overlapping.some((r) => r.from <= from && r.to >= to)) return "full";
+    return "partial";
+}
+
 export function writeManifest(archiveRoot: string, manifest: LogArchiveManifest): void {
     fs.mkdirSync(archiveRoot, { recursive: true });
     const finalPath = manifestPath(archiveRoot);
