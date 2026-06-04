@@ -59,10 +59,11 @@ function ScanDetails({ report, defaultOpen }: { report: ScanReport; defaultOpen:
     const matched = report.eventsFetched ?? report.summary.eventsProcessed;
     const raw = report.rawFetched;
     const dropped = typeof raw === "number" ? Math.max(0, raw - matched) : undefined;
+    const isArchive = report.source === "archive";
     const items: { label: string; value: string }[] = [
         ...(report.window ? [{ label: "Window", value: `${fmtWindowTs(report.window.from)} → ${fmtWindowTs(report.window.to)}` }] : []),
-        { label: "Pages fetched", value: num(report.pagesFetched ?? 0) },
-        ...(typeof raw === "number" ? [{ label: "Raw events from AIC", value: num(raw) }] : []),
+        ...(isArchive ? [{ label: "Source", value: "Local archive" }] : [{ label: "Pages fetched", value: num(report.pagesFetched ?? 0) }]),
+        ...(typeof raw === "number" ? [{ label: isArchive ? "Records read from archive" : "Raw events from AIC", value: num(raw) }] : []),
         { label: "Journey events kept", value: num(matched) },
         ...(typeof dropped === "number" ? [{ label: "Dropped (non-journey)", value: num(dropped) }] : []),
         { label: "Attempts reconstructed", value: num(report.summary.attempts) },
