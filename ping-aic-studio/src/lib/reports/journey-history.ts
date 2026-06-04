@@ -14,6 +14,11 @@
  * Inner journeys share the parent transactionId but get their own
  * INITIATED/COMPLETED pair. We pair them with a per-transactionId LIFO stack
  * on (treeName, startedAt) so nested calls match correctly.
+ *
+ * AM-TREE-LOGIN-INITIATED is OPTIONAL: some tenants don't emit it. When a
+ * COMPLETED arrives with no open INITIATED to pair with, we reconstruct the
+ * attempt from the COMPLETED itself plus the node visits buffered since the
+ * previous COMPLETED in the same transaction.
  */
 
 export interface RawAuthEvent {
@@ -129,6 +134,10 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
     for (const g of byTxn.values()) {
         const stack: OpenAttempt[] = [];
         let outerTreeName: string | undefined;
+        // Node visits seen while no INITIATED attempt is open. Tenants that omit
+        // AM-TREE-LOGIN-INITIATED still let us reconstruct attempts: buffer the
+        // orphan node visits here and attach them to the next COMPLETED.
+        let pendingNodes: { displayName?: string; outcome?: string; ts: string; userId?: string }[] = [];
 
         for (const { ts, p } of g.events) {
             const info = entryInfo(p);
@@ -155,6 +164,14 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
                     top.lastNodeOutcome = str(info?.nodeOutcome) ?? top.lastNodeOutcome;
                     // userId may only become known mid-flow.
                     top.userId = top.userId ?? str(p.userId) ?? str(p.principal);
+                } else {
+                    // No open INITIATED attempt — buffer for the next COMPLETED.
+                    pendingNodes.push({
+                        displayName: str(info?.displayName) ?? str(info?.nodeName),
+                        outcome: str(info?.nodeOutcome),
+                        ts,
+                        userId: str(p.userId) ?? str(p.principal),
+                    });
                 }
                 continue;
             }
@@ -170,13 +187,38 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
                     }
                 }
                 if (idx < 0) idx = stack.length - 1; // fallback: top of stack
-                if (idx < 0) continue; // nothing to close
 
-                const open = stack.splice(idx, 1)[0];
                 const outcome: JourneyAttempt["outcome"] =
                     result === "SUCCESSFUL" ? "success"
                         : result === "FAILED" ? "fail"
                             : "incomplete";
+
+                if (idx < 0) {
+                    // No open INITIATED — tenant omitted journey-start. Synthesize
+                    // the attempt from this COMPLETED plus the buffered node visits
+                    // (those seen since the previous COMPLETED in this transaction).
+                    const synthTree = treeName ?? "(unknown)";
+                    if (!outerTreeName) outerTreeName = synthTree;
+                    const lastNode = pendingNodes[pendingNodes.length - 1];
+                    const firstNode = pendingNodes[0];
+                    attempts.push({
+                        transactionId: g.txn,
+                        treeName: synthTree,
+                        isInner: false,
+                        outerTreeName: outerTreeName ?? synthTree,
+                        realm: str(p.realm) ?? str(info?.realm),
+                        userId: str(p.userId) ?? str(p.principal) ?? lastNode?.userId,
+                        startedAt: firstNode?.ts ?? ts,
+                        completedAt: ts,
+                        outcome,
+                        failureNode: outcome === "fail" ? lastNode?.displayName : undefined,
+                        failureNodeOutcome: outcome === "fail" ? lastNode?.outcome : undefined,
+                    });
+                    pendingNodes = [];
+                    continue;
+                }
+
+                const open = stack.splice(idx, 1)[0];
 
                 attempts.push({
                     transactionId: g.txn,

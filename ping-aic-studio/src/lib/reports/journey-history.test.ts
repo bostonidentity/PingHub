@@ -118,6 +118,59 @@ describe("analyzeJourneyHistory", () => {
         ]);
     });
 
+    // Some AIC tenants do not emit AM-TREE-LOGIN-INITIATED at all; we must still
+    // reconstruct attempts from AM-TREE-LOGIN-COMPLETED (+ preceding node visits).
+    describe("without INITIATED events (tenant omits journey-start)", () => {
+        it("reconstructs a successful attempt from COMPLETED alone", () => {
+            const events: RawAuthEvent[] = [
+                nodeVisit("2026-06-03T10:00:01Z", "n1", "Username/Password", "success"),
+                completed("2026-06-03T10:00:02Z", "n1", "Login", "SUCCESSFUL"),
+            ];
+            const r = analyzeJourneyHistory(events);
+            expect(r.summary.attempts).toBe(1);
+            expect(r.summary.success).toBe(1);
+            expect(r.attempts[0]).toMatchObject({
+                transactionId: "n1", treeName: "Login", isInner: false, outcome: "success",
+            });
+            expect(r.attempts[0].completedAt).toBe("2026-06-03T10:00:02Z");
+        });
+
+        it("attributes the failure node from the last node before a FAILED COMPLETED", () => {
+            const events: RawAuthEvent[] = [
+                nodeVisit("2026-06-03T10:00:01Z", "n2", "Username/Password", "success"),
+                nodeVisit("2026-06-03T10:00:02Z", "n2", "MFA Challenge", "Failure"),
+                completed("2026-06-03T10:00:03Z", "n2", "Login", "FAILED"),
+            ];
+            const r = analyzeJourneyHistory(events);
+            expect(r.attempts[0].outcome).toBe("fail");
+            expect(r.attempts[0].failureNode).toBe("MFA Challenge");
+            expect(r.attempts[0].failureNodeOutcome).toBe("Failure");
+        });
+
+        it("reconstructs two COMPLETEDs in one transaction as two attempts", () => {
+            const events: RawAuthEvent[] = [
+                nodeVisit("2026-06-03T10:00:01Z", "n3", "Username/Password", "success"),
+                nodeVisit("2026-06-03T10:00:02Z", "n3", "Push", "success"),
+                completed("2026-06-03T10:00:03Z", "n3", "MFA-Inner", "SUCCESSFUL"),
+                nodeVisit("2026-06-03T10:00:04Z", "n3", "Set Session", "success"),
+                completed("2026-06-03T10:00:05Z", "n3", "Login", "SUCCESSFUL"),
+            ];
+            const r = analyzeJourneyHistory(events);
+            expect(r.summary.attempts).toBe(2);
+            expect(r.attempts.map((a) => a.treeName).sort()).toEqual(["Login", "MFA-Inner"]);
+        });
+
+        it("reconstructs a bare COMPLETED with no preceding node visits", () => {
+            const events: RawAuthEvent[] = [
+                completed("2026-06-03T10:00:02Z", "n4", "Login", "SUCCESSFUL"),
+            ];
+            const r = analyzeJourneyHistory(events);
+            expect(r.summary.attempts).toBe(1);
+            expect(r.attempts[0]).toMatchObject({ treeName: "Login", outcome: "success" });
+            expect(r.attempts[0].startedAt).toBe("2026-06-03T10:00:02Z");
+        });
+    });
+
     it("ignores unrelated eventNames and payloads without transactionId", () => {
         const events: RawAuthEvent[] = [
             { timestamp: "2026-06-03T10:00:00Z", payload: { eventName: "AM-LOGOUT" } },
