@@ -66,6 +66,24 @@ export function rangeCoverage(ranges: TimeRange[], from: string, to: string): "f
     return "partial";
 }
 
+/**
+ * The earliest point >= `from` not covered by a contiguous prefix of `covered`,
+ * or null when [from,to] is entirely covered by that prefix. Used to skip
+ * re-pulling already-archived leading ranges. (A mid-window hole that doesn't
+ * touch `from` is NOT skipped — it's re-pulled, and dedup keeps that correct.)
+ */
+export function trimCoveredPrefix(covered: TimeRange[], from: string, to: string): string | null {
+    let eff = from;
+    let advanced = true;
+    while (advanced) {
+        advanced = false;
+        for (const r of covered) {
+            if (r.from <= eff && r.to > eff) { eff = r.to; advanced = true; }
+        }
+    }
+    return eff >= to ? null : eff;
+}
+
 export function writeManifest(archiveRoot: string, manifest: LogArchiveManifest): void {
     fs.mkdirSync(archiveRoot, { recursive: true });
     const finalPath = manifestPath(archiveRoot);

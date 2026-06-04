@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
-import { mergeRanges, addCoveredRange, readManifest, writeManifest, rangeCoverage } from "./manifest";
+import { mergeRanges, addCoveredRange, readManifest, writeManifest, rangeCoverage, trimCoveredPrefix } from "./manifest";
 import type { LogArchiveManifest } from "./log-types";
 
 function tmpRoot(): string {
@@ -98,6 +98,31 @@ describe("readManifest / writeManifest", () => {
         fs.mkdirSync(root, { recursive: true });
         fs.writeFileSync(path.join(root, "manifest.json"), JSON.stringify({ sources: "nope" }));
         expect(readManifest(root)).toEqual({ sources: {} });
+    });
+});
+
+describe("trimCoveredPrefix", () => {
+    it("returns `from` when nothing is covered", () => {
+        expect(trimCoveredPrefix([], "2026-06-02T00:00:00Z", "2026-06-03T00:00:00Z")).toBe("2026-06-02T00:00:00Z");
+    });
+    it("returns null when [from,to] is fully covered", () => {
+        const c = [{ from: "2026-06-02T00:00:00Z", to: "2026-06-03T00:00:00Z" }];
+        expect(trimCoveredPrefix(c, "2026-06-02T00:00:00Z", "2026-06-03T00:00:00Z")).toBeNull();
+    });
+    it("advances past a covered prefix to the first uncovered point", () => {
+        const c = [{ from: "2026-06-02T00:00:00Z", to: "2026-06-02T06:00:00Z" }];
+        expect(trimCoveredPrefix(c, "2026-06-02T00:00:00Z", "2026-06-03T00:00:00Z")).toBe("2026-06-02T06:00:00Z");
+    });
+    it("merges adjacent covered prefixes", () => {
+        const c = [
+            { from: "2026-06-02T00:00:00Z", to: "2026-06-02T06:00:00Z" },
+            { from: "2026-06-02T06:00:00Z", to: "2026-06-02T12:00:00Z" },
+        ];
+        expect(trimCoveredPrefix(c, "2026-06-02T00:00:00Z", "2026-06-03T00:00:00Z")).toBe("2026-06-02T12:00:00Z");
+    });
+    it("does not advance for a mid-window hole that doesn't touch `from`", () => {
+        const c = [{ from: "2026-06-02T10:00:00Z", to: "2026-06-02T11:00:00Z" }];
+        expect(trimCoveredPrefix(c, "2026-06-02T00:00:00Z", "2026-06-03T00:00:00Z")).toBe("2026-06-02T00:00:00Z");
     });
 });
 
