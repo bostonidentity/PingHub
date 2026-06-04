@@ -82,24 +82,58 @@ describe("runLogPull", () => {
         expect(fetchFn).toHaveBeenCalledTimes(2);
     });
 
-    it("dedupes on a re-pull of the same window (stored 0, range unchanged)", async () => {
+    it("skips a source whose window is already fully covered (no re-fetch)", async () => {
         const root = tmpEnvsRoot();
         const reg = createLogRegistry(root);
-
         const pages = () => pagingFetch([
             { result: [logEntry("a", "2026-06-02T01:00:00Z")], pagedResultsCookie: null },
         ]);
-
         const job1 = reg.startJob("prod", ["am-authentication"], FROM, TO);
         await runLogPull({ ...baseOpts(root), job: job1, registry: reg, fetchFn: pages() });
-        reg.setJobStatus(job1.id, "completed"); // ensure terminal so a 2nd job is allowed
+        reg.setJobStatus(job1.id, "completed");
 
         const job2 = reg.startJob("prod", ["am-authentication"], FROM, TO);
-        await runLogPull({ ...baseOpts(root), job: job2, registry: reg, fetchFn: pages() });
+        const fetch2 = pages();
+        await runLogPull({ ...baseOpts(root), job: job2, registry: reg, fetchFn: fetch2 });
 
-        expect(reg.getJob(job2.id)!.progress[0]).toMatchObject({ fetched: 1, stored: 0 });
+        expect(fetch2).not.toHaveBeenCalled();                       // already covered → no re-fetch
+        expect(reg.getJob(job2.id)!.progress[0].status).toBe("done");
         const stored = readRange(baseOpts(root).archiveRoot, "am-authentication", FROM, TO);
-        expect(stored).toHaveLength(1); // not duplicated
+        expect(stored).toHaveLength(1);                              // not duplicated
+    });
+
+    it("records lastTimestamp/lastMessage and extends coverage incrementally", async () => {
+        const root = tmpEnvsRoot();
+        const reg = createLogRegistry(root);
+        const job = reg.startJob("prod", ["am-authentication"], FROM, TO);
+        const fetchFn = pagingFetch([
+            { result: [logEntry("a", "2026-06-02T01:00:00Z"), logEntry("b", "2026-06-02T02:00:00Z")], pagedResultsCookie: "c2" },
+            { result: [logEntry("c", "2026-06-02T03:00:00Z")], pagedResultsCookie: null },
+        ]);
+        await runLogPull({ ...baseOpts(root), job, registry: reg, fetchFn });
+        const p = reg.getJob(job.id)!.progress[0];
+        expect(p.lastTimestamp).toBe("2026-06-02T03:00:00Z");
+        expect(typeof p.lastMessage).toBe("string");
+        const manifest = readManifest(baseOpts(root).archiveRoot);
+        expect(manifest.sources["am-authentication"].coveredRanges).toEqual([{ from: FROM, to: TO }]);
+    });
+
+    it("resumes from the uncovered point after a prior partial window", async () => {
+        const root = tmpEnvsRoot();
+        const reg = createLogRegistry(root);
+        // First job covers [FROM, 2026-06-02T02:00:00Z]
+        const j1 = reg.startJob("prod", ["am-authentication"], FROM, "2026-06-02T02:00:00Z");
+        await runLogPull({ ...baseOpts(root), job: j1, registry: reg, fetchFn: pagingFetch([
+            { result: [logEntry("a", "2026-06-02T01:00:00Z")], pagedResultsCookie: null },
+        ]) });
+        reg.setJobStatus(j1.id, "completed");
+        // Second job extends to TO — should begin at the covered prefix end.
+        const j2 = reg.startJob("prod", ["am-authentication"], FROM, TO);
+        const seen: string[] = [];
+        const fetchFn = vi.fn(async (url: RequestInfo | URL) => { seen.push(String(url)); return jsonRes({ result: [logEntry("z", "2026-06-02T05:00:00Z")], pagedResultsCookie: null }); });
+        await runLogPull({ ...baseOpts(root), job: j2, registry: reg, fetchFn });
+        expect(seen[0]).toContain(`beginTime=${encodeURIComponent("2026-06-02T02:00:00Z")}`);
+        expect(reg.getJob(j2.id)!.progress[0].status).toBe("done");
     });
 
     it("marks a source failed on a non-2xx page and still completes the job", async () => {

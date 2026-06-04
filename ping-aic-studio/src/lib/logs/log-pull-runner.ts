@@ -1,6 +1,6 @@
 import v8 from "node:v8";
 import { appendEntries } from "./log-archive-store";
-import { readManifest, writeManifest, addCoveredRange } from "./manifest";
+import { readManifest, writeManifest, addCoveredRange, trimCoveredPrefix } from "./manifest";
 import { fetchLogPage, paceDelayMs } from "./log-fetch";
 import type { LogPullJob } from "./log-job-types";
 import type { LogRegistry } from "./log-job-registry";
@@ -8,6 +8,19 @@ import type { RawLogEntry } from "./log-types";
 
 const DEFAULT_PAGE_SIZE = 1000;
 const DEFAULT_HEAP_SUSPEND_FRACTION = 0.7;
+
+/** A short, single-line summary of an event for the progress display. */
+function summarizeEntry(entry: { payload?: unknown }): string {
+    const p = entry?.payload;
+    if (typeof p === "string") return p.slice(0, 120);
+    if (p && typeof p === "object") {
+        const o = p as Record<string, unknown>;
+        const parts = [o.eventName, o.result].filter((v): v is string => typeof v === "string" && v.length > 0);
+        if (parts.length) return parts.join(" · ").slice(0, 120);
+        if (typeof o.message === "string") return o.message.slice(0, 120);
+    }
+    return "";
+}
 
 function heapUnderPressure(fraction: number): boolean {
     const { heap_size_limit, used_heap_size } = v8.getHeapStatistics();
@@ -89,6 +102,14 @@ export async function runLogPull(opts: RunLogPullOpts): Promise<void> {
 
         registry.updateProgress(job.id, source, { status: "running" });
 
+        // Skip the already-covered contiguous prefix of [from,to]. Fully covered → done.
+        const coverage0 = readManifest(archiveRoot).sources[source]?.coveredRanges ?? [];
+        const effFrom = trimCoveredPrefix(coverage0, job.from, job.to);
+        if (effFrom === null) {
+            registry.updateProgress(job.id, source, { status: "done" });
+            continue;
+        }
+
         let cookie: string | null = progress?.cookie ?? null;
         let fetched = progress?.fetched ?? 0;
         let stored = progress?.stored ?? 0;
@@ -101,7 +122,7 @@ export async function runLogPull(opts: RunLogPullOpts): Promise<void> {
 
                 const params = new URLSearchParams({
                     source,
-                    beginTime: job.from,
+                    beginTime: effFrom,
                     endTime: job.to,
                     _pageSize: String(pageSize),
                 });
@@ -125,7 +146,17 @@ export async function runLogPull(opts: RunLogPullOpts): Promise<void> {
                 fetched += entries.length;
                 stored += appended.inserted;
                 cookie = data.pagedResultsCookie ?? null;
-                registry.updateProgress(job.id, source, { fetched, stored, cookie });
+                const last = entries.length ? entries[entries.length - 1] : undefined;
+                const lastTs = typeof last?.timestamp === "string" ? last.timestamp : undefined;
+                const lastMessage = last ? summarizeEntry(last) : undefined;
+                // Extend coverage up to the last stored event (events arrive ascending).
+                if (lastTs) {
+                    try {
+                        const m = readManifest(archiveRoot);
+                        writeManifest(archiveRoot, addCoveredRange(m, source, { from: job.from, to: lastTs }));
+                    } catch { /* manifest write best-effort; completion write below is the backstop */ }
+                }
+                registry.updateProgress(job.id, source, { fetched, stored, cookie, lastTimestamp: lastTs, lastMessage });
 
                 if (!cookie) break; // source exhausted
 

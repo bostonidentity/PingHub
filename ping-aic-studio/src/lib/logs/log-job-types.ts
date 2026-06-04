@@ -19,6 +19,10 @@ export interface LogSourceProgress {
     /** Last persisted pagedResultsCookie. null = source exhausted; undefined = not started. */
     cookie?: string | null;
     error?: string;
+    /** Timestamp of the most recently stored event (live progress display). */
+    lastTimestamp?: string;
+    /** Short summary of the most recent event (eventName·result, or raw text). */
+    lastMessage?: string;
 }
 
 export interface LogPullJob {
