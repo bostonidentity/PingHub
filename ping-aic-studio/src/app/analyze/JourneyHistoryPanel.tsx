@@ -43,6 +43,8 @@ type ScanReport = JourneyHistoryReport & {
     pagesFetched?: number;
     rawFetched?: number;
     topEventNames?: { name: string; count: number }[];
+    source?: "live" | "archive";
+    coverage?: "full" | "partial" | "none";
 };
 
 const num = (n: number) => n.toLocaleString();
@@ -109,6 +111,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     const [treeName, setTreeName] = useState("");
     const [scope, setScope] = useState<ScopeFilter>("outer");
     const [maxEvents, setMaxEvents] = useState(20000);
+    const [dataSource, setDataSource] = useState<"live" | "archive">("live");
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [report, setReport] = useState<ScanReport | null>(null);
@@ -134,6 +137,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                     to: localToIso(to),
                     treeName: treeName.trim() || undefined,
                     maxEvents,
+                    source: dataSource,
                 }),
             });
             // Validation failures come back as a plain JSON error with a non-2xx
@@ -293,6 +297,17 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                         </select>
                     </label>
                     <label className="text-sm">
+                        <span className="block text-slate-600 mb-1">Source</span>
+                        <select
+                            value={dataSource}
+                            onChange={(e) => setDataSource(e.target.value as "live" | "archive")}
+                            className="rounded border border-slate-300 px-2 py-1.5 bg-white"
+                        >
+                            <option value="live">Live (AIC)</option>
+                            <option value="archive">Local archive</option>
+                        </select>
+                    </label>
+                    <label className="text-sm">
                         <span className="block text-slate-600 mb-1">Max events</span>
                         <input type="number" min={100} max={100000} step={1000} value={maxEvents}
                             onChange={(e) => setMaxEvents(Number(e.target.value) || 20000)}
@@ -329,6 +344,15 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
 
             {report && scopedSummary ? (
                 <>
+                    {report.source === "archive" && report.coverage && report.coverage !== "full" ? (
+                        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                            {report.coverage === "none"
+                                ? "This window isn't in the local archive yet — run a log pull for this range, or switch Source to Live (AIC)."
+                                : "The local archive only partially covers this window — results may be incomplete. Pull the missing range, or switch to Live (AIC)."}
+                        </div>
+                    ) : report.source === "archive" ? (
+                        <div className="text-xs text-slate-500">Served from the local archive.</div>
+                    ) : null}
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                         <Stat label="Attempts" value={scopedSummary.attempts} />
                         <Stat label="Success" value={scopedSummary.success} tone="emerald"
