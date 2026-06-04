@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PullPanel } from "./PullPanel";
 import { LogPullView } from "./LogPullView";
+import { getFocus, subscribeFocus } from "./job-focus";
 import type { Environment } from "@/lib/fr-config";
 
 export function PullSwitcher({
@@ -12,7 +13,14 @@ export function PullSwitcher({
     environments: Environment[];
     typesByEnv: Record<string, string[]>;
 }) {
-    const [mode, setMode] = useState<"managed" | "logs">("managed");
+    // Initialize from any pending focus target (set by the unfinished-jobs panel
+    // before it navigated here) so a cross-route click lands on the right view
+    // without a flash. Read during render — before child effects can clear it.
+    const [mode, setMode] = useState<"managed" | "logs">(() => getFocus()?.mode ?? "managed");
+
+    // Same-route clicks: switch the toggle when a new focus target arrives.
+    useEffect(() => subscribeFocus((f) => setMode(f.mode)), []);
+
     return (
         <div className="space-y-4">
             <div className="inline-flex rounded-md border border-slate-300 overflow-hidden text-sm">

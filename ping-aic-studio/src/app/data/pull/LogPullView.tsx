@@ -3,7 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLogPullJobs } from "@/hooks/useLogPullJobs";
 import { JobCard, type JobCardModel } from "./JobCard";
+import { getFocus, subscribeFocus, clearFocus, type PullFocus } from "./job-focus";
+import { cn } from "@/lib/utils";
 import { DEFAULT_LOG_SOURCES } from "@/lib/logs/log-sources";
+import { timeCoverageFraction } from "@/lib/logs/log-progress";
 import type { LogArchiveManifest } from "@/lib/logs/log-types";
 import type { LogPullJob } from "@/lib/logs/log-job-types";
 
@@ -21,7 +24,11 @@ function defaultWindow(): { from: string; to: string } {
 const localToIso = (s: string) => new Date(s).toISOString();
 const ACTIVE_STATUSES = ["queued", "running", "aborting", "suspending", "suspended", "interrupted"];
 
-/** Map a LogPullJob to the generalized JobCard model (no total → no bar; show stored). */
+/**
+ * Map a LogPullJob to the generalized JobCard model. Logs have no count total,
+ * so the bar uses time-window coverage (how far the last stored event advanced
+ * through [from, to]); the number column shows deduped `stored`.
+ */
 function toLogModel(job: LogPullJob): JobCardModel {
     return {
         id: job.id,
@@ -29,14 +36,16 @@ function toLogModel(job: LogPullJob): JobCardModel {
         status: job.status,
         startedAt: job.startedAt,
         fatalError: job.fatalError,
+        kind: "logs",
         progress: job.progress.map((p) => {
             const live = p.status === "running" && p.lastTimestamp
                 ? `${new Date(p.lastTimestamp).toLocaleTimeString()} · ${p.lastMessage ?? ""}`.trim()
-                : `${p.stored.toLocaleString()} stored`;
+                : undefined;
             return {
                 label: p.source,
-                fetched: p.fetched,
+                fetched: p.stored,
                 expected: null,
+                coverage: timeCoverageFraction(job.from, job.to, p.lastTimestamp, p.status),
                 status: p.status,
                 error: p.error,
                 detail: live,
@@ -59,6 +68,24 @@ export function LogPullView({ environments }: { environments: { name: string; la
 
     const envJobs = useMemo(() => jobs.filter((j) => j.env === env), [jobs, env]);
     const active = useMemo(() => envJobs.find((j) => ACTIVE_STATUSES.includes(j.status)), [envJobs]);
+
+    // "Go to this job" from the unfinished-jobs panel: select the job's env (the
+    // list below is env-filtered) and briefly highlight the target card.
+    const [focusedJobId, setFocusedJobId] = useState<string | null>(null);
+    useEffect(() => {
+        const act = (f: PullFocus) => { if (f.mode !== "logs") return; setEnv(f.env); setFocusedJobId(f.jobId); };
+        const pending = getFocus();
+        if (pending) { act(pending); clearFocus(); }
+        return subscribeFocus(act);
+    }, []);
+    useEffect(() => {
+        if (!focusedJobId) return;
+        const el = document.getElementById(`job-${focusedJobId}`);
+        if (!el) return;
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        const t = setTimeout(() => setFocusedJobId(null), 2500);
+        return () => clearTimeout(t);
+    }, [focusedJobId, envJobs]);
 
     const terminalCount = envJobs.filter((j) => ["completed", "failed", "aborted"].includes(j.status)).length;
     useEffect(() => {
@@ -161,13 +188,21 @@ export function LogPullView({ environments }: { environments: { name: string; la
                     <p className="text-xs text-slate-400 italic">No pulls yet for this environment.</p>
                 ) : (
                     envJobs.map((j) => (
-                        <JobCard
+                        <div
                             key={j.id}
-                            model={toLogModel(j)}
-                            onSuspend={() => suspend(j.id)}
-                            onResume={() => resume(j.id)}
-                            onAbort={() => abort(j.id)}
-                        />
+                            id={`job-${j.id}`}
+                            className={cn(
+                                "rounded-xl transition-shadow",
+                                focusedJobId === j.id && "ring-2 ring-indigo-400 ring-offset-2 ring-offset-slate-50",
+                            )}
+                        >
+                            <JobCard
+                                model={toLogModel(j)}
+                                onSuspend={() => suspend(j.id)}
+                                onResume={() => resume(j.id)}
+                                onAbort={() => abort(j.id)}
+                            />
+                        </div>
                     ))
                 )}
             </div>

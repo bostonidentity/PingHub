@@ -3,6 +3,7 @@
 
 import type { DataPullJob } from "@/lib/data/types";
 import { cn } from "@/lib/utils";
+import { computeOverall } from "./job-progress";
 
 export type JobCardStatus = DataPullJob["status"];
 
@@ -10,13 +11,19 @@ export interface JobCardRow {
   /** Type (managed) or source (logs). */
   label: string;
   fetched: number;
-  /** Known denominator → progress bar + ETA. null → no bar (e.g. logs have no total). */
+  /** Count denominator → "x / y" label + ETA. null → no count total (e.g. logs). */
   expected: number | null;
   /** Marks the expected value as probe-sourced (managed only) → renders a `*`. */
   expectedFromProbe?: boolean;
+  /**
+   * Progress fraction (0..1) for the BAR when it isn't count-based — logs use
+   * time-window coverage here since they have no count total. When omitted, the
+   * bar is derived from fetched/expected. null = indeterminate (show a sweep).
+   */
+  coverage?: number | null;
   status: "pending" | "running" | "done" | "failed";
   error?: string;
-  /** Extra inline note shown when there's no bar (e.g. "8,001 stored" for logs). */
+  /** Extra inline note shown under the bar (e.g. live "9:49 AM · EVENT" for logs). */
   detail?: string;
 }
 
@@ -26,6 +33,8 @@ export interface JobCardModel {
   status: JobCardStatus;
   startedAt: number;
   fatalError?: string;
+  /** Pull kind — drives overall-progress math and the count/unit nouns. */
+  kind: "managed" | "logs";
   progress: JobCardRow[];
 }
 
@@ -102,6 +111,15 @@ export function JobCard({
     ? totalFetched / (elapsedMs / 1000)
     : null;
 
+  // Overall progress (shown for multi-unit jobs): mean coverage for logs,
+  // Σfetched/Σtotal for managed, done/total fallback when a total is unknown.
+  const overall = computeOverall(model.kind, model.progress);
+  const showOverall = overall.totalUnits > 1;
+  const countNoun = model.kind === "logs" ? "events" : "records";
+  const unitNoun = model.kind === "logs" ? "sources" : "types";
+  const allDone = overall.doneUnits === overall.totalUnits;
+  const overallBar = allDone ? "bg-emerald-500" : "bg-gradient-to-r from-sky-400 to-sky-600";
+
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
       <div className="flex items-center gap-3 flex-wrap">
@@ -144,6 +162,29 @@ export function JobCard({
           )}
         </div>
       </div>
+      {showOverall && (
+        <div className="space-y-1">
+          <div className="flex items-baseline gap-2 text-xs">
+            <span className="tabular-nums font-semibold text-slate-700">{overall.count.toLocaleString()}</span>
+            <span className="text-slate-500">{countNoun}</span>
+            <span className="text-slate-300">·</span>
+            <span className="text-slate-500 tabular-nums">{overall.doneUnits}/{overall.totalUnits} {unitNoun}</span>
+            {overall.pct !== null && (
+              <span
+                className="ml-auto tabular-nums font-semibold text-sky-700"
+                title={overall.exact ? undefined : "Estimated from units completed (a source/type total is unknown)"}
+              >
+                {overall.pct}%{overall.exact ? "" : "≈"}
+              </span>
+            )}
+          </div>
+          <div className="h-1.5 bg-slate-100 rounded overflow-hidden">
+            {overall.pct !== null && (
+              <div className={cn("h-full rounded transition-[width] duration-500", overallBar)} style={{ width: `${overall.pct}%` }} />
+            )}
+          </div>
+        </div>
+      )}
       {model.fatalError && (
         <div className={cn(
           "px-2 py-1.5 border text-xs rounded font-mono break-all",
@@ -156,25 +197,31 @@ export function JobCard({
       )}
       <div className="space-y-1">
         {model.progress.map((p) => {
-          const pct = p.expected !== null && p.expected > 0
-            ? Math.min(100, Math.round((p.fetched / p.expected) * 100))
-            : null;
+          // Bar fraction: done → full; explicit coverage (logs use time-window
+          // coverage); else count-based fetched/expected; else null. A null bar
+          // on an active row renders an indeterminate sweep instead of empty.
+          const barPct =
+            p.status === "done" ? 100
+              : p.coverage != null ? Math.min(100, Math.max(0, Math.round(p.coverage * 100)))
+                : (p.expected !== null && p.expected > 0) ? Math.min(100, Math.round((p.fetched / p.expected) * 100))
+                  : null;
+          const barColor = p.status === "failed" ? "bg-rose-400" : p.status === "done" ? "bg-emerald-500" : "bg-sky-500";
+          const indeterminate = barPct === null && p.status === "running";
+          const barTitle = p.expected === null && p.coverage != null ? "time window covered" : undefined;
           return (
             <div key={p.label} className="space-y-0.5">
               <div className="flex items-center gap-2 text-xs">
                 <span className="font-mono text-slate-700 w-40 truncate" title={p.label}>{p.label}</span>
-                {p.expected !== null ? (
-                  <div className="flex-1 h-1.5 bg-slate-100 rounded overflow-hidden">
-                    {pct !== null && (
-                      <div
-                        className={cn("h-full", p.status === "failed" ? "bg-rose-400" : "bg-sky-500")}
-                        style={{ width: `${pct}%` }}
-                      />
-                    )}
-                  </div>
-                ) : (
-                  <span className="flex-1 text-[10px] text-slate-400 truncate">{p.detail ?? ""}</span>
-                )}
+                <div className="flex-1 h-1.5 bg-slate-100 rounded overflow-hidden" title={barTitle}>
+                  {barPct !== null ? (
+                    <div
+                      className={cn("h-full rounded transition-[width] duration-500", barColor)}
+                      style={{ width: `${barPct}%` }}
+                    />
+                  ) : indeterminate ? (
+                    <div className="h-full w-1/5 bg-sky-500 rounded-full animate-progress-slide" />
+                  ) : null}
+                </div>
                 <span
                   className="text-slate-500 tabular-nums w-28 text-right"
                   title={p.expectedFromProbe ? "Denominator from the Probe counts value" : undefined}
@@ -186,6 +233,9 @@ export function JobCard({
                   {p.status}
                 </span>
               </div>
+              {p.detail && p.status !== "failed" && (
+                <div className="ml-40 pl-2 text-[10px] text-slate-400 truncate" title={p.detail}>{p.detail}</div>
+              )}
               {p.status === "failed" && p.error && (
                 <div className="ml-40 pl-2 text-[11px] text-rose-700 bg-rose-50 border-l-2 border-rose-300 px-2 py-1 rounded-r font-mono break-all">
                   {p.error}

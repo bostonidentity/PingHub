@@ -1,5 +1,27 @@
 const DEFAULT_MAX_RETRIES = 6;
 const MAX_BACKOFF_MS = 30_000;
+
+/** Each throughput 429 raises the caller's inter-page pacing floor by this much. */
+export const AUTO_BUMP_MS = 150;
+/** Ceiling for the adaptive pacing floor (mirrors the Logs tab's 5s cap). */
+export const MAX_BUMP_MS = 5_000;
+
+// AIC returns 429 for two unrelated reasons: a per-minute throughput rate-limit
+// (retriable) and a per-tenant 24-hour log-volume cap (NOT retriable — only a
+// smaller request clears it). Same phrasing the Logs-tab worker keys on.
+const VOLUME_QUOTA_RE = /more log data than permitted|log.*quota|exceeded.*log/i;
+
+/** True when a 429 body indicates AIC's per-tenant log-volume cap. Retrying or
+ *  slowing down cannot clear it — the only fix is a smaller request. */
+export function isVolumeQuota429(bodyText: string): boolean {
+    return VOLUME_QUOTA_RE.test(bodyText);
+}
+
+/** Actionable error for a volume-quota 429 — surfaced in place of a raw "HTTP 429". */
+export const VOLUME_QUOTA_MESSAGE =
+    'AIC log-volume quota hit (HTTP 429: "more log data than permitted") — a per-tenant ' +
+    "24-hour download cap, not a per-minute rate limit, so retrying or pacing will not help. " +
+    "Narrow the request: shorten the time range, deselect some sources, or pull a smaller window.";
 /**
  * Pace proactively once remaining headroom drops to this many requests. At 1 we
  * deliberately sacrifice the last slot to absorb clock skew between us and AIC's
@@ -27,6 +49,10 @@ export interface FetchLogPageOpts {
  * Fetch one page, retrying on HTTP 429. Honors a `Retry-After` header (seconds);
  * otherwise backs off exponentially (1s·2^attempt, capped). After `maxRetries`
  * exhausted retries it returns the last (429) response so the caller can decide.
+ *
+ * A *volume-quota* 429 (per-tenant 24h cap) is terminal — it short-circuits with
+ * no retries, since neither backoff nor pacing can clear it. Only *throughput*
+ * 429s are retried (and reported via `onThrottle` so the caller can slow down).
  */
 export async function fetchLogPage(
     url: string,
@@ -41,6 +67,10 @@ export async function fetchLogPage(
     for (;;) {
         const res = await fetchFn(url, { headers, signal: opts.signal });
         if (res.status !== 429) return res;
+        // Peek a clone so the caller can still read the original body. A
+        // volume-quota 429 is terminal — return it immediately, unretried.
+        const peek = await res.clone().text().catch(() => "");
+        if (isVolumeQuota429(peek)) return res;
         attempt++;
         if (attempt > maxRetries) return res;
         // AIC sends numeric seconds per the timing baseline. An HTTP-date Retry-After

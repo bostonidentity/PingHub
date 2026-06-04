@@ -1,7 +1,7 @@
 import v8 from "node:v8";
 import { appendEntries } from "./log-archive-store";
 import { readManifest, writeManifest, addCoveredRange, trimCoveredPrefix } from "./manifest";
-import { fetchLogPage, paceDelayMs } from "./log-fetch";
+import { fetchLogPage, paceDelayMs, isVolumeQuota429, VOLUME_QUOTA_MESSAGE, AUTO_BUMP_MS, MAX_BUMP_MS } from "./log-fetch";
 import type { LogPullJob } from "./log-job-types";
 import type { LogRegistry } from "./log-job-registry";
 import type { RawLogEntry } from "./log-types";
@@ -95,6 +95,12 @@ export async function runLogPull(opts: RunLogPullOpts): Promise<void> {
     }
     registry.setJobStatus(job.id, "running");
 
+    // Adaptive inter-page pacing floor: every throughput 429 (across any source)
+    // raises it by AUTO_BUMP_MS so subsequent pages slow down and (hopefully)
+    // stop tripping the limit — mirrors the Logs tab. Capped at MAX_BUMP_MS.
+    let bumpFloorMs = 0;
+    const onThrottle = () => { bumpFloorMs = Math.min(MAX_BUMP_MS, bumpFloorMs + AUTO_BUMP_MS); };
+
     for (const source of job.sources) {
         if (signal.aborted) break;
         const progress = job.progress.find((p) => p.source === source);
@@ -129,13 +135,15 @@ export async function runLogPull(opts: RunLogPullOpts): Promise<void> {
                 if (cookie) params.set("_pagedResultsCookie", cookie);
                 const url = `${base}/monitoring/logs?${params}`;
 
-                const res = await fetchLogPage(url, headers, { fetchFn, signal, sleepFn });
+                const res = await fetchLogPage(url, headers, { fetchFn, signal, sleepFn, onThrottle });
                 if (!res.ok) {
                     const body = await res.text().catch(() => "");
-                    registry.updateProgress(job.id, source, {
-                        status: "failed",
-                        error: `HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`,
-                    });
+                    // A volume-quota 429 gets the actionable "narrow your request"
+                    // message; everything else surfaces the raw status + body.
+                    const error = res.status === 429 && isVolumeQuota429(body)
+                        ? VOLUME_QUOTA_MESSAGE
+                        : `HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`;
+                    registry.updateProgress(job.id, source, { status: "failed", error });
                     sourceFailed = true;
                     break;
                 }
@@ -161,7 +169,9 @@ export async function runLogPull(opts: RunLogPullOpts): Promise<void> {
                 if (!cookie) break; // source exhausted
 
                 // Pace to stay under the rate limit, then check heap pressure.
-                const wait = paceDelayMs(res, nowMs());
+                // Take the larger of header-based pacing and the adaptive floor
+                // that prior 429s have raised.
+                const wait = Math.max(paceDelayMs(res, nowMs()), bumpFloorMs);
                 if (wait > 0) await sleepFn(wait, signal);
                 if (heapPressureFn()) {
                     // Persist as the stable, resumable paused state — the cookie was

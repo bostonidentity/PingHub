@@ -1,16 +1,19 @@
 import { describe, it, expect, vi } from "vitest";
-import { fetchLogPage, paceDelayMs } from "./log-fetch";
+import { fetchLogPage, paceDelayMs, isVolumeQuota429 } from "./log-fetch";
 
-/** Minimal Response stub with just the surface log-fetch reads. */
-function res(status: number, headers: Record<string, string> = {}): Response {
+/** Minimal Response stub with just the surface log-fetch reads. `body` backs
+ *  both text() and clone().text() (a constant string is trivially re-readable). */
+function res(status: number, headers: Record<string, string> = {}, body = ""): Response {
     const lower: Record<string, string> = {};
     for (const [k, v] of Object.entries(headers)) lower[k.toLowerCase()] = v;
-    return {
+    const r = {
         status,
         ok: status >= 200 && status < 300,
         headers: { get: (k: string) => lower[k.toLowerCase()] ?? null },
-        text: async () => "",
-    } as unknown as Response;
+        text: async () => body,
+        clone: () => r,
+    };
+    return r as unknown as Response;
 }
 
 describe("fetchLogPage", () => {
@@ -64,6 +67,26 @@ describe("fetchLogPage", () => {
         expect(throttles).toEqual([[3000, 1]]);
     });
 
+    it("does NOT retry a volume-quota 429 — it is terminal", async () => {
+        const fetchFn = vi.fn().mockResolvedValue(
+            res(429, {}, JSON.stringify({ message: "Request would return more log data than permitted" })),
+        );
+        const sleeps: number[] = [];
+        const r = await fetchLogPage("http://x", {}, { fetchFn, sleepFn: async (ms) => { sleeps.push(ms); } });
+        expect(r.status).toBe(429);
+        expect(fetchFn).toHaveBeenCalledTimes(1); // short-circuited, no retries
+        expect(sleeps).toEqual([]);               // never backed off
+    });
+
+    it("still retries a throughput 429 whose body is not a quota error", async () => {
+        const fetchFn = vi.fn()
+            .mockResolvedValueOnce(res(429, {}, "too many requests"))
+            .mockResolvedValueOnce(res(200));
+        const r = await fetchLogPage("http://x", {}, { fetchFn, sleepFn: async () => {} });
+        expect(r.status).toBe(200);
+        expect(fetchFn).toHaveBeenCalledTimes(2);
+    });
+
     it("resolves the backoff sleep early when the signal aborts (default sleep)", async () => {
         const ac = new AbortController();
         const fetchFn = vi.fn().mockResolvedValue(res(429, { "retry-after": "300" }));
@@ -71,6 +94,18 @@ describe("fetchLogPage", () => {
         setTimeout(() => ac.abort(), 5);
         const r = await fetchLogPage("http://x", {}, { fetchFn, signal: ac.signal, maxRetries: 1 });
         expect(r.status).toBe(429); // gave up after maxRetries, but did NOT hang for 300s
+    });
+});
+
+describe("isVolumeQuota429", () => {
+    it("matches the AIC log-volume cap phrasings", () => {
+        expect(isVolumeQuota429("Request would return more log data than permitted")).toBe(true);
+        expect(isVolumeQuota429("log quota exceeded for this window")).toBe(true);
+        expect(isVolumeQuota429("you have exceeded the log download limit")).toBe(true);
+    });
+    it("does not match a plain throughput rate-limit body", () => {
+        expect(isVolumeQuota429("Too Many Requests")).toBe(false);
+        expect(isVolumeQuota429("")).toBe(false);
     });
 });
 

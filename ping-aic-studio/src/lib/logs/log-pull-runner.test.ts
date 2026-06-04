@@ -155,6 +155,49 @@ describe("runLogPull", () => {
         expect(j.progress[0].error).toContain("500");
     });
 
+    it("marks a source failed with an actionable message (no retries) on a volume-quota 429", async () => {
+        const root = tmpEnvsRoot();
+        const reg = createLogRegistry(root);
+        const job = reg.startJob("prod", ["am-authentication"], FROM, TO);
+        const fetchFn = vi.fn(async () => ({
+            status: 429, ok: false,
+            headers: { get: () => null },
+            text: async () => JSON.stringify({ message: "Request would return more log data than permitted" }),
+            json: async () => ({}),
+            clone() { return this; },
+        } as unknown as Response));
+
+        await runLogPull({ ...baseOpts(root), job, registry: reg, fetchFn });
+
+        const j = reg.getJob(job.id)!;
+        expect(j.status).toBe("completed");
+        expect(j.progress[0].status).toBe("failed");
+        expect(j.progress[0].error).toMatch(/quota/i);     // actionable, not a raw "HTTP 429"
+        expect(fetchFn).toHaveBeenCalledTimes(1);           // terminal — no wasted retries
+    });
+
+    it("auto-bumps the inter-page pacing floor after a throughput 429", async () => {
+        const root = tmpEnvsRoot();
+        const reg = createLogRegistry(root);
+        const job = reg.startJob("prod", ["am-authentication"], FROM, TO);
+        // Page 1 throughput-429s once, retries to a 200 (cookie c2); page 2 ends.
+        let call = 0;
+        const fetchFn = vi.fn(async () => {
+            call++;
+            if (call === 1) return { status: 429, ok: false, headers: { get: () => null }, text: async () => "Too Many Requests", json: async () => ({}), clone() { return this; } } as unknown as Response;
+            if (call === 2) return jsonRes({ result: [logEntry("a", "2026-06-02T01:00:00Z")], pagedResultsCookie: "c2" });
+            return jsonRes({ result: [logEntry("b", "2026-06-02T02:00:00Z")], pagedResultsCookie: null });
+        });
+        const sleeps: number[] = [];
+        const sleepFn = async (ms: number) => { sleeps.push(ms); };
+
+        await runLogPull({ ...baseOpts(root), job, registry: reg, fetchFn, sleepFn });
+
+        expect(reg.getJob(job.id)!.status).toBe("completed");
+        // The 429 raised the floor by AUTO_BUMP_MS (150); it is applied between pages.
+        expect(sleeps).toContain(150);
+    });
+
     it("does nothing and marks aborted when the signal is already aborted", async () => {
         const root = tmpEnvsRoot();
         const reg = createLogRegistry(root);
