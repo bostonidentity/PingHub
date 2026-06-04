@@ -36,6 +36,68 @@ function Stat({ label, value, sub, tone = "slate" }: { label: string; value: num
     );
 }
 
+type ScanReport = JourneyHistoryReport & {
+    window?: { from: string; to: string };
+    env?: string;
+    eventsFetched?: number;
+    pagesFetched?: number;
+    rawFetched?: number;
+    topEventNames?: { name: string; count: number }[];
+};
+
+const num = (n: number) => n.toLocaleString();
+
+function fmtWindowTs(iso: string): string {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+}
+
+/** Always-available breakdown of what AIC returned for this run. */
+function ScanDetails({ report, defaultOpen }: { report: ScanReport; defaultOpen: boolean }) {
+    const matched = report.eventsFetched ?? report.summary.eventsProcessed;
+    const raw = report.rawFetched;
+    const dropped = typeof raw === "number" ? Math.max(0, raw - matched) : undefined;
+    const items: { label: string; value: string }[] = [
+        ...(report.window ? [{ label: "Window", value: `${fmtWindowTs(report.window.from)} → ${fmtWindowTs(report.window.to)}` }] : []),
+        { label: "Pages fetched", value: num(report.pagesFetched ?? 0) },
+        ...(typeof raw === "number" ? [{ label: "Raw events from AIC", value: num(raw) }] : []),
+        { label: "Journey events kept", value: num(matched) },
+        ...(typeof dropped === "number" ? [{ label: "Dropped (non-journey)", value: num(dropped) }] : []),
+        { label: "Attempts reconstructed", value: num(report.summary.attempts) },
+        { label: "Distinct transactions", value: num(report.summary.transactions) },
+        { label: "Status", value: report.truncated ? "TRUNCATED — raise Max events or narrow window" : "Complete" },
+    ];
+    return (
+        <details open={defaultOpen} className="rounded-md border border-slate-200 bg-white text-sm">
+            <summary className="cursor-pointer select-none px-4 py-2 font-medium text-slate-700 hover:bg-slate-50">
+                Scan details
+            </summary>
+            <div className="space-y-3 px-4 pb-3 pt-1">
+                <dl className="grid grid-cols-2 gap-x-6 gap-y-1.5 md:grid-cols-3">
+                    {items.map((it) => (
+                        <div key={it.label} className="flex flex-col">
+                            <dt className="text-xs uppercase tracking-wide text-slate-500">{it.label}</dt>
+                            <dd className={`font-mono ${report.truncated && it.label === "Status" ? "text-amber-700" : "text-slate-800"}`}>{it.value}</dd>
+                        </div>
+                    ))}
+                </dl>
+                {report.topEventNames && report.topEventNames.length > 0 ? (
+                    <div>
+                        <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            Event names observed ({report.topEventNames.length})
+                        </div>
+                        <ul className="font-mono text-[11px] text-slate-700">
+                            {report.topEventNames.map((e) => (
+                                <li key={e.name}>{num(e.count).padStart(7)}  {e.name}</li>
+                            ))}
+                        </ul>
+                    </div>
+                ) : null}
+            </div>
+        </details>
+    );
+}
+
 type AttemptFilter = "all" | "fail" | "incomplete";
 type ScopeFilter = "outer" | "inner" | "all";
 
@@ -49,8 +111,9 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     const [maxEvents, setMaxEvents] = useState(20000);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [report, setReport] = useState<(JourneyHistoryReport & { window?: { from: string; to: string }; env?: string; eventsFetched?: number; pagesFetched?: number; rawFetched?: number; topEventNames?: { name: string; count: number }[] }) | null>(null);
+    const [report, setReport] = useState<ScanReport | null>(null);
     const [attemptFilter, setAttemptFilter] = useState<AttemptFilter>("all");
+    const [scanProgress, setScanProgress] = useState<{ page: number; rawFetched: number; matched: number } | null>(null);
 
     async function run() {
         if (!env || !from || !to) {
@@ -60,6 +123,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
         setLoading(true);
         setError(null);
         setReport(null);
+        setScanProgress(null);
         try {
             const res = await fetch("/api/analyze/journey-history", {
                 method: "POST",
@@ -72,13 +136,51 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                     maxEvents,
                 }),
             });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
-            setReport(data);
+            // Validation failures come back as a plain JSON error with a non-2xx
+            // status; a successful run streams NDJSON progress lines.
+            if (!res.ok || !res.body) {
+                let msg = `HTTP ${res.status}`;
+                try {
+                    const d = await res.json();
+                    if (d?.error) msg = d.error;
+                } catch { /* non-JSON body */ }
+                throw new Error(msg);
+            }
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buf = "";
+            let finished = false;
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buf += decoder.decode(value, { stream: true });
+                let nl: number;
+                while ((nl = buf.indexOf("\n")) >= 0) {
+                    const line = buf.slice(0, nl).trim();
+                    buf = buf.slice(nl + 1);
+                    if (!line) continue;
+                    const msg = JSON.parse(line) as
+                        | { type: "progress"; page: number; rawFetched: number; matched: number }
+                        | ({ type: "done" } & ScanReport)
+                        | { type: "error"; error: string };
+                    if (msg.type === "progress") {
+                        setScanProgress({ page: msg.page, rawFetched: msg.rawFetched, matched: msg.matched });
+                    } else if (msg.type === "error") {
+                        throw new Error(msg.error);
+                    } else if (msg.type === "done") {
+                        const { type: _t, ...rep } = msg;
+                        void _t;
+                        setReport(rep);
+                        finished = true;
+                    }
+                }
+            }
+            if (!finished) throw new Error("Scan ended without a result.");
         } catch (err) {
             setError(err instanceof Error ? err.message : String(err));
         } finally {
             setLoading(false);
+            setScanProgress(null);
         }
     }
 
@@ -213,6 +315,14 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                             Export attempts CSV
                         </button>
                     ) : null}
+                    {loading ? (
+                        <div className="flex items-center gap-2 text-sm text-slate-600">
+                            <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-300 border-t-sky-600" />
+                            {scanProgress
+                                ? <span>Scanning… page {scanProgress.page} · {scanProgress.rawFetched.toLocaleString()} raw · {scanProgress.matched.toLocaleString()} journey events</span>
+                                : <span>Starting scan…</span>}
+                        </div>
+                    ) : null}
                 </div>
                 {error ? <div className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded px-3 py-2">{error}</div> : null}
             </div>
@@ -232,26 +342,15 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                                 ? "TRUNCATED — raise Max events or narrow window"
                                 : `${report.pagesFetched ?? 0} pages${typeof report.rawFetched === "number" ? ` · raw ${report.rawFetched}` : ""}`} />
                     </div>
+                    <ScanDetails report={report} defaultOpen={report.summary.attempts === 0} />
                     {report.summary.attempts === 0 ? (
-                        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 space-y-2">
-                            <div>
-                                No journey attempts found in the window.
-                                {typeof report.rawFetched === "number" && report.rawFetched === 0
-                                    ? " AIC returned 0 raw events — check that this environment has am-authentication logs enabled, that the time range covers actual traffic, and that the Log API credentials in `environments/<env>/log-api.json` are valid."
-                                    : typeof report.rawFetched === "number" && report.rawFetched > 0
-                                        ? " AIC returned events but none had eventName AM-TREE-LOGIN-INITIATED / AM-TREE-LOGIN-COMPLETED / AM-NODE-LOGIN-COMPLETED. Your tenant may emit different event names — see the list below and let us know which ones correspond to journey start / end / node visit."
-                                        : ""}
-                            </div>
-                            {report.topEventNames && report.topEventNames.length > 0 ? (
-                                <div>
-                                    <div className="font-semibold mb-1">Top eventNames observed in this window:</div>
-                                    <ul className="font-mono text-[11px] space-y-0.5">
-                                        {report.topEventNames.map((e) => (
-                                            <li key={e.name}>{e.count.toString().padStart(6)}  {e.name}</li>
-                                        ))}
-                                    </ul>
-                                </div>
-                            ) : null}
+                        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                            No journey attempts found in the window.
+                            {typeof report.rawFetched === "number" && report.rawFetched === 0
+                                ? " AIC returned 0 raw events — check that this environment has am-authentication logs enabled, that the time range covers actual traffic, and that the Log API credentials in `environments/<env>/log-api.json` are valid."
+                                : typeof report.rawFetched === "number" && report.rawFetched > 0
+                                    ? " AIC returned events, but none were AM-TREE-LOGIN-COMPLETED (journey-end) events — which is what attempts are anchored on (AM-TREE-LOGIN-INITIATED is optional). Your tenant may emit different event names — see the event-name list in Scan details above and let us know which one marks a journey ending."
+                                    : ""}
                         </div>
                     ) : null}
 

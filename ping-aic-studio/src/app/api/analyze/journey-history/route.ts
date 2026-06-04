@@ -83,87 +83,118 @@ export async function POST(req: NextRequest) {
         return false;
     }
 
-    try {
-        while (pages < MAX_PAGES) {
-            pages++;
-            const params = new URLSearchParams({
-                source: "am-authentication",
-                beginTime: from,
-                endTime: to,
-                _queryFilter: broadFilter,
-                ...(cookie ? { _pagedResultsCookie: cookie } : {}),
-            });
-            const url = `${tenantBaseUrl}/monitoring/logs?${params}`;
-            const res = await fetch(url, { headers: authHeaders });
-            if (!res.ok) {
-                const text = await res.text();
-                return NextResponse.json({ error: `HTTP ${res.status}: ${text}` }, { status: res.status });
-            }
-            const data = (await res.json()) as {
-                result?: Array<{ timestamp?: string; payload?: unknown }>;
-                _pagedResultsCookie?: string | null;
-            };
-            const page = Array.isArray(data.result) ? data.result : [];
-            rawFetched += page.length;
-            for (const r of page) {
-                if (allEvents.length >= cap) { truncated = true; break; }
-                if (!r.timestamp) continue;
-                const payload = r.payload ?? {};
-                // Client-side narrow to journey events we care about, since
-                // server-side queryFilter is best-effort.
-                if (typeof payload === "object" && payload !== null) {
-                    const evName = (payload as Record<string, unknown>).eventName;
-                    if (typeof evName === "string") {
-                        eventNameCounts.set(evName, (eventNameCounts.get(evName) ?? 0) + 1);
+    // Stream NDJSON: one `progress` line per page fetched, then a final `done`
+    // line carrying the full report (or an `error` line). Lets the UI show a
+    // live "scanning… page N · X raw · Y journey events" counter instead of
+    // freezing on a single long request.
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+            const send = (msg: unknown) => controller.enqueue(encoder.encode(JSON.stringify(msg) + "\n"));
+            try {
+                while (pages < MAX_PAGES) {
+                    pages++;
+                    const params = new URLSearchParams({
+                        source: "am-authentication",
+                        beginTime: from,
+                        endTime: to,
+                        _queryFilter: broadFilter,
+                        ...(cookie ? { _pagedResultsCookie: cookie } : {}),
+                    });
+                    const url = `${tenantBaseUrl}/monitoring/logs?${params}`;
+                    const res = await fetch(url, { headers: authHeaders });
+                    if (!res.ok) {
+                        const text = await res.text();
+                        send({ type: "error", error: `HTTP ${res.status}: ${text}` });
+                        controller.close();
+                        return;
                     }
-                    if (typeof evName !== "string" || !wantedEventNames.has(evName)) continue;
+                    const data = (await res.json()) as {
+                        result?: Array<{ timestamp?: string; payload?: unknown }>;
+                        // CREST asymmetry: the request param is `_pagedResultsCookie`
+                        // (with underscore) but the RESPONSE field is `pagedResultsCookie`
+                        // (no underscore). Reading the wrong one silently caps results at
+                        // the first page.
+                        pagedResultsCookie?: string | null;
+                    };
+                    const page = Array.isArray(data.result) ? data.result : [];
+                    rawFetched += page.length;
+                    for (const r of page) {
+                        if (allEvents.length >= cap) { truncated = true; break; }
+                        if (!r.timestamp) continue;
+                        const payload = r.payload ?? {};
+                        // Client-side narrow to journey events we care about, since
+                        // server-side queryFilter is best-effort.
+                        if (typeof payload === "object" && payload !== null) {
+                            const evName = (payload as Record<string, unknown>).eventName;
+                            if (typeof evName === "string") {
+                                eventNameCounts.set(evName, (eventNameCounts.get(evName) ?? 0) + 1);
+                            }
+                            if (typeof evName !== "string" || !wantedEventNames.has(evName)) continue;
+                        }
+                        allEvents.push({
+                            timestamp: r.timestamp,
+                            payload: payload as RawAuthEvent["payload"],
+                        });
+                    }
+                    send({ type: "progress", page: pages, rawFetched, matched: allEvents.length, truncated });
+                    if (truncated) break;
+                    cookie = data.pagedResultsCookie ?? undefined;
+                    if (!cookie) break;
                 }
-                allEvents.push({
-                    timestamp: r.timestamp,
-                    payload: payload as RawAuthEvent["payload"],
+
+                // Apply treeName filter at the transactionId level so the analyzer
+                // still sees companion events (node visits, inner-journey pairs) for
+                // any txn that touches the named tree.
+                let analyzed = allEvents;
+                if (treeFilterLc) {
+                    const keepTxns = new Set<string>();
+                    for (const e of allEvents) {
+                        if (!matchesTreeName(e.payload)) continue;
+                        if (typeof e.payload === "object" && e.payload !== null) {
+                            const t = (e.payload as Record<string, unknown>).transactionId;
+                            if (typeof t === "string") keepTxns.add(t);
+                        }
+                    }
+                    analyzed = allEvents.filter((e) => {
+                        if (typeof e.payload !== "object" || e.payload === null) return false;
+                        const t = (e.payload as Record<string, unknown>).transactionId;
+                        return typeof t === "string" && keepTxns.has(t);
+                    });
+                }
+
+                const report = analyzeJourneyHistory(analyzed);
+                if (truncated || pages >= MAX_PAGES) report.truncated = true;
+                const topEventNames = Array.from(eventNameCounts.entries())
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 20)
+                    .map(([name, count]) => ({ name, count }));
+                send({
+                    type: "done",
+                    ...report,
+                    window: { from, to },
+                    env,
+                    pagesFetched: pages,
+                    eventsFetched: analyzed.length,
+                    rawFetched,
+                    topEventNames,
                 });
-            }
-            if (truncated) break;
-            cookie = data._pagedResultsCookie ?? undefined;
-            if (!cookie) break;
-        }
-
-        // Apply treeName filter at the transactionId level so the analyzer
-        // still sees companion events (node visits, inner-journey pairs) for
-        // any txn that touches the named tree.
-        let analyzed = allEvents;
-        if (treeFilterLc) {
-            const keepTxns = new Set<string>();
-            for (const e of allEvents) {
-                if (!matchesTreeName(e.payload)) continue;
-                if (typeof e.payload === "object" && e.payload !== null) {
-                    const t = (e.payload as Record<string, unknown>).transactionId;
-                    if (typeof t === "string") keepTxns.add(t);
+                controller.close();
+            } catch (err) {
+                try {
+                    send({ type: "error", error: String(err) });
+                    controller.close();
+                } catch {
+                    // Stream already closed / client disconnected — nothing to do.
                 }
             }
-            analyzed = allEvents.filter((e) => {
-                if (typeof e.payload !== "object" || e.payload === null) return false;
-                const t = (e.payload as Record<string, unknown>).transactionId;
-                return typeof t === "string" && keepTxns.has(t);
-            });
-        }
+        },
+    });
 
-        const report = analyzeJourneyHistory(analyzed);
-        if (truncated || pages >= MAX_PAGES) report.truncated = true;
-        const topEventNames = Array.from(eventNameCounts.entries())
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 20)
-            .map(([name, count]) => ({ name, count }));
-        return NextResponse.json({
-            ...report,
-            window: { from, to },
-            env,
-            pagesFetched: pages,
-            eventsFetched: analyzed.length,
-            rawFetched,
-            topEventNames,
-        });
-    } catch (err) {
-        return NextResponse.json({ error: String(err) }, { status: 502 });
-    }
+    return new Response(stream, {
+        headers: {
+            "Content-Type": "application/x-ndjson; charset=utf-8",
+            "Cache-Control": "no-store",
+        },
+    });
 }
