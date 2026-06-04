@@ -68,5 +68,12 @@ export function useLogPullJobs(opts: UseLogPullJobsOpts = {}) {
         return { ok: res.ok, status: res.status, body };
     }, [refresh]);
 
-    return { jobs, error, refresh, start, suspend, resume };
+    const abort = useCallback(async (id: string): Promise<ActionResult> => {
+        const res = await fetch(`/api/logs/archive/jobs/${id}`, { method: "DELETE" });
+        const body = await res.json().catch(() => ({}));
+        await refresh();
+        return { ok: res.ok, status: res.status, body };
+    }, [refresh]);
+
+    return { jobs, error, refresh, start, suspend, resume, abort };
 }
