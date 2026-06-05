@@ -19,7 +19,13 @@ describe("buildJourneyQueryFilter", () => {
   });
 
   it("strips embedded double-quotes from journey names", () => {
-    expect(buildJourneyQueryFilter(BASE, ['a"b'])).toContain('eq "ab"');
+    expect(buildJourneyQueryFilter(BASE, ['a"b']))
+      .toBe(`(${BASE}) and (/payload/entries/info/treeName eq "ab")`);
+  });
+
+  it("still builds the clause at exactly the server cap", () => {
+    const exactly = Array.from({ length: MAX_SERVER_FILTER_JOURNEYS }, (_, i) => `J${i}`);
+    expect(buildJourneyQueryFilter(BASE, exactly)).toContain('/payload/entries/info/treeName eq "J0"');
   });
 
   it("falls back to the base filter above the server cap", () => {
@@ -37,5 +43,11 @@ describe("filterEventsByJourneys", () => {
   it("returns all events when the set is empty", () => {
     const all = [ev("A"), ev("B")];
     expect(filterEventsByJourneys(all, [])).toBe(all);
+  });
+
+  it("matches the flat payload.treeName fallback shape", () => {
+    const flat: RawAuthEvent = { timestamp: "2026-06-01T00:00:00Z", payload: { eventName: "AM-TREE-LOGIN-COMPLETED", transactionId: "t", treeName: "Flat" } };
+    expect(filterEventsByJourneys([flat], ["Flat"])).toHaveLength(1);
+    expect(filterEventsByJourneys([flat], ["Other"])).toHaveLength(0);
   });
 });

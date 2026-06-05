@@ -23,7 +23,12 @@ function treeNameOf(payload: unknown): string | undefined {
   return undefined;
 }
 
-/** Drop embedded double-quotes so a name can't break the queryFilter expression. */
+/**
+ * Drop embedded double-quotes so a name can't break the queryFilter expression.
+ * Journey names come from config directory names and never contain quotes in
+ * practice, so this is a defensive guard; if a name ever did contain a quote,
+ * stripping it would change which journey is matched (acceptable for this guard).
+ */
 function escapeFilterValue(name: string): string {
   return name.replace(/"/g, "");
 }
@@ -51,6 +56,8 @@ export function buildJourneyQueryFilter(baseFilter: string, treeNames: string[])
  * Exact-set analysis-time filter: keep events whose journey is in `treeNames`.
  * Empty set → events returned unchanged (same reference). Used by the archive
  * source and the >MAX_SERVER_FILTER_JOURNEYS live fallback.
+ * Filtering is per-event (by each event's own treeName), matching the
+ * server-side query filter's semantics — not the older transaction-based filter.
  */
 export function filterEventsByJourneys(events: RawAuthEvent[], treeNames: string[]): RawAuthEvent[] {
   if (treeNames.length === 0) return events;
