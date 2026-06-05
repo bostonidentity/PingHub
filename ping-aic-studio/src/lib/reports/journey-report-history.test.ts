@@ -32,6 +32,18 @@ describe("journey report history", () => {
     expect(list[1]).toMatchObject({ source: "live", attempts: 3, fail: 1, selectedJourneys: ["Login"], durationMs: 1234 });
   });
 
+  it("dedupes a double-save of the same report (same generatedAt)", () => {
+    const dir = tmpDir();
+    const r = report({ generatedAt: "2026-06-05T10:00:00.000Z" });
+    const a = saveReportTo(dir, r);
+    const b = saveReportTo(dir, r); // same generatedAt → no new entry
+    expect(b.id).toBe(a.id);
+    expect(listReportsIn(dir)).toHaveLength(1);
+    // A genuinely different generation (new generatedAt) is kept.
+    saveReportTo(dir, report({ generatedAt: "2026-06-05T10:01:00.000Z" }));
+    expect(listReportsIn(dir)).toHaveLength(2);
+  });
+
   it("round-trips the full report by id and rejects bad ids", () => {
     const dir = tmpDir();
     const m = saveReportTo(dir, report());
@@ -44,7 +56,10 @@ describe("journey report history", () => {
   it("prunes to the most-recent 50, deleting old files", () => {
     const dir = tmpDir();
     const ids: string[] = [];
-    for (let i = 0; i < 55; i++) ids.push(saveReportTo(dir, report()).id);
+    for (let i = 0; i < 55; i++) {
+      const generatedAt = `2026-06-05T10:${String(i).padStart(2, "0")}:00.000Z`; // distinct per save
+      ids.push(saveReportTo(dir, report({ generatedAt })).id);
+    }
     const list = listReportsIn(dir);
     expect(list).toHaveLength(50);
     // The 5 oldest report files were deleted.

@@ -217,6 +217,9 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     const [history, setHistory] = useState<JourneyHistoryMeta[]>([]);
     // Skip the env-change selection-reset on the very first render (restored settings).
     const didInitEnv = useRef(false);
+    // Only auto-load the report for a job the user started/resumed this session
+    // (so a pre-existing completed job isn't loaded on page open).
+    const pendingJobIdRef = useRef<string | null>(null);
 
     // Live reports run as resumable background jobs (retry, suspend/resume).
     const { jobs, start, suspend, resume, abort, fetchReport } = useJourneyReportJobs({ pollMs: 2000, includeFinished: true, env });
@@ -266,19 +269,25 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
         } catch { /* ignore quota/availability errors */ }
     }, [env, from, to, selectedJourneys, scope, maxEvents, summaryOnly, windowHours, windowConcurrency, requestDelaySec, dataSource]);
 
-    // When the live job finishes, pull its report into view (once) and save to history.
+    // When a job the user started/resumed this session finishes, pull its report
+    // into view (once) and save to history. Keyed on primitives (not the polled
+    // `job` object) so it fires once on completion, not on every 2s poll.
+    const jobId = job?.id;
+    const jobStatus = job?.status;
+    const jobReady = job?.reportReady ?? false;
     useEffect(() => {
-        if (!job || job.status !== "completed" || !job.reportReady || loadedReportJobId === job.id) return;
+        if (!jobId || jobStatus !== "completed" || !jobReady) return;
+        if (jobId !== pendingJobIdRef.current || loadedReportJobId === jobId) return;
         let cancelled = false;
-        fetchReport(job.id).then((rep) => {
+        fetchReport(jobId).then((rep) => {
             if (cancelled || !rep) return;
             setReport(rep as ScanReport);
-            setLoadedReportJobId(job.id);
+            setLoadedReportJobId(jobId);
             setError(null);
             void saveToHistory(rep as ScanReport);
         });
         return () => { cancelled = true; };
-    }, [job, loadedReportJobId, fetchReport, saveToHistory]);
+    }, [jobId, jobStatus, jobReady, loadedReportJobId, fetchReport, saveToHistory]);
 
     const displayError = error ?? (job?.status === "failed" ? job.fatalError ?? "Report failed." : null);
 
@@ -321,6 +330,8 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
             windowConcurrency,
             requestDelayMs: Math.round(requestDelaySec * 1000),
         });
+        // Arm auto-load for this job (only reports the user runs are shown automatically).
+        if (res.body?.jobId) pendingJobIdRef.current = res.body.jobId;
         // 409 = a job is already active for this env; polling will display it.
         if (!res.ok && res.status !== 409) {
             setError(res.body.error ?? `Failed to start report (${res.status}).`);
@@ -635,7 +646,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                                     className="rounded border border-indigo-300 bg-indigo-50 px-2 py-0.5 text-xs text-indigo-800 hover:bg-indigo-100">Suspend</button>
                             ) : null}
                             {jobPaused ? (
-                                <button type="button" onClick={() => resume(job.id)}
+                                <button type="button" onClick={() => { pendingJobIdRef.current = job.id; resume(job.id); }}
                                     className="rounded border border-amber-400 bg-amber-50 px-2 py-0.5 text-xs text-amber-800 hover:bg-amber-100">Resume</button>
                             ) : null}
                             {(jobActive || jobPaused) ? (

@@ -69,6 +69,12 @@ function metaFromReport(id: string, report: Record<string, unknown>): JourneyHis
 /** Save a report to `dir`, prepend its metadata to the index, prune to MAX_HISTORY. */
 export function saveReportTo(dir: string, report: unknown): JourneyHistoryMeta {
   fs.mkdirSync(dir, { recursive: true });
+  const rep = (report ?? {}) as Record<string, unknown>;
+  // Dedupe a double-save of the same report (e.g. StrictMode / re-render): a report's
+  // generatedAt is a unique completion timestamp, so an equal newest entry is the same one.
+  const genAt = typeof rep.generatedAt === "string" ? rep.generatedAt : undefined;
+  const existing = readIndex(dir);
+  if (genAt && existing[0]?.generatedAt === genAt) return existing[0];
   const id = `${Date.now()}-${randomUUID().slice(0, 8)}`;
   fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify(report));
   const meta = metaFromReport(id, (report ?? {}) as Record<string, unknown>);
