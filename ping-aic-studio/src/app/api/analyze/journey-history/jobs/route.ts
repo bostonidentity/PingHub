@@ -4,6 +4,7 @@ import { parseEnvFile } from "@/lib/env-parser";
 import { journeyReportRoot } from "@/lib/reports/journey-report-paths";
 import { getJourneyReportRegistry, JourneyJobConflictError } from "@/lib/reports/journey-report-registry";
 import { runJourneyReport } from "@/lib/reports/journey-report-runner";
+import { parseTreeNames } from "@/lib/reports/journey-filter";
 import { setController, deleteController } from "../route-controllers";
 
 export const dynamic = "force-dynamic";
@@ -29,11 +30,7 @@ export async function POST(req: NextRequest) {
   const env = typeof body.env === "string" ? body.env : "";
   const from = typeof body.from === "string" ? body.from : "";
   const to = typeof body.to === "string" ? body.to : "";
-  const treeNames = Array.isArray(body.treeNames)
-    ? body.treeNames.filter((n: unknown): n is string => typeof n === "string" && n.trim() !== "").map((n: string) => n.trim())
-    : typeof body.treeName === "string" && body.treeName.trim()
-      ? [body.treeName.trim()]
-      : [];
+  const treeNames = parseTreeNames(body);
   const maxEvents = Math.min(Math.max(1, Math.floor(Number(body.maxEvents) || DEFAULT_MAX_EVENTS)), HARD_MAX_EVENTS);
   const summaryOnly = body.summaryOnly === true;
   // AIC rejects queries spanning >1 day, so windows are sized in hours, capped at

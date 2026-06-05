@@ -67,3 +67,21 @@ export function filterEventsByJourneys(events: RawAuthEvent[], treeNames: string
     return t !== undefined && want.has(t);
   });
 }
+
+/**
+ * Parse selected journey names from a request body: `treeNames` (array of
+ * non-empty strings, trimmed + de-duped) with back-compat for a legacy single
+ * `treeName` string. Missing/invalid → [].
+ */
+export function parseTreeNames(body: unknown): string[] {
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (Array.isArray(b.treeNames)) {
+    return [...new Set(
+      b.treeNames
+        .filter((t): t is string => typeof t === "string" && t.trim().length > 0)
+        .map((t) => t.trim()),
+    )];
+  }
+  if (typeof b.treeName === "string" && b.treeName.trim()) return [b.treeName.trim()];
+  return [];
+}

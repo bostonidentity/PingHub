@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getLogApiCredentials, getEnvFileContent, getEnvironments } from "@/lib/fr-config";
 import { parseEnvFile } from "@/lib/env-parser";
 import { analyzeJourneyHistory, type RawAuthEvent } from "@/lib/reports/journey-history";
-import { buildJourneyQueryFilter, filterEventsByJourneys, MAX_SERVER_FILTER_JOURNEYS } from "@/lib/reports/journey-filter";
+import { buildJourneyQueryFilter, filterEventsByJourneys, parseTreeNames, MAX_SERVER_FILTER_JOURNEYS } from "@/lib/reports/journey-filter";
 import { logDataDir } from "@/lib/logs/log-archive-paths";
 import { readRange } from "@/lib/logs/log-archive-store";
 import { readManifest, rangeCoverage } from "@/lib/logs/manifest";
@@ -30,13 +30,7 @@ export async function POST(req: NextRequest) {
         maxEvents = DEFAULT_MAX_EVENTS,
     } = body as { env: string; from: string; to: string; maxEvents?: number; source?: string };
     const source = body.source === "archive" ? "archive" : "live";
-    const treeNames: string[] = Array.isArray(body.treeNames)
-        ? [...new Set(
-            (body.treeNames as unknown[])
-                .filter((t): t is string => typeof t === "string" && t.trim().length > 0)
-                .map((t) => t.trim()),
-          )]
-        : [];
+    const treeNames = parseTreeNames(body);
 
     if (!env || !from || !to) {
         return NextResponse.json({ error: "env, from, and to are required." }, { status: 400 });
@@ -179,6 +173,7 @@ export async function POST(req: NextRequest) {
                     rawFetched,
                     topEventNames,
                     durationMs: Math.max(0, Date.now() - startedAt),
+                    ...(treeNames.length ? { selectedJourneys: treeNames } : {}),
                 });
                 controller.close();
             } catch (err) {

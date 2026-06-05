@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildJourneyQueryFilter, filterEventsByJourneys, MAX_SERVER_FILTER_JOURNEYS } from "./journey-filter";
+import { buildJourneyQueryFilter, filterEventsByJourneys, parseTreeNames, MAX_SERVER_FILTER_JOURNEYS } from "./journey-filter";
 import type { RawAuthEvent } from "./journey-history";
 
 const BASE = '(/payload/eventName co "AM-TREE-LOGIN-")';
@@ -49,5 +49,20 @@ describe("filterEventsByJourneys", () => {
     const flat: RawAuthEvent = { timestamp: "2026-06-01T00:00:00Z", payload: { eventName: "AM-TREE-LOGIN-COMPLETED", transactionId: "t", treeName: "Flat" } };
     expect(filterEventsByJourneys([flat], ["Flat"])).toHaveLength(1);
     expect(filterEventsByJourneys([flat], ["Other"])).toHaveLength(0);
+  });
+});
+
+describe("parseTreeNames", () => {
+  it("parses, trims, de-dupes the treeNames array", () => {
+    expect(parseTreeNames({ treeNames: [" A ", "B", "A", "  "] })).toEqual(["A", "B"]);
+  });
+  it("falls back to a legacy single treeName string", () => {
+    expect(parseTreeNames({ treeName: " Login " })).toEqual(["Login"]);
+  });
+  it("returns [] for missing/empty/non-string input", () => {
+    expect(parseTreeNames({})).toEqual([]);
+    expect(parseTreeNames({ treeNames: "nope" })).toEqual([]);
+    expect(parseTreeNames(null)).toEqual([]);
+    expect(parseTreeNames({ treeName: "   " })).toEqual([]);
   });
 });
