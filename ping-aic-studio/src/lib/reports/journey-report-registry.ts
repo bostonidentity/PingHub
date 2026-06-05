@@ -106,6 +106,8 @@ export function createJourneyReportRegistry(envsRoot: string): JourneyReportRegi
       if (!job) return;
       job.status = status;
       if (fatalError) job.fatalError = fatalError;
+      // Clear a stale note (e.g. a rate-limit pause reason) when the job runs again.
+      else if (status === "running" || status === "completed") job.fatalError = undefined;
       if (TERMINAL.includes(status)) job.finishedAt = Date.now();
       writeJobFile(envsRoot, job);
     },

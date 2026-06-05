@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Data · Pull — redesign mockup</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#f4f5f8; --surface:#ffffff; --ink:#0f172a; --muted:#64748b;
+    --line:#e6e8ee; --primary:#4f46e5; --primary-ink:#4338ca;
+    --running:#0ea5e9; --done:#10b981; --pending:#cbd5e1; --paused:#f59e0b;
+  }
+  *{font-family:'Hanken Grotesk',sans-serif}
+  .mono{font-family:'JetBrains Mono',monospace;font-variant-numeric:tabular-nums}
+  body{background:var(--bg);color:var(--ink)}
+  /* atmospheric backdrop: faint grid + warm/cool wash */
+  .stage{
+    background:
+      radial-gradient(900px 420px at 85% -8%, rgba(79,70,229,.06), transparent 60%),
+      radial-gradient(700px 360px at 5% 0%, rgba(14,165,233,.05), transparent 55%),
+      linear-gradient(180deg,#f6f7fa,#eef1f6);
+    position:relative;
+  }
+  .stage::before{
+    content:"";position:absolute;inset:0;pointer-events:none;
+    background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+    background-size:44px 44px;mask-image:linear-gradient(180deg,rgba(0,0,0,.5),transparent 420px);opacity:.5;
+  }
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:0 1px 0 rgba(15,23,42,.02),0 8px 24px -16px rgba(15,23,42,.18)}
+  .seg{background:#eceef4;border-radius:12px;padding:4px}
+  .seg button{border-radius:9px;transition:.18s}
+  .seg .on{background:#fff;box-shadow:0 1px 2px rgba(15,23,42,.12);color:var(--primary-ink);font-weight:600}
+  .chip{border:1px solid var(--line);border-radius:999px;transition:.15s;background:#fff}
+  .chip.on{border-color:var(--primary);background:#eef0ff;color:var(--primary-ink)}
+  .chip.on .dot{background:var(--primary)}
+  .dot{width:7px;height:7px;border-radius:999px;background:#cbd5e1;display:inline-block}
+  .bar{height:7px;border-radius:999px;background:#eef1f6;overflow:hidden}
+  .bar>span{display:block;height:100%;border-radius:999px;transition:width .6s cubic-bezier(.2,.7,.2,1)}
+  .live{position:relative}
+  .live::after{content:"";position:absolute;inset:0;border-radius:inherit;background:linear-gradient(90deg,transparent,rgba(255,255,255,.55),transparent);transform:translateX(-100%);animation:sweep 2.1s infinite}
+  @keyframes sweep{to{transform:translateX(100%)}}
+  .pulse{animation:pulse 1.6s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .rise{opacity:0;transform:translateY(8px);animation:rise .55s forwards}
+  @keyframes rise{to{opacity:1;transform:none}}
+  .statpill{font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px}
+  .s-running{background:#e0f2fe;color:#0369a1}
+  .s-done{background:#d1fae5;color:#047857}
+  .s-pending{background:#f1f5f9;color:#64748b}
+  .grad-btn{background:linear-gradient(180deg,#6366f1,#4f46e5);box-shadow:0 1px 0 rgba(255,255,255,.25) inset,0 8px 18px -8px rgba(79,70,229,.6)}
+  .grad-btn:hover{filter:brightness(1.06)}
+  input[type=datetime-local],select{font-family:'JetBrains Mono',monospace}
+</style>
+</head>
+<body>
+<!-- top nav (context only) -->
+<header class="bg-[#0b1220] text-slate-300 sticky top-0 z-20">
+  <div class="max-w-[1280px] mx-auto px-6 h-14 flex items-center gap-6 text-sm">
+    <span class="text-white font-bold tracking-tight">Ping AIC Studio</span>
+    <nav class="hidden md:flex items-center gap-1">
+      <span class="px-3 py-1.5 rounded-lg hover:bg-white/5">Dashboard</span>
+      <span class="px-3 py-1.5 rounded-lg hover:bg-white/5">Browse</span>
+      <span class="px-3 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-200 ring-1 ring-inset ring-indigo-400/20">Data</span>
+      <span class="px-3 py-1.5 rounded-lg hover:bg-white/5">Logs</span>
+      <span class="px-3 py-1.5 rounded-lg hover:bg-white/5">Monitor</span>
+    </nav>
+    <div class="ml-auto flex items-center gap-2 text-xs px-2.5 py-1 rounded-lg bg-white/5 ring-1 ring-white/10">
+      <span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span><span class="text-slate-400">working env</span><span class="text-white font-medium">Prod</span>
+    </div>
+  </div>
+</header>
+
+<main class="stage min-h-screen">
+<div class="max-w-[1280px] mx-auto px-6 py-8 relative">
+
+  <!-- title -->
+  <div class="rise" style="animation-delay:.02s">
+    <div class="flex items-baseline gap-3">
+      <h1 class="text-[26px] font-extrabold tracking-tight">Data</h1>
+      <span class="mono text-[11px] text-slate-400">pull · browse · archive</span>
+    </div>
+    <p class="text-slate-500 mt-1 text-[15px] max-w-2xl">Pull managed-object or log records, then browse pulled objects here or search local logs in the <span class="font-medium text-slate-700">Logs</span> tab.</p>
+  </div>
+
+  <!-- unfinished jobs -->
+  <div class="card mt-5 rise" style="animation-delay:.06s">
+    <button onclick="toggleJobs()" class="w-full flex items-center gap-2.5 px-4 py-3 text-sm">
+      <svg id="chev" class="w-4 h-4 text-slate-400 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+      <span class="font-semibold">Unfinished jobs</span>
+      <span class="statpill bg-indigo-100 text-indigo-700">1</span>
+      <span class="ml-auto mono text-[11px] text-slate-400">all environments</span>
+    </button>
+    <div id="jobsBody" class="border-t" style="border-color:var(--line)">
+      <button onclick="goToJob()" class="w-full flex items-center gap-3 px-4 py-3 text-sm text-left hover:bg-indigo-50/50 transition group">
+        <span class="mono text-[10px] font-semibold tracking-wide px-1.5 py-0.5 rounded bg-violet-50 text-violet-700">LOGS</span>
+        <span class="font-semibold">prod</span>
+        <span class="statpill s-running flex items-center gap-1.5"><span class="dot pulse" style="background:var(--running)"></span>running</span>
+        <span class="mono text-[12px] text-slate-500">2,018,336 events · 1/6 sources</span>
+        <span class="ml-auto flex items-center gap-3">
+          <span class="mono text-[11px] text-slate-400">started 9:48:52 AM</span>
+          <span class="text-indigo-500 opacity-0 group-hover:opacity-100 transition text-xs font-semibold">open →</span>
+        </span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ONE unified control row -->
+  <div class="flex flex-wrap items-center gap-3 mt-6 rise" style="animation-delay:.1s">
+    <div class="seg inline-flex text-sm">
+      <button class="px-4 py-1.5">Browse</button>
+      <button class="px-4 py-1.5 on">Pull</button>
+    </div>
+    <span class="text-slate-300">/</span>
+    <div class="seg inline-flex text-sm" id="modeSeg">
+      <button class="px-3.5 py-1.5" onclick="setMode(this,'managed')">Managed objects</button>
+      <button class="px-3.5 py-1.5 on" onclick="setMode(this,'logs')">Logs</button>
+    </div>
+  </div>
+
+  <!-- two-column console -->
+  <div class="grid grid-cols-1 xl:grid-cols-12 gap-5 mt-4">
+
+    <!-- LEFT: config -->
+    <section class="card p-5 xl:col-span-5 rise" style="animation-delay:.14s">
+      <div class="flex items-center justify-between">
+        <h2 class="font-bold text-[15px]">New log pull</h2>
+        <span class="mono text-[11px] text-slate-400">~60 req/min · background</span>
+      </div>
+
+      <label class="block mt-4 text-[12px] font-semibold text-slate-500">Environment</label>
+      <select class="mt-1.5 w-full text-sm border rounded-xl px-3 py-2.5 bg-white" style="border-color:var(--line)">
+        <option>PROD</option><option>UAT</option><option>DEV</option>
+      </select>
+
+      <div class="grid grid-cols-2 gap-3 mt-4">
+        <div>
+          <label class="block text-[12px] font-semibold text-slate-500">From</label>
+          <input type="datetime-local" value="2026-06-03T10:58" class="mt-1.5 w-full text-[13px] border rounded-xl px-3 py-2.5" style="border-color:var(--line)">
+        </div>
+        <div>
+          <label class="block text-[12px] font-semibold text-slate-500">To</label>
+          <input type="datetime-local" value="2026-06-04T10:58" class="mt-1.5 w-full text-[13px] border rounded-xl px-3 py-2.5" style="border-color:var(--line)">
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between mt-5">
+        <label class="text-[12px] font-semibold text-slate-500">Sources <span id="srcCount" class="mono text-slate-400 font-normal">(6/6)</span></label>
+        <div class="flex gap-2 text-[11px] font-semibold text-indigo-600">
+          <button onclick="allSrc(true)" class="hover:underline">All</button><span class="text-slate-300">·</span>
+          <button onclick="allSrc(false)" class="hover:underline">None</button>
+        </div>
+      </div>
+      <div id="srcWrap" class="flex flex-wrap gap-2 mt-2.5"></div>
+
+      <button class="grad-btn text-white font-semibold w-full mt-6 py-3 rounded-xl text-sm flex items-center justify-center gap-2">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+        Start pull
+      </button>
+      <p class="mono text-[11px] text-slate-400 mt-3 leading-relaxed">A busy day can take several minutes. Numbers beside each source show entries already archived.</p>
+    </section>
+
+    <!-- RIGHT: live job -->
+    <section class="card xl:col-span-7 overflow-hidden rise" style="animation-delay:.18s">
+      <div class="live bg-gradient-to-br from-sky-50 to-white px-5 pt-5 pb-4 border-b" style="border-color:var(--line)">
+        <div class="flex items-center gap-2.5">
+          <span class="font-bold">prod</span>
+          <span class="statpill s-running flex items-center gap-1.5"><span class="dot pulse" style="background:var(--running)"></span>running</span>
+          <span class="mono text-[11px] text-slate-400">started 9:48:52 AM</span>
+          <div class="ml-auto flex gap-2">
+            <button class="text-[12px] font-semibold px-3 py-1.5 rounded-lg border bg-white hover:bg-slate-50" style="border-color:var(--line)">Suspend</button>
+            <button class="text-[12px] font-semibold px-3 py-1.5 rounded-lg border bg-white hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200" style="border-color:var(--line)">Abort</button>
+          </div>
+        </div>
+        <div class="flex items-end justify-between mt-4">
+          <div>
+            <div class="mono text-[28px] font-semibold leading-none" id="totalNum">2,018,336</div>
+            <div class="mono text-[11px] text-slate-400 mt-1">events stored · <span id="srcDone">1</span>/6 sources complete</div>
+          </div>
+          <div class="mono text-[13px] font-semibold text-sky-600"><span id="pct">33</span>%</div>
+        </div>
+        <div class="bar mt-3"><span id="overall" style="width:33%;background:linear-gradient(90deg,#38bdf8,#0ea5e9)"></span></div>
+      </div>
+
+      <div id="srcRows" class="divide-y" style="--tw-divide-opacity:1"></div>
+    </section>
+  </div>
+
+  <p class="mono text-[11px] text-slate-400 mt-6 text-center">mockup · numbers animate to show live progress — click the toggles & chips</p>
+</div>
+</main>
+
+<script>
+  const SOURCES = [
+    {n:'am-authentication', stored:1972336, status:'done',    last:''},
+    {n:'am-access',         stored:46000,   status:'running', last:'9:49:55 AM · AM-ACCESS-OUTCOME'},
+    {n:'am-core',           stored:0,       status:'pending', last:''},
+    {n:'idm-access',        stored:0,       status:'pending', last:''},
+    {n:'idm-activity',      stored:0,       status:'pending', last:''},
+    {n:'idm-authentication',stored:0,       status:'pending', last:''},
+  ];
+  const EXPECT = {'am-authentication':1972336,'am-access':140000,'am-core':90000,'idm-access':60000,'idm-activity':50000,'idm-authentication':70000};
+  const selected = new Set(SOURCES.map(s=>s.n));
+  const COL={done:'var(--done)',running:'var(--running)',pending:'var(--pending)'};
+  const fmt=n=>n.toLocaleString();
+
+  // chips
+  function renderChips(){
+    document.getElementById('srcWrap').innerHTML = SOURCES.map(s=>`
+      <button onclick="toggleSrc('${s.n}')" class="chip on px-3 py-1.5 text-[12px] mono flex items-center gap-2" data-n="${s.n}">
+        <span class="dot"></span>${s.n}
+      </button>`).join('');
+    syncChips();
+  }
+  function toggleSrc(n){ selected.has(n)?selected.delete(n):selected.add(n); syncChips(); }
+  function allSrc(v){ selected.clear(); if(v) SOURCES.forEach(s=>selected.add(s.n)); syncChips(); }
+  function syncChips(){
+    document.querySelectorAll('[data-n]').forEach(el=>el.classList.toggle('on', selected.has(el.dataset.n)));
+    document.getElementById('srcCount').textContent=`(${selected.size}/6)`;
+  }
+
+  // live job rows
+  function renderRows(){
+    document.getElementById('srcRows').innerHTML = SOURCES.map(s=>{
+      const pct = Math.min(100, Math.round(s.stored/EXPECT[s.n]*100));
+      const w = s.status==='pending'?0:pct;
+      return `<div class="px-5 py-3" style="border-color:var(--line)">
+        <div class="flex items-center gap-3">
+          <span class="dot" style="background:${COL[s.status]}"></span>
+          <span class="mono text-[13px] ${s.status==='pending'?'text-slate-400':''}">${s.n}</span>
+          <span class="ml-auto mono text-[13px] font-semibold" data-stored="${s.n}">${fmt(s.stored)}</span>
+          <span class="statpill ${s.status==='done'?'s-done':s.status==='running'?'s-running':'s-pending'} w-16 text-center">${s.status}</span>
+        </div>
+        <div class="flex items-center gap-3 mt-2 pl-[19px]">
+          <div class="bar flex-1"><span data-bar="${s.n}" style="width:${w}%;background:${COL[s.status]}"></span></div>
+          <span class="mono text-[10px] text-slate-400 w-44 text-right truncate">${s.last||'—'}</span>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  // simulate live progress on am-access
+  function tick(){
+    const s = SOURCES.find(x=>x.n==='am-access');
+    if(s.status==='running' && s.stored<EXPECT['am-access']){
+      s.stored = Math.min(EXPECT['am-access'], s.stored + Math.round(2000+Math.random()*6000));
+      if(s.stored>=EXPECT['am-access']) s.status='done';
+      const total = SOURCES.reduce((a,x)=>a+x.stored,0);
+      const done = SOURCES.filter(x=>x.status==='done').length;
+      const overallPct = Math.round(done/6*100 + (s.status==='running'? (s.stored/EXPECT['am-access'])/6*100:0));
+      document.querySelector(`[data-stored="am-access"]`).textContent=fmt(s.stored);
+      document.querySelector(`[data-bar="am-access"]`).style.width=Math.min(100,Math.round(s.stored/EXPECT['am-access']*100))+'%';
+      document.getElementById('totalNum').textContent=fmt(total);
+      document.getElementById('pct').textContent=overallPct;
+      document.getElementById('overall').style.width=overallPct+'%';
+      document.getElementById('srcDone').textContent=done;
+      if(s.status==='done'){ renderRows(); }
+    }
+  }
+
+  // misc interactions
+  function toggleJobs(){ const b=document.getElementById('jobsBody'); b.style.display=b.style.display==='none'?'block':'none'; document.getElementById('chev').style.transform=b.style.display==='none'?'rotate(-90deg)':''; }
+  function goToJob(){ const r=document.querySelector('.live').closest('section'); r.animate([{boxShadow:'0 0 0 0 rgba(79,70,229,.0)'},{boxShadow:'0 0 0 4px rgba(79,70,229,.35)'},{boxShadow:'0 0 0 0 rgba(79,70,229,0)'}],{duration:1200}); r.scrollIntoView({behavior:'smooth',block:'center'}); }
+  function setMode(btn,m){ document.querySelectorAll('#modeSeg button').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); }
+
+  renderChips(); renderRows(); setInterval(tick, 700);
+</script>
+</body>
+</html>

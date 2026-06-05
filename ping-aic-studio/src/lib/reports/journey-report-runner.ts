@@ -42,6 +42,27 @@ const MAX_WINDOW_HOURS = 24;
 const DEFAULT_WINDOW_CONCURRENCY = 4;
 const MAX_WINDOW_CONCURRENCY = 6;
 
+// How many of the most-recent matched events to surface live (for the UI feed).
+const RECENT_EVENTS_KEPT = 15;
+
+// A throughput 429 that survived all fetchLogPage retries pauses the job
+// (resumable) instead of failing — completed windows/pages are preserved.
+const RATE_LIMITED_NOTE =
+  'Rate limited by AIC (HTTP 429) — paused. Resume to continue; lower "Parallel windows" if it recurs.';
+
+/** Journey/tree name for a payload, for the live event feed. */
+function recentTreeName(payload: Record<string, unknown>): string | undefined {
+  const entries = payload.entries;
+  if (Array.isArray(entries) && entries.length > 0) {
+    const info = (entries[0] as Record<string, unknown>)?.info;
+    if (info && typeof info === "object") {
+      const t = (info as Record<string, unknown>).treeName;
+      if (typeof t === "string") return t;
+    }
+  }
+  return typeof payload.treeName === "string" ? payload.treeName : undefined;
+}
+
 function heapUnderPressure(fraction: number): boolean {
   const { heap_size_limit, used_heap_size } = v8.getHeapStatistics();
   if (!heap_size_limit) return false;
@@ -118,7 +139,10 @@ interface WindowCursor {
   eventNameCounts: Map<string, number>;
 }
 
-type WindowOutcome = "done" | "suspended" | "failed" | "aborted";
+type WindowOutcome = "done" | "suspended" | "rateLimited" | "failed" | "aborted";
+
+/** A recently-seen matched event, surfaced live to the UI. */
+type RecentEvent = { ts: string; eventName: string; tree?: string };
 
 /**
  * Page `am-authentication` from AIC into a per-job staging file, then analyze it
@@ -186,11 +210,12 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
     winStage: string;
     start: WindowCursor;
     suspendOnHeap: boolean;
-    onProgress: (cursor: WindowCursor, lastTs?: string) => void;
+    onProgress: (cursor: WindowCursor, lastTs: string | undefined, recent: RecentEvent[]) => void;
   }): Promise<{ outcome: WindowOutcome; cursor: WindowCursor; error?: string }> {
     const { win, winStage, start, suspendOnHeap, onProgress } = args;
     let { cookie, rawFetched, matched, pages, truncated, byteLength } = start;
     const eventNameCounts = start.eventNameCounts;
+    const recent: RecentEvent[] = []; // rolling window of the latest matched events (display only)
     const snapshot = (): WindowCursor => ({ cookie, rawFetched, matched, pages, truncated, byteLength, eventNameCounts });
 
     while (pages < MAX_PAGES && matched < maxEvents && !truncated) {
@@ -209,6 +234,11 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
       const res = await fetchLogPage(url, headers, { fetchFn, signal, sleepFn, onThrottle });
       if (!res.ok) {
         const body = await res.text().catch(() => "");
+        // A throughput 429 that outlived fetchLogPage's retries → pause (resumable),
+        // don't fail. Volume-quota 429s and all other errors are terminal.
+        if (res.status === 429 && !isVolumeQuota429(body)) {
+          return { outcome: "rateLimited", cursor: snapshot() };
+        }
         const error = res.status === 429 && isVolumeQuota429(body)
           ? VOLUME_QUOTA_MESSAGE
           : `HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`;
@@ -238,6 +268,8 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
         lines += JSON.stringify({ timestamp: r.timestamp, payload }) + "\n";
         matched++;
         lastTs = r.timestamp;
+        recent.push({ ts: r.timestamp, eventName: evName, tree: recentTreeName(payload as Record<string, unknown>) });
+        if (recent.length > RECENT_EVENTS_KEPT) recent.shift();
       }
       if (lines) {
         fs.appendFileSync(winStage, lines);
@@ -245,7 +277,7 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
       }
 
       cookie = truncated ? undefined : (data.pagedResultsCookie ?? undefined);
-      onProgress(snapshot(), lastTs);
+      onProgress(snapshot(), lastTs, recent.slice());
 
       if (truncated || !cookie) break;
 
@@ -283,15 +315,16 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
     if (!chunked) {
       // ---- Single window: full per-attempt report (unchanged behavior). ----
       const wantsResume = typeof p.byteLength === "number" && p.byteLength > 0 && fs.existsSync(stagePath);
-      const onProgress = (c: WindowCursor, lastTs?: string) => registry.updateProgress(job.id, {
+      const onProgress = (c: WindowCursor, lastTs: string | undefined, recent: RecentEvent[]) => registry.updateProgress(job.id, {
         page: c.pages, rawFetched: c.rawFetched, matched: c.matched, cookie: c.cookie ?? null,
         byteLength: c.byteLength, lastTimestamp: lastTs, truncated: c.truncated,
-        eventNameCounts: Object.fromEntries(c.eventNameCounts),
+        eventNameCounts: Object.fromEntries(c.eventNameCounts), recentEvents: recent,
       });
       const { outcome, cursor, error } = await pageWindow({
         win: windows[0], winStage: stagePath, start: prepareCursor(wantsResume), suspendOnHeap: true, onProgress,
       });
       if (outcome === "failed") { registry.setJobStatus(job.id, "failed", error); return; }
+      if (outcome === "rateLimited") { registry.setJobStatus(job.id, "suspended", RATE_LIMITED_NOTE); return; }
       if (outcome === "suspended") { registry.setJobStatus(job.id, "suspended"); return; }
       if (outcome === "aborted") { finalizeAborted(); return; }
 
@@ -360,18 +393,22 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
     };
 
     let nextIdx = 0;
-    let failed = false, aborted = false, failError: string | undefined;
+    let failed = false, aborted = false, rateLimited = false, failError: string | undefined;
+    // Surface the latest matched events live (workers clobber, last write wins — fine for a feed).
+    const onProgress = (_c: WindowCursor, _lastTs: string | undefined, recent: RecentEvent[]) =>
+      registry.updateProgress(job.id, { recentEvents: recent });
     const worker = async (): Promise<void> => {
-      while (!failed && !aborted) {
+      while (!failed && !aborted && !rateLimited) {
         if (signal.aborted) { aborted = true; return; }
         const slot = nextIdx++;
         if (slot >= pending.length) return;
         const { w, i } = pending[slot];
         fs.writeFileSync(winStagePath(i), ""); // fresh start (drop any prior partial window file)
         const { outcome, cursor, error } = await pageWindow({
-          win: w, winStage: winStagePath(i), start: freshCursor(), suspendOnHeap: false, onProgress: () => {},
+          win: w, winStage: winStagePath(i), start: freshCursor(), suspendOnHeap: false, onProgress,
         });
         if (outcome === "aborted") { aborted = true; return; }
+        if (outcome === "rateLimited") { rateLimited = true; return; }
         if (outcome === "failed") { failed = true; failError = error; return; }
         foldWindow(i, cursor); // outcome === "done"
       }
@@ -379,6 +416,7 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
     await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(1, pending.length)) }, () => worker()));
 
     if (failed) { registry.setJobStatus(job.id, "failed", failError); return; }
+    if (rateLimited) { registry.setJobStatus(job.id, "suspended", RATE_LIMITED_NOTE); return; }
     if (aborted || signal.aborted) { finalizeAborted(); return; }
 
     try {

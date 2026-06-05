@@ -75,6 +75,44 @@ function fmtDuration(ms: number): string {
     return `${h}h ${rm}m`;
 }
 
+/** Compact event timestamp: "06/05 14:03:21". */
+function fmtEventTs(iso: string): string {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleString(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+/** Live feed of the most-recent matched events while a report is running. */
+function RecentEventsFeed({ events }: { events: { ts: string; eventName: string; tree?: string }[] }) {
+    return (
+        <details open className="rounded-md border border-slate-200 bg-white text-sm">
+            <summary className="cursor-pointer select-none px-3 py-1.5 font-medium text-slate-700 hover:bg-slate-50">
+                Live events ({events.length})
+            </summary>
+            <div className="max-h-48 overflow-auto">
+                <table className="w-full text-xs">
+                    <thead className="bg-slate-50 text-slate-600 sticky top-0">
+                        <tr>
+                            <th className="text-left px-3 py-1.5 font-medium">Time</th>
+                            <th className="text-left px-3 py-1.5 font-medium">Event</th>
+                            <th className="text-left px-3 py-1.5 font-medium">Journey</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {[...events].reverse().map((e, i) => (
+                            <tr key={`${e.ts}-${i}`} className="border-t border-slate-100">
+                                <td className="px-3 py-1 whitespace-nowrap text-slate-600">{fmtEventTs(e.ts)}</td>
+                                <td className="px-3 py-1 font-mono">{e.eventName}</td>
+                                <td className="px-3 py-1 font-mono text-slate-700">{e.tree ?? "—"}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    );
+}
+
 /** Always-available breakdown of what AIC returned for this run. */
 function ScanDetails({ report, defaultOpen }: { report: ScanReport; defaultOpen: boolean }) {
     const matched = report.eventsFetched ?? report.summary.eventsProcessed;
@@ -473,6 +511,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
 
                 {/* Live background-job status — runs server-side, survives navigation, resumable. */}
                 {dataSource === "live" && job && job.status !== "completed" ? (
+                  <div className="space-y-2">
                     <div className="flex flex-wrap items-center gap-2 rounded border border-slate-200 bg-white px-3 py-2 text-sm">
                         <span className={`px-1.5 py-0.5 rounded text-[11px] font-semibold ${jobPaused ? "bg-amber-100 text-amber-800"
                             : job.status === "failed" ? "bg-rose-100 text-rose-700" : "bg-sky-100 text-sky-700"}`}>
@@ -506,6 +545,13 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                             ) : null}
                         </div>
                     </div>
+                    {jobPaused && job.fatalError ? (
+                        <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{job.fatalError}</div>
+                    ) : null}
+                    {job.progress.recentEvents && job.progress.recentEvents.length > 0 ? (
+                        <RecentEventsFeed events={job.progress.recentEvents} />
+                    ) : null}
+                  </div>
                 ) : null}
 
                 {displayError ? <div className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded px-3 py-2">{displayError}</div> : null}

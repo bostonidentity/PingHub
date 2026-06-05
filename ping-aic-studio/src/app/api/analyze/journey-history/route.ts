@@ -3,6 +3,7 @@ import { getLogApiCredentials, getEnvFileContent, getEnvironments } from "@/lib/
 import { parseEnvFile } from "@/lib/env-parser";
 import { analyzeJourneyHistory, type RawAuthEvent } from "@/lib/reports/journey-history";
 import { buildJourneyQueryFilter, filterEventsByJourneys, parseTreeNames, MAX_SERVER_FILTER_JOURNEYS } from "@/lib/reports/journey-filter";
+import { fetchLogPage } from "@/lib/logs/log-fetch";
 import { logDataDir } from "@/lib/logs/log-archive-paths";
 import { readRange } from "@/lib/logs/log-archive-store";
 import { readManifest, rangeCoverage } from "@/lib/logs/manifest";
@@ -114,7 +115,8 @@ export async function POST(req: NextRequest) {
                             ...(cookie ? { _pagedResultsCookie: cookie } : {}),
                         });
                         const url = `${tenantBaseUrl}/monitoring/logs?${params}`;
-                        const res = await fetch(url, { headers: authHeaders });
+                        // fetchLogPage retries throughput 429s with backoff (same as the log pull).
+                        const res = await fetchLogPage(url, authHeaders);
                         if (!res.ok) {
                             const text = await res.text();
                             send({ type: "error", error: `HTTP ${res.status}: ${text}` });

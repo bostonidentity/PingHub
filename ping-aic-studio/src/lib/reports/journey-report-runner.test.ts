@@ -298,6 +298,48 @@ describe("runJourneyReport", () => {
     expect(rep.summary.attempts).toBe(6);
   });
 
+  it("pauses (suspended) instead of failing on a sustained throughput 429", async () => {
+    const root = tmpRoot();
+    const reg = createJourneyReportRegistry(root);
+    const job = reg.startJob("prod", { from: FROM, to: TO, maxEvents: 1000 });
+    // 429 on every attempt → fetchLogPage exhausts its retries → rate-limited.
+    const fetchFn = vi.fn(async () => jsonRes({ code: 429, reason: "Too Many Requests", errors: ["Rate Limit Exceeded"] }, 429));
+
+    await runJourneyReport({ ...baseOpts(root), job, registry: reg, fetchFn });
+
+    const done = reg.getJob(job.id)!;
+    expect(done.status).toBe("suspended");      // resumable, not failed
+    expect(done.fatalError).toMatch(/rate limited/i);
+    expect(done.reportReady).toBeFalsy();
+  });
+
+  it("still fails (terminal) on a volume-quota 429", async () => {
+    const root = tmpRoot();
+    const reg = createJourneyReportRegistry(root);
+    const job = reg.startJob("prod", { from: FROM, to: TO, maxEvents: 1000 });
+    const fetchFn = vi.fn(async () => jsonRes({ message: "You have requested more log data than permitted in 24 hours" }, 429));
+
+    await runJourneyReport({ ...baseOpts(root), job, registry: reg, fetchFn });
+
+    expect(reg.getJob(job.id)!.status).toBe("failed");
+  });
+
+  it("surfaces recent matched events in progress for the live feed", async () => {
+    const root = tmpRoot();
+    const reg = createJourneyReportRegistry(root);
+    const job = reg.startJob("prod", { from: FROM, to: TO, maxEvents: 1000 });
+    const fetchFn = pagingFetch([
+      { result: [loginEvent("t1", "2026-06-03T01:00:00Z")], pagedResultsCookie: null },
+    ]);
+
+    await runJourneyReport({ ...baseOpts(root), job, registry: reg, fetchFn });
+
+    const recent = reg.getJob(job.id)!.progress.recentEvents;
+    expect(recent && recent.length).toBeGreaterThan(0);
+    expect(recent![0]).toMatchObject({ eventName: "AM-TREE-LOGIN-COMPLETED", tree: "Login" });
+    expect(typeof recent![0].ts).toBe("string");
+  });
+
   it("finalizes to 'aborted' on a plain abort", async () => {
     const root = tmpRoot();
     const reg = createJourneyReportRegistry(root);

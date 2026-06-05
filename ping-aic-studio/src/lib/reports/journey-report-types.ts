@@ -89,6 +89,8 @@ export interface JourneyReportProgress {
   windowsDone?: number;
   /** Chunked runs: merged rollup + cumulative tallies for windows already finalized. */
   partial?: JourneyReportPartial;
+  /** Most-recent matched events, surfaced live to the UI feed. */
+  recentEvents?: { ts: string; eventName: string; tree?: string }[];
 }
 
 export interface JourneyReportJob {
