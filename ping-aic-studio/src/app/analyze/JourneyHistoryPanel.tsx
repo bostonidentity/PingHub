@@ -355,7 +355,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     return (
         <div className="space-y-4">
             <div className="rounded-md border border-slate-200 bg-slate-50 p-4 space-y-3">
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                     <label className="text-sm">
                         <span className="block text-slate-600 mb-1">Environment</span>
                         <select
@@ -378,12 +378,6 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                         <input type="datetime-local" value={to} onChange={(e) => setTo(e.target.value)}
                             className="w-full rounded border border-slate-300 px-2 py-1.5 bg-white" />
                     </label>
-                    <JourneyMultiSelect
-                        available={journeyOptions}
-                        selected={selectedJourneys}
-                        onChange={setSelectedJourneys}
-                        freeText={journeySource === "none"}
-                    />
                 </div>
                 <div className="flex flex-wrap items-end gap-3">
                     <label className="text-sm">
@@ -466,6 +460,15 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                                 : <span>Starting scan…</span>}
                         </div>
                     ) : null}
+                </div>
+
+                <div>
+                    <JourneyMultiSelect
+                        available={journeyOptions}
+                        selected={selectedJourneys}
+                        onChange={setSelectedJourneys}
+                        freeText={journeySource === "none"}
+                    />
                 </div>
 
                 {/* Live background-job status — runs server-side, survives navigation, resumable. */}
