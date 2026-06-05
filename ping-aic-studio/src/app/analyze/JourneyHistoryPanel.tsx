@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { JourneyHistoryReport, JourneyAttempt } from "@/lib/reports/journey-history";
 import { useJourneyReportJobs } from "@/hooks/useJourneyReportJobs";
+import { JourneyMultiSelect } from "./JourneyMultiSelect";
 
 /** Default window: last 24 hours, rounded to the second. */
 function defaultWindow(): { from: string; to: string } {
@@ -52,6 +53,8 @@ type ScanReport = JourneyHistoryReport & {
     windowHours?: number;
     /** Wall-clock time to generate the report. */
     durationMs?: number;
+    /** Journeys the report was scoped to (empty/absent = all). */
+    selectedJourneys?: string[];
 };
 
 const num = (n: number) => n.toLocaleString();
@@ -80,6 +83,9 @@ function ScanDetails({ report, defaultOpen }: { report: ScanReport; defaultOpen:
     const isArchive = report.source === "archive";
     const items: { label: string; value: string }[] = [
         ...(report.window ? [{ label: "Window", value: `${fmtWindowTs(report.window.from)} → ${fmtWindowTs(report.window.to)}` }] : []),
+        ...(report.selectedJourneys && report.selectedJourneys.length
+            ? [{ label: "Journeys", value: `${report.selectedJourneys.join(", ")} (${report.selectedJourneys.length})` }]
+            : []),
         ...(isArchive ? [{ label: "Source", value: "Local archive" }] : [{ label: "Pages fetched", value: num(report.pagesFetched ?? 0) }]),
         ...(typeof raw === "number" ? [{ label: isArchive ? "Records read from archive" : "Raw events from AIC", value: num(raw) }] : []),
         { label: "Journey events kept", value: num(matched) },
@@ -128,7 +134,9 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     const [env, setEnv] = useState(environments[0]?.name ?? "");
     const [from, setFrom] = useState(initialWindow.from);
     const [to, setTo] = useState(initialWindow.to);
-    const [treeName, setTreeName] = useState("");
+    const [selectedJourneys, setSelectedJourneys] = useState<string[]>([]);
+    const [journeyOptions, setJourneyOptions] = useState<string[]>([]);
+    const [journeySource, setJourneySource] = useState<"config" | "none">("none");
     const [scope, setScope] = useState<ScopeFilter>("outer");
     const [maxEvents, setMaxEvents] = useState(20000);
     const [summaryOnly, setSummaryOnly] = useState(true);
@@ -166,6 +174,22 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
 
     const displayError = error ?? (job?.status === "failed" ? job.fatalError ?? "Report failed." : null);
 
+    // Load the env's journeys for the picker; reset selection on env change.
+    useEffect(() => {
+        if (!env) { setJourneyOptions([]); setJourneySource("none"); return; }
+        let cancelled = false;
+        setSelectedJourneys([]);
+        fetch(`/api/analyze/journeys?env=${encodeURIComponent(env)}`)
+            .then((r) => (r.ok ? r.json() : { journeys: [], source: "none" }))
+            .then((d: { journeys: string[]; source: "config" | "none" }) => {
+                if (cancelled) return;
+                setJourneyOptions(d.journeys);
+                setJourneySource(d.source);
+            })
+            .catch(() => { if (!cancelled) { setJourneyOptions([]); setJourneySource("none"); } });
+        return () => { cancelled = true; };
+    }, [env]);
+
     async function run() {
         if (!env || !from || !to) {
             setError("Environment, From, and To are required.");
@@ -180,7 +204,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
         const res = await start(env, {
             from: localToIso(from),
             to: localToIso(to),
-            treeNames: treeName.trim() ? [treeName.trim()] : [],
+            treeNames: selectedJourneys,
             maxEvents,
             summaryOnly,
             windowHours,
@@ -205,7 +229,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                     env,
                     from: localToIso(from),
                     to: localToIso(to),
-                    treeName: treeName.trim() || undefined,
+                    treeNames: selectedJourneys,
                     maxEvents,
                     source: "archive",
                 }),
@@ -354,12 +378,12 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                         <input type="datetime-local" value={to} onChange={(e) => setTo(e.target.value)}
                             className="w-full rounded border border-slate-300 px-2 py-1.5 bg-white" />
                     </label>
-                    <label className="text-sm">
-                        <span className="block text-slate-600 mb-1">Journey filter (optional)</span>
-                        <input type="text" value={treeName} onChange={(e) => setTreeName(e.target.value)}
-                            placeholder="exact treeName"
-                            className="w-full rounded border border-slate-300 px-2 py-1.5 bg-white" />
-                    </label>
+                    <JourneyMultiSelect
+                        available={journeyOptions}
+                        selected={selectedJourneys}
+                        onChange={setSelectedJourneys}
+                        freeText={journeySource === "none"}
+                    />
                 </div>
                 <div className="flex flex-wrap items-end gap-3">
                     <label className="text-sm">
