@@ -95,6 +95,7 @@ export async function POST(req: NextRequest) {
     const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
             const send = (msg: unknown) => controller.enqueue(encoder.encode(JSON.stringify(msg) + "\n"));
+            const startedAt = Date.now();
             try {
                 if (source === "archive") {
                     // Read the window straight from local NDJSON. No paging, no cap
@@ -197,6 +198,7 @@ export async function POST(req: NextRequest) {
                     eventsFetched: analyzed.length,
                     rawFetched,
                     topEventNames,
+                    durationMs: Math.max(0, Date.now() - startedAt),
                 });
                 controller.close();
             } catch (err) {

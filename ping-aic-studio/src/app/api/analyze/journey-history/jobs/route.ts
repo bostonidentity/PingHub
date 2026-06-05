@@ -31,6 +31,19 @@ export async function POST(req: NextRequest) {
   const to = typeof body.to === "string" ? body.to : "";
   const treeName = typeof body.treeName === "string" && body.treeName.trim() ? body.treeName.trim() : undefined;
   const maxEvents = Math.min(Math.max(1, Math.floor(Number(body.maxEvents) || DEFAULT_MAX_EVENTS)), HARD_MAX_EVENTS);
+  const summaryOnly = body.summaryOnly === true;
+  // AIC rejects queries spanning >1 day, so windows are sized in hours, capped at
+  // 24. Explicit 0 = off (single window); omitted defaults to 24h so a long range
+  // is chunked safely by default.
+  const rawWindowHours = Number(body.windowHours);
+  const windowHours = Number.isFinite(rawWindowHours)
+    ? Math.min(Math.max(0, Math.floor(rawWindowHours)), 24)
+    : 24;
+  // Concurrent windows in a chunked run. AIC throttles bursts >~6, so clamp [1, 6].
+  const rawConcurrency = Number(body.windowConcurrency);
+  const windowConcurrency = Number.isFinite(rawConcurrency)
+    ? Math.min(Math.max(1, Math.floor(rawConcurrency)), 6)
+    : 4;
 
   if (!env || !from || !to) {
     return NextResponse.json({ error: "env, from, and to are required." }, { status: 400 });
@@ -51,7 +64,7 @@ export async function POST(req: NextRequest) {
   const registry = getJourneyReportRegistry();
   let job;
   try {
-    job = registry.startJob(env, { from, to, treeName, maxEvents });
+    job = registry.startJob(env, { from, to, treeName, maxEvents, summaryOnly, windowHours, windowConcurrency });
   } catch (e) {
     if (e instanceof JourneyJobConflictError || (e as Error).name === "JourneyJobConflictError") {
       const existingId = (e as JourneyJobConflictError).existingJobId;

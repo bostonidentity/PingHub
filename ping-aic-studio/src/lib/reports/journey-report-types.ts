@@ -2,6 +2,8 @@
 // pull job (resumable, persisted, one active per env) so a 429-throttled report
 // retries, runs in the background, and can be suspended/resumed.
 
+import type { JourneyHistoryReport } from "./journey-history";
+
 export type JourneyReportStatus =
   | "queued"
   | "running"
@@ -21,6 +23,42 @@ export interface JourneyReportParams {
   treeName?: string;
   /** Cap on matched journey events staged. */
   maxEvents: number;
+  /**
+   * Pull only the two AM-TREE-LOGIN-* events (journey success/fail rates),
+   * dropping the high-volume AM-NODE-LOGIN-COMPLETED events server-side.
+   * Far fewer events per page → fewer pages, less throttling, much faster — at
+   * the cost of per-node failure attribution (top failure nodes go empty).
+   */
+  summaryOnly?: boolean;
+  /**
+   * Split [from, to] into windows of this many HOURS and pull/analyze each one
+   * in turn, merging the per-journey rollups. AIC's /monitoring/logs rejects any
+   * query spanning more than a day, so a long range MUST be chunked into ≤ 24h
+   * windows. Also keeps each window under the per-request page/event caps and
+   * bounds memory to one window at a time. 0/undefined or a range that fits one
+   * window → single-window behavior (full per-attempt report). Multi-window runs
+   * emit a rollup-only report.
+   */
+  windowHours?: number;
+  /**
+   * Max windows paged concurrently in a chunked run. AIC throttles bursts above
+   * ~6 concurrent /monitoring/logs queries, so this is clamped to [1, 6]
+   * (default 4). 1 = sequential.
+   */
+  windowConcurrency?: number;
+}
+
+/** Accumulator persisted across windows of a chunked (multi-window) run. */
+export interface JourneyReportPartial {
+  /** Merged journey rollup over all completed windows. */
+  rollup: Pick<JourneyHistoryReport, "summary" | "perJourney">;
+  /** Cumulative event-name tally across completed windows (for "top event names"). */
+  eventNameCounts: Record<string, number>;
+  rawTotal: number;
+  matchedTotal: number;
+  pagesTotal: number;
+  /** Any window hit a page/event cap → the merged report is incomplete. */
+  anyTruncated: boolean;
 }
 
 export interface JourneyReportProgress {
@@ -40,6 +78,16 @@ export interface JourneyReportProgress {
   truncated?: boolean;
   /** Running tally of every event name seen — preserves "top event names" across resumes. */
   eventNameCounts?: Record<string, number>;
+  /** Chunked runs: index of the window currently being paged (0-based). @deprecated superseded by completedWindows. */
+  windowIndex?: number;
+  /** Chunked runs: total number of windows. >1 means a multi-window (rollup-only) run. */
+  windowsTotal?: number;
+  /** Chunked runs: indices of windows already paged + folded into `partial`; resume skips them. */
+  completedWindows?: number[];
+  /** Chunked runs: count of completed windows (for progress display). */
+  windowsDone?: number;
+  /** Chunked runs: merged rollup + cumulative tallies for windows already finalized. */
+  partial?: JourneyReportPartial;
 }
 
 export interface JourneyReportJob {

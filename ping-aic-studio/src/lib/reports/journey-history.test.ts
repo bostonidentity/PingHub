@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { analyzeJourneyHistory, type RawAuthEvent } from "./journey-history";
+import { analyzeJourneyHistory, emptyRollup, mergeRollup, type RawAuthEvent } from "./journey-history";
 
 // ── Test fixture helpers ───────────────────────────────────────────────────
 
@@ -182,5 +182,46 @@ describe("analyzeJourneyHistory", () => {
         const r = analyzeJourneyHistory(events);
         expect(r.summary.attempts).toBe(1);
         expect(r.summary.eventsProcessed).toBe(2);
+    });
+
+    describe("mergeRollup", () => {
+        it("sums counts, recomputes failRate, and ANDs innerOnly across windows", () => {
+            const w1 = {
+                summary: { eventsProcessed: 3, attempts: 3, success: 2, fail: 1, incomplete: 0, transactions: 3 },
+                perJourney: [{
+                    treeName: "Login", innerOnly: false, attempts: 3, success: 2, fail: 1, incomplete: 0,
+                    failRate: 1 / 3, topFailureNodes: [{ node: "Password", count: 1 }],
+                }],
+            };
+            const w2 = {
+                summary: { eventsProcessed: 2, attempts: 2, success: 0, fail: 1, incomplete: 1, transactions: 2 },
+                perJourney: [{
+                    treeName: "Login", innerOnly: true, attempts: 2, success: 0, fail: 1, incomplete: 1,
+                    failRate: 1, topFailureNodes: [{ node: "Password", count: 1 }, { node: "MFA", count: 1 }],
+                }],
+            };
+
+            const merged = mergeRollup(mergeRollup(emptyRollup(), w1), w2);
+
+            expect(merged.summary).toEqual({ eventsProcessed: 5, attempts: 5, success: 2, fail: 2, incomplete: 1, transactions: 5 });
+            expect(merged.perJourney).toHaveLength(1);
+            const j = merged.perJourney[0];
+            expect(j).toMatchObject({ treeName: "Login", attempts: 5, success: 2, fail: 2, incomplete: 1 });
+            // failRate = fail / (attempts - incomplete) = 2 / 4
+            expect(j.failRate).toBeCloseTo(0.5);
+            // innerOnly = false AND true = false (appeared as outer in w1)
+            expect(j.innerOnly).toBe(false);
+            // Failure-node counts summed across windows.
+            expect(j.topFailureNodes).toEqual([{ node: "Password", count: 2 }, { node: "MFA", count: 1 }]);
+        });
+
+        it("keeps distinct journeys separate", () => {
+            const a = { summary: { eventsProcessed: 1, attempts: 1, success: 1, fail: 0, incomplete: 0, transactions: 1 },
+                perJourney: [{ treeName: "A", innerOnly: false, attempts: 1, success: 1, fail: 0, incomplete: 0, failRate: 0, topFailureNodes: [] }] };
+            const b = { summary: { eventsProcessed: 1, attempts: 1, success: 0, fail: 1, incomplete: 0, transactions: 1 },
+                perJourney: [{ treeName: "B", innerOnly: false, attempts: 1, success: 0, fail: 1, incomplete: 0, failRate: 1, topFailureNodes: [] }] };
+            const merged = mergeRollup(mergeRollup(emptyRollup(), a), b);
+            expect(merged.perJourney.map((p) => p.treeName).sort()).toEqual(["A", "B"]);
+        });
     });
 });

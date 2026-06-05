@@ -305,3 +305,68 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
 
     return { summary, attempts, perJourney };
 }
+
+export type JourneyRollup = Pick<JourneyHistoryReport, "summary" | "perJourney">;
+
+/** A zero rollup to seed a merge. */
+export function emptyRollup(): JourneyRollup {
+    return {
+        summary: { eventsProcessed: 0, attempts: 0, success: 0, fail: 0, incomplete: 0, transactions: 0 },
+        perJourney: [],
+    };
+}
+
+/**
+ * Fold one window's report into a running rollup. Counts are additive; failRate
+ * is recomputed from merged totals; topFailureNodes counts are summed and re-
+ * topped (capped at 5). Used by the windowed report runner so a long range is
+ * analyzed one window at a time and the whole span never sits in memory.
+ *
+ * Note: a journey that straddles a window boundary is counted in both windows
+ * (incomplete in the earlier, reconstructed in the later) — negligible for
+ * seconds-long auth journeys over day/week windows.
+ */
+export function mergeRollup(acc: JourneyRollup, next: JourneyRollup): JourneyRollup {
+    const summary = {
+        eventsProcessed: acc.summary.eventsProcessed + next.summary.eventsProcessed,
+        attempts: acc.summary.attempts + next.summary.attempts,
+        success: acc.summary.success + next.summary.success,
+        fail: acc.summary.fail + next.summary.fail,
+        incomplete: acc.summary.incomplete + next.summary.incomplete,
+        transactions: acc.summary.transactions + next.summary.transactions,
+    };
+
+    const byTree = new Map<string, { stat: PerJourneyStat; nodes: Map<string, number> }>();
+    const fold = (p: PerJourneyStat) => {
+        const cur = byTree.get(p.treeName);
+        if (!cur) {
+            byTree.set(p.treeName, {
+                stat: { ...p, topFailureNodes: [] },
+                nodes: new Map(p.topFailureNodes.map((n) => [n.node, n.count])),
+            });
+            return;
+        }
+        cur.stat.attempts += p.attempts;
+        cur.stat.success += p.success;
+        cur.stat.fail += p.fail;
+        cur.stat.incomplete += p.incomplete;
+        cur.stat.innerOnly = cur.stat.innerOnly && p.innerOnly;
+        for (const n of p.topFailureNodes) cur.nodes.set(n.node, (cur.nodes.get(n.node) ?? 0) + n.count);
+    };
+    for (const p of acc.perJourney) fold(p);
+    for (const p of next.perJourney) fold(p);
+
+    const perJourney: PerJourneyStat[] = [];
+    for (const { stat, nodes } of byTree.values()) {
+        const denom = stat.attempts - stat.incomplete;
+        stat.failRate = denom > 0 ? stat.fail / denom : 0;
+        stat.topFailureNodes = [...nodes.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5)
+            .map(([node, count]) => ({ node, count }));
+        perJourney.push(stat);
+    }
+    perJourney.sort((a, b) => b.attempts - a.attempts);
+
+    return { summary, perJourney };
+}

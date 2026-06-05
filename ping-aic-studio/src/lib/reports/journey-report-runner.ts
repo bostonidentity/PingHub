@@ -2,9 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import v8 from "node:v8";
 import { fetchLogPage, paceDelayMs, isVolumeQuota429, VOLUME_QUOTA_MESSAGE, AUTO_BUMP_MS, MAX_BUMP_MS } from "@/lib/logs/log-fetch";
-import { analyzeJourneyHistory, type RawAuthEvent } from "./journey-history";
+import { analyzeJourneyHistory, emptyRollup, mergeRollup, type RawAuthEvent } from "./journey-history";
 import { stagingPath as stagingPathFor, reportPath as reportPathFor } from "./journey-report-paths";
-import type { JourneyReportJob } from "./journey-report-types";
+import type { JourneyReportJob, JourneyReportPartial } from "./journey-report-types";
 import type { JourneyReportRegistry } from "./journey-report-registry";
 
 const JOURNEY_SOURCE = "am-authentication";
@@ -21,10 +21,50 @@ const WANTED_EVENT_NAMES = new Set([
   "AM-NODE-LOGIN-COMPLETED",
 ]);
 
+// Summary mode: journey success/fail rates only. Drops AM-NODE-LOGIN-COMPLETED
+// (the per-node bulk) server-side, so AIC returns ~10x fewer events per page.
+const SUMMARY_FILTER = '(/payload/eventName co "AM-TREE-LOGIN-")';
+const SUMMARY_EVENT_NAMES = new Set([
+  "AM-TREE-LOGIN-INITIATED",
+  "AM-TREE-LOGIN-COMPLETED",
+]);
+
+const MS_PER_HOUR = 3_600_000;
+// AIC rejects any /monitoring/logs query spanning more than a day.
+const MAX_WINDOW_HOURS = 24;
+
+// Chunked runs page windows concurrently. The uat tenant served 6 concurrent
+// /monitoring/logs queries cleanly but started returning 429s at 8 — so default
+// to 4 (comfortably under the burst ceiling) and cap at 6. fetchLogPage still
+// retries any stray 429 with backoff, so the cap is a throughput choice, not a
+// correctness one.
+const DEFAULT_WINDOW_CONCURRENCY = 4;
+const MAX_WINDOW_CONCURRENCY = 6;
+
 function heapUnderPressure(fraction: number): boolean {
   const { heap_size_limit, used_heap_size } = v8.getHeapStatistics();
   if (!heap_size_limit) return false;
   return used_heap_size / heap_size_limit >= fraction;
+}
+
+/**
+ * Split [from, to] into `windowHours`-sized windows (clamped to AIC's 24h max).
+ * 0/undefined, an unparseable range, or a span that fits one window → a single
+ * [from, to] window (so the single-window path keeps its exact behavior).
+ */
+function splitWindows(fromIso: string, toIso: string, windowHours?: number): { from: string; to: string }[] {
+  const from = Date.parse(fromIso);
+  const to = Date.parse(toIso);
+  if (!windowHours || windowHours <= 0 || !Number.isFinite(from) || !Number.isFinite(to) || to <= from) {
+    return [{ from: fromIso, to: toIso }];
+  }
+  const stepMs = Math.floor(Math.min(windowHours, MAX_WINDOW_HOURS) * MS_PER_HOUR);
+  const out: { from: string; to: string }[] = [];
+  for (let start = from; start < to; start += stepMs) {
+    const end = Math.min(start + stepMs, to);
+    out.push({ from: new Date(start).toISOString(), to: new Date(end).toISOString() });
+  }
+  return out.length ? out : [{ from: fromIso, to: toIso }];
 }
 
 /** Abort-aware sleep: resolves immediately if the signal is/becomes aborted. */
@@ -81,6 +121,11 @@ function readStaging(file: string): RawAuthEvent[] {
   return out;
 }
 
+function writeReport(repPath: string, report: unknown): void {
+  fs.mkdirSync(path.dirname(repPath), { recursive: true });
+  fs.writeFileSync(repPath, JSON.stringify(report));
+}
+
 export interface RunJourneyReportOpts {
   job: JourneyReportJob;
   registry: JourneyReportRegistry;
@@ -96,12 +141,31 @@ export interface RunJourneyReportOpts {
   heapPressureFn?: () => boolean;
 }
 
+/** Per-window paging cursor — also the resume state persisted in progress. */
+interface WindowCursor {
+  cookie?: string;
+  rawFetched: number;
+  matched: number;
+  pages: number;
+  truncated: boolean;
+  byteLength: number;
+  eventNameCounts: Map<string, number>;
+}
+
+type WindowOutcome = "done" | "suspended" | "failed" | "aborted";
+
 /**
  * Page `am-authentication` from AIC into a per-job staging file, then analyze it
  * into a report. Mirrors the log pull: 429 retry/backoff (via fetchLogPage),
  * cookie + byteLength persisted per page for resume, adaptive pacing, heap-
- * pressure auto-suspend, and a per-source-equivalent failure that still reaches
- * a terminal state instead of hanging "running".
+ * pressure auto-suspend, and a failure that still reaches a terminal state
+ * instead of hanging "running".
+ *
+ * With `windowHours` set and a range spanning more than one window, the run is
+ * chunked: each window is paged and analyzed in turn and the per-journey rollups
+ * are merged, so a long range stays under the page/event caps and only one
+ * window sits in memory. Multi-window runs emit a rollup-only report (success/
+ * fail rates, no per-attempt rows).
  */
 export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void> {
   const {
@@ -125,50 +189,47 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
   if (signal.aborted) { finalizeAborted(); return; }
   registry.setJobStatus(job.id, "running");
 
-  const { from, to, treeName, maxEvents } = job.params;
+  const { from, to, treeName, maxEvents, summaryOnly, windowHours, windowConcurrency } = job.params;
+  const queryFilter = summaryOnly ? SUMMARY_FILTER : BROAD_FILTER;
+  const wantedEventNames = summaryOnly ? SUMMARY_EVENT_NAMES : WANTED_EVENT_NAMES;
+  const windows = splitWindows(from, to, windowHours);
+  const chunked = windows.length > 1;
   const p = job.progress;
 
-  // Resume from a persisted cursor, or start fresh. byteLength truncation drops
-  // any half-written tail so the staging file holds only fully-persisted pages.
-  const wantsResume = typeof p.byteLength === "number" && p.byteLength > 0 && fs.existsSync(stagePath);
-  let cookie: string | undefined;
-  let rawFetched: number;
-  let matched: number;
-  let pages: number;
-  let truncated: boolean;
-  let byteLength: number;
-  const eventNameCounts = new Map<string, number>();
-  if (wantsResume) {
-    fs.truncateSync(stagePath, p.byteLength!);
-    cookie = p.cookie ?? undefined;
-    rawFetched = p.rawFetched;
-    matched = p.matched;
-    pages = p.page;
-    truncated = p.truncated ?? false;
-    byteLength = p.byteLength!;
-    for (const [k, v] of Object.entries(p.eventNameCounts ?? {})) eventNameCounts.set(k, v);
-  } else {
-    fs.writeFileSync(stagePath, "");
-    cookie = undefined; rawFetched = 0; matched = 0; pages = 0; truncated = false; byteLength = 0;
-  }
+  // Per-window staging file (parallel windows can't share one). Single-window
+  // runs keep using the base path so their page-level resume is unchanged.
+  const winStagePath = (i: number) => stagePath.replace(/\.ndjson$/i, `.w${i}.ndjson`);
+  const freshCursor = (): WindowCursor => ({ cookie: undefined, rawFetched: 0, matched: 0, pages: 0, truncated: false, byteLength: 0, eventNameCounts: new Map() });
 
   // Adaptive inter-page pacing floor: each throughput 429 raises it (mirrors log pull).
-  let bumpFloorMs = 0;
-  const onThrottle = () => { bumpFloorMs = Math.min(MAX_BUMP_MS, bumpFloorMs + AUTO_BUMP_MS); };
+  const pacing = { floor: 0 };
+  const onThrottle = () => { pacing.floor = Math.min(MAX_BUMP_MS, pacing.floor + AUTO_BUMP_MS); };
 
-  let suspended = false;
-  let failed = false;
+  // Page one window from `start` into its own staging file, calling `onProgress`
+  // after each page. Returns a terminal outcome WITHOUT setting job status — the
+  // caller maps it (single-window persists a resume cursor + auto-suspends on
+  // heap; parallel windows run to completion and re-run on resume).
+  async function pageWindow(args: {
+    win: { from: string; to: string };
+    winStage: string;
+    start: WindowCursor;
+    suspendOnHeap: boolean;
+    onProgress: (cursor: WindowCursor, lastTs?: string) => void;
+  }): Promise<{ outcome: WindowOutcome; cursor: WindowCursor; error?: string }> {
+    const { win, winStage, start, suspendOnHeap, onProgress } = args;
+    let { cookie, rawFetched, matched, pages, truncated, byteLength } = start;
+    const eventNameCounts = start.eventNameCounts;
+    const snapshot = (): WindowCursor => ({ cookie, rawFetched, matched, pages, truncated, byteLength, eventNameCounts });
 
-  try {
     while (pages < MAX_PAGES && matched < maxEvents && !truncated) {
-      if (signal.aborted) break;
+      if (signal.aborted) return { outcome: "aborted", cursor: snapshot() };
       pages++;
 
       const params = new URLSearchParams({
         source: JOURNEY_SOURCE,
-        beginTime: from,
-        endTime: to,
-        _queryFilter: BROAD_FILTER,
+        beginTime: win.from,
+        endTime: win.to,
+        _queryFilter: queryFilter,
         ...(cookie ? { _pagedResultsCookie: cookie } : {}),
       });
       const url = `${base}/monitoring/logs?${params}`;
@@ -179,9 +240,7 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
         const error = res.status === 429 && isVolumeQuota429(body)
           ? VOLUME_QUOTA_MESSAGE
           : `HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`;
-        registry.setJobStatus(job.id, "failed", error);
-        failed = true;
-        break;
+        return { outcome: "failed", cursor: snapshot(), error };
       }
 
       const data = (await res.json()) as {
@@ -203,70 +262,181 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
         if (typeof evName === "string") {
           eventNameCounts.set(evName, (eventNameCounts.get(evName) ?? 0) + 1);
         }
-        if (typeof evName !== "string" || !WANTED_EVENT_NAMES.has(evName)) continue;
+        if (typeof evName !== "string" || !wantedEventNames.has(evName)) continue;
         lines += JSON.stringify({ timestamp: r.timestamp, payload }) + "\n";
         matched++;
         lastTs = r.timestamp;
       }
       if (lines) {
-        fs.appendFileSync(stagePath, lines);
+        fs.appendFileSync(winStage, lines);
         byteLength += Buffer.byteLength(lines);
       }
 
       cookie = truncated ? undefined : (data.pagedResultsCookie ?? undefined);
-      registry.updateProgress(job.id, {
-        page: pages, rawFetched, matched, cookie: cookie ?? null, byteLength,
-        lastTimestamp: lastTs, truncated, eventNameCounts: Object.fromEntries(eventNameCounts),
-      });
+      onProgress(snapshot(), lastTs);
 
       if (truncated || !cookie) break;
 
       // Pace under the rate limit (header-based + adaptive floor), then check heap.
-      const wait = Math.max(paceDelayMs(res, nowMs()), bumpFloorMs);
+      const wait = Math.max(paceDelayMs(res, nowMs()), pacing.floor);
       if (wait > 0) await sleepFn(wait, signal);
-      if (heapPressureFn()) {
-        registry.setJobStatus(job.id, "suspended"); // stable resumable state
-        suspended = true;
-        break;
+      if (suspendOnHeap && heapPressureFn()) {
+        return { outcome: "suspended", cursor: snapshot() };
       }
     }
     if (pages >= MAX_PAGES) truncated = true;
+    return { outcome: "done", cursor: snapshot() };
+  }
+
+  // Prepare the staging file + cursor for a window: resume from the persisted
+  // cursor (truncating the half-written tail) or start fresh.
+  function prepareCursor(resume: boolean): WindowCursor {
+    if (resume) {
+      fs.truncateSync(stagePath, p.byteLength!);
+      return {
+        cookie: p.cookie ?? undefined,
+        rawFetched: p.rawFetched,
+        matched: p.matched,
+        pages: p.page,
+        truncated: p.truncated ?? false,
+        byteLength: p.byteLength!,
+        eventNameCounts: new Map(Object.entries(p.eventNameCounts ?? {})),
+      };
+    }
+    fs.writeFileSync(stagePath, "");
+    return { cookie: undefined, rawFetched: 0, matched: 0, pages: 0, truncated: false, byteLength: 0, eventNameCounts: new Map() };
+  }
+
+  try {
+    if (!chunked) {
+      // ---- Single window: full per-attempt report (unchanged behavior). ----
+      const wantsResume = typeof p.byteLength === "number" && p.byteLength > 0 && fs.existsSync(stagePath);
+      const onProgress = (c: WindowCursor, lastTs?: string) => registry.updateProgress(job.id, {
+        page: c.pages, rawFetched: c.rawFetched, matched: c.matched, cookie: c.cookie ?? null,
+        byteLength: c.byteLength, lastTimestamp: lastTs, truncated: c.truncated,
+        eventNameCounts: Object.fromEntries(c.eventNameCounts),
+      });
+      const { outcome, cursor, error } = await pageWindow({
+        win: windows[0], winStage: stagePath, start: prepareCursor(wantsResume), suspendOnHeap: true, onProgress,
+      });
+      if (outcome === "failed") { registry.setJobStatus(job.id, "failed", error); return; }
+      if (outcome === "suspended") { registry.setJobStatus(job.id, "suspended"); return; }
+      if (outcome === "aborted") { finalizeAborted(); return; }
+
+      try {
+        const events = readStaging(stagePath);
+        const analyzed = applyTreeFilter(events, treeName);
+        const report = analyzeJourneyHistory(analyzed);
+        if (cursor.truncated) report.truncated = true;
+        const topEventNames = [...cursor.eventNameCounts.entries()]
+          .sort((a, b) => b[1] - a[1]).slice(0, 20).map(([name, count]) => ({ name, count }));
+        writeReport(repPath, {
+          ...report,
+          window: { from, to },
+          env: job.env,
+          source: "live" as const,
+          pagesFetched: cursor.pages,
+          eventsFetched: analyzed.length,
+          rawFetched: cursor.rawFetched,
+          topEventNames,
+          durationMs: Math.max(0, Date.now() - job.startedAt),
+        });
+        registry.markReportReady(job.id);
+        registry.setJobStatus(job.id, "completed");
+        try { fs.unlinkSync(stagePath); } catch { /* best-effort cleanup */ }
+      } catch (err) {
+        registry.setJobStatus(job.id, "failed", `Analysis failed: ${(err as Error).message}`);
+      }
+      return;
+    }
+
+    // ---- Chunked: page windows in a bounded-concurrency pool, merge rollups. ----
+    // Resume is window-level: completed windows' rollups are folded into `partial`
+    // and skipped; any window that didn't finish is re-run from its first page.
+    const concurrency = Math.min(Math.max(1, windowConcurrency || DEFAULT_WINDOW_CONCURRENCY), MAX_WINDOW_CONCURRENCY);
+    const completed = new Set<number>(p.completedWindows ?? []);
+    let partial: JourneyReportPartial = p.partial ?? {
+      rollup: emptyRollup(), eventNameCounts: {}, rawTotal: 0, matchedTotal: 0, pagesTotal: 0, anyTruncated: false,
+    };
+    const pending = windows.map((w, i) => ({ w, i })).filter(({ i }) => !completed.has(i));
+
+    registry.updateProgress(job.id, {
+      windowsTotal: windows.length, windowsDone: completed.size, completedWindows: [...completed], partial,
+    });
+
+    // Fold a finished window into the rollup + persist. Runs synchronously (no
+    // await), so concurrent workers never interleave a read-modify-write of `partial`.
+    const foldWindow = (i: number, cursor: WindowCursor) => {
+      const winReport = analyzeJourneyHistory(applyTreeFilter(readStaging(winStagePath(i)), treeName));
+      const eventNameCounts = { ...partial.eventNameCounts };
+      for (const [k, v] of cursor.eventNameCounts) eventNameCounts[k] = (eventNameCounts[k] ?? 0) + v;
+      partial = {
+        rollup: mergeRollup(partial.rollup, { summary: winReport.summary, perJourney: winReport.perJourney }),
+        eventNameCounts,
+        rawTotal: partial.rawTotal + cursor.rawFetched,
+        matchedTotal: partial.matchedTotal + cursor.matched,
+        pagesTotal: partial.pagesTotal + cursor.pages,
+        anyTruncated: partial.anyTruncated || cursor.truncated,
+      };
+      completed.add(i);
+      try { fs.unlinkSync(winStagePath(i)); } catch { /* best-effort */ }
+      registry.updateProgress(job.id, {
+        windowsTotal: windows.length, windowsDone: completed.size, completedWindows: [...completed], partial,
+        page: partial.pagesTotal, rawFetched: partial.rawTotal, matched: partial.matchedTotal,
+      });
+    };
+
+    let nextIdx = 0;
+    let failed = false, aborted = false, failError: string | undefined;
+    const worker = async (): Promise<void> => {
+      while (!failed && !aborted) {
+        if (signal.aborted) { aborted = true; return; }
+        const slot = nextIdx++;
+        if (slot >= pending.length) return;
+        const { w, i } = pending[slot];
+        fs.writeFileSync(winStagePath(i), ""); // fresh start (drop any prior partial window file)
+        const { outcome, cursor, error } = await pageWindow({
+          win: w, winStage: winStagePath(i), start: freshCursor(), suspendOnHeap: false, onProgress: () => {},
+        });
+        if (outcome === "aborted") { aborted = true; return; }
+        if (outcome === "failed") { failed = true; failError = error; return; }
+        foldWindow(i, cursor); // outcome === "done"
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(1, pending.length)) }, () => worker()));
+
+    if (failed) { registry.setJobStatus(job.id, "failed", failError); return; }
+    if (aborted || signal.aborted) { finalizeAborted(); return; }
+
+    try {
+      const topEventNames = Object.entries(partial.eventNameCounts)
+        .sort((a, b) => b[1] - a[1]).slice(0, 20).map(([name, count]) => ({ name, count }));
+      writeReport(repPath, {
+        summary: partial.rollup.summary,
+        attempts: [],
+        perJourney: partial.rollup.perJourney,
+        rollupOnly: true,
+        windows: windows.length,
+        windowHours,
+        window: { from, to },
+        env: job.env,
+        source: "live" as const,
+        pagesFetched: partial.pagesTotal,
+        eventsFetched: partial.matchedTotal,
+        rawFetched: partial.rawTotal,
+        topEventNames,
+        durationMs: Math.max(0, Date.now() - job.startedAt),
+        ...(partial.anyTruncated ? { truncated: true } : {}),
+      });
+      registry.markReportReady(job.id);
+      registry.setJobStatus(job.id, "completed");
+      for (let i = 0; i < windows.length; i++) { try { fs.unlinkSync(winStagePath(i)); } catch { /* best-effort */ } }
+      try { fs.unlinkSync(stagePath); } catch { /* best-effort cleanup */ }
+    } catch (err) {
+      registry.setJobStatus(job.id, "failed", `Analysis failed: ${(err as Error).message}`);
+    }
   } catch (err) {
     if (signal.aborted) { finalizeAborted(); return; }
     registry.setJobStatus(job.id, "failed", (err as Error).message);
-    failed = true;
-  }
-
-  if (failed) return;
-  if (suspended) return;            // cookie persisted; a resume continues
-  if (signal.aborted) { finalizeAborted(); return; }
-
-  // Source exhausted (or capped) → analyze the staged events into the report.
-  try {
-    const events = readStaging(stagePath);
-    const analyzed = applyTreeFilter(events, treeName);
-    const report = analyzeJourneyHistory(analyzed);
-    if (truncated) report.truncated = true;
-    const topEventNames = [...eventNameCounts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 20)
-      .map(([name, count]) => ({ name, count }));
-    const full = {
-      ...report,
-      window: { from, to },
-      env: job.env,
-      source: "live" as const,
-      pagesFetched: pages,
-      eventsFetched: analyzed.length,
-      rawFetched,
-      topEventNames,
-    };
-    fs.mkdirSync(path.dirname(repPath), { recursive: true });
-    fs.writeFileSync(repPath, JSON.stringify(full));
-    registry.markReportReady(job.id);
-    registry.setJobStatus(job.id, "completed");
-    try { fs.unlinkSync(stagePath); } catch { /* best-effort cleanup */ }
-  } catch (err) {
-    registry.setJobStatus(job.id, "failed", `Analysis failed: ${(err as Error).message}`);
   }
 }

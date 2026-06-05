@@ -46,6 +46,12 @@ type ScanReport = JourneyHistoryReport & {
     topEventNames?: { name: string; count: number }[];
     source?: "live" | "archive";
     coverage?: "full" | "partial" | "none";
+    /** Multi-window run: success/fail rates only, no per-attempt rows. */
+    rollupOnly?: boolean;
+    windows?: number;
+    windowHours?: number;
+    /** Wall-clock time to generate the report. */
+    durationMs?: number;
 };
 
 const num = (n: number) => n.toLocaleString();
@@ -53,6 +59,17 @@ const num = (n: number) => n.toLocaleString();
 function fmtWindowTs(iso: string): string {
     const d = new Date(iso);
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+}
+
+/** Human-readable elapsed time: "820 ms", "12s", "3m 5s", "1h 2m". */
+function fmtDuration(ms: number): string {
+    if (ms < 1000) return `${Math.round(ms)} ms`;
+    const s = Math.round(ms / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60), rs = s % 60;
+    if (m < 60) return `${m}m ${rs}s`;
+    const h = Math.floor(m / 60), rm = m % 60;
+    return `${h}h ${rm}m`;
 }
 
 /** Always-available breakdown of what AIC returned for this run. */
@@ -69,6 +86,7 @@ function ScanDetails({ report, defaultOpen }: { report: ScanReport; defaultOpen:
         ...(typeof dropped === "number" ? [{ label: "Dropped (non-journey)", value: num(dropped) }] : []),
         { label: "Attempts reconstructed", value: num(report.summary.attempts) },
         { label: "Distinct transactions", value: num(report.summary.transactions) },
+        ...(typeof report.durationMs === "number" ? [{ label: "Generated in", value: fmtDuration(report.durationMs) }] : []),
         { label: "Status", value: report.truncated ? "TRUNCATED — raise Max events or narrow window" : "Complete" },
     ];
     return (
@@ -113,6 +131,11 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     const [treeName, setTreeName] = useState("");
     const [scope, setScope] = useState<ScopeFilter>("outer");
     const [maxEvents, setMaxEvents] = useState(20000);
+    const [summaryOnly, setSummaryOnly] = useState(true);
+    // AIC rejects queries spanning >1 day; long ranges are pulled in ≤24h windows.
+    const [windowHours, setWindowHours] = useState(24);
+    // Concurrent windows per chunked run (AIC throttles bursts above ~6).
+    const [windowConcurrency, setWindowConcurrency] = useState(4);
     const [dataSource, setDataSource] = useState<"live" | "archive">("live");
     const [loading, setLoading] = useState(false); // archive (synchronous) only
     const [error, setError] = useState<string | null>(null);
@@ -159,6 +182,9 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
             to: localToIso(to),
             treeName: treeName.trim() || undefined,
             maxEvents,
+            summaryOnly,
+            windowHours,
+            windowConcurrency,
         });
         // 409 = a job is already active for this env; polling will display it.
         if (!res.ok && res.status !== 409) {
@@ -263,6 +289,8 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
 
     const scopedPerJourney = useMemo(() => {
         if (!report) return [];
+        // Rollup-only (multi-window): no per-attempt rows to rescope; show the merged rollup.
+        if (report.rollupOnly) return report.perJourney;
         if (scope === "all") return report.perJourney;
         // Recompute scoped rollup so percentages reflect the toggle.
         const map = new Map<string, { treeName: string; attempts: number; success: number; fail: number; incomplete: number }>();
@@ -286,6 +314,11 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
 
     const scopedSummary = useMemo(() => {
         if (!report) return null;
+        // Rollup-only: drive the cards straight off the merged summary.
+        if (report.rollupOnly) {
+            const s = report.summary;
+            return { attempts: s.attempts, success: s.success, fail: s.fail, incomplete: s.incomplete };
+        }
         const a = filteredAttempts;
         return {
             attempts: a.length,
@@ -355,6 +388,32 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                             onChange={(e) => setMaxEvents(Number(e.target.value) || 20000)}
                             className="w-32 rounded border border-slate-300 px-2 py-1.5 bg-white" />
                     </label>
+                    {dataSource === "live" && (
+                        <label className="text-sm flex items-center gap-1.5 pb-1.5"
+                            title="Pull only journey start/end events for success/fail rates. Drops per-node events, so it's ~10x faster — but no top-failure-node breakdown.">
+                            <input type="checkbox" checked={summaryOnly}
+                                onChange={(e) => setSummaryOnly(e.target.checked)} />
+                            <span className="text-slate-600">Rates only (faster)</span>
+                        </label>
+                    )}
+                    {dataSource === "live" && (
+                        <label className="text-sm"
+                            title="AIC rejects queries spanning more than a day, so long ranges are pulled in chunks of this many hours (max 24) and the rollups are merged. 0 = single window (full per-attempt report; only valid for ranges ≤ 1 day). Multi-window runs report success/fail rates only.">
+                            <span className="block text-slate-600 mb-1">Window split (hours)</span>
+                            <input type="number" min={0} max={24} step={1} value={windowHours}
+                                onChange={(e) => setWindowHours(Math.max(0, Math.min(24, Math.floor(Number(e.target.value) || 0))))}
+                                className="w-24 rounded border border-slate-300 px-2 py-1.5 bg-white" />
+                        </label>
+                    )}
+                    {dataSource === "live" && windowHours > 0 && (
+                        <label className="text-sm"
+                            title="How many windows to pull in parallel. AIC throttles bursts above ~6 concurrent queries, so this is capped at 6 (default 4). 1 = sequential.">
+                            <span className="block text-slate-600 mb-1">Parallel windows</span>
+                            <input type="number" min={1} max={6} step={1} value={windowConcurrency}
+                                onChange={(e) => setWindowConcurrency(Math.max(1, Math.min(6, Math.floor(Number(e.target.value) || 1))))}
+                                className="w-24 rounded border border-slate-300 px-2 py-1.5 bg-white" />
+                        </label>
+                    )}
                     <button
                         type="button"
                         onClick={run}
@@ -366,7 +425,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                             ? (loading ? "Running..." : "Run report")
                             : (jobActive ? "Running…" : "Run report")}
                     </button>
-                    {report ? (
+                    {report && !report.rollupOnly ? (
                         <button
                             type="button"
                             onClick={exportAttemptsCsv}
@@ -395,7 +454,9 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                         {jobActive ? (
                             <span className="flex items-center gap-2 text-slate-600">
                                 <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-300 border-t-sky-600" />
-                                page {job.progress.page} · {job.progress.rawFetched.toLocaleString()} raw · {job.progress.matched.toLocaleString()} journey events
+                                {job.progress.windowsTotal && job.progress.windowsTotal > 1
+                                    ? <>windows {job.progress.windowsDone ?? 0}/{job.progress.windowsTotal} done · {job.progress.matched.toLocaleString()} journey events</>
+                                    : <>page {job.progress.page} · {job.progress.rawFetched.toLocaleString()} raw · {job.progress.matched.toLocaleString()} journey events</>}
                             </span>
                         ) : jobPaused ? (
                             <span className="text-slate-600">
@@ -433,6 +494,12 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                         </div>
                     ) : report.source === "archive" ? (
                         <div className="text-xs text-slate-500">Served from the local archive.</div>
+                    ) : null}
+                    {typeof report.durationMs === "number" ? (
+                        <div className="text-xs text-slate-500">
+                            Generated in {fmtDuration(report.durationMs)}
+                            {report.windows && report.windows > 1 ? ` · ${report.windows} windows` : ""}
+                        </div>
                     ) : null}
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                         <Stat label="Attempts" value={scopedSummary.attempts} />
@@ -495,6 +562,13 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                         </div>
                     </div>
 
+                    {report.rollupOnly ? (
+                        <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
+                            Multi-window report{report.windows ? ` (${report.windows} × ${report.windowHours ?? "?"}h windows)` : ""}:
+                            success/fail rates only. Per-attempt detail and node-level failure breakdown are omitted to keep
+                            a long range under AIC&apos;s 1-day query limit. For per-attempt rows, use a range ≤ 1 day with Window split 0.
+                        </div>
+                    ) : (
                     <div className="rounded-md border border-slate-200 bg-white">
                         <div className="px-4 py-2 border-b border-slate-200 flex items-center justify-between">
                             <h3 className="text-sm font-semibold text-slate-700">Attempts</h3>
@@ -557,6 +631,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                             ) : null}
                         </div>
                     </div>
+                    )}
                 </>
             ) : null}
         </div>
