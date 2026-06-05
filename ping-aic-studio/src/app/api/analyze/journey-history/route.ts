@@ -13,7 +13,7 @@ import { readManifest, rangeCoverage } from "@/lib/logs/manifest";
  *   - "archive": read `am-authentication` from the local log archive — offline,
  *     instant, never truncated. Requires a prior pull (Phase A2).
  *
- * Body: { env, from, to, treeName?, maxEvents?, source? }
+ * Body: { env, from, to, treeNames?: string[], maxEvents?, source? }
  * Streams NDJSON: progress* then a final `done` (or `error`).
  */
 
