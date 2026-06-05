@@ -359,6 +359,38 @@ describe("runJourneyReport", () => {
     expect(typeof recent![0].ts).toBe("string");
   });
 
+  it("waits the default 5s request delay between pages", async () => {
+    const root = tmpRoot();
+    const reg = createJourneyReportRegistry(root);
+    const job = reg.startJob("prod", { from: FROM, to: TO, maxEvents: 1000 });
+    const fetchFn = pagingFetch([
+      { result: [loginEvent("t1", "2026-06-03T01:00:00Z")], pagedResultsCookie: "c2" },
+      { result: [loginEvent("t2", "2026-06-03T02:00:00Z")], pagedResultsCookie: null },
+    ]);
+    const waits: number[] = [];
+    const sleepFn = vi.fn(async (ms: number) => { waits.push(ms); });
+
+    await runJourneyReport({ ...baseOpts(root), job, registry: reg, fetchFn, sleepFn });
+
+    expect(waits.some((w) => w >= 5000)).toBe(true); // 5s floor applied between pages
+  });
+
+  it("respects a custom requestDelayMs (0 = no floor)", async () => {
+    const root = tmpRoot();
+    const reg = createJourneyReportRegistry(root);
+    const job = reg.startJob("prod", { from: FROM, to: TO, maxEvents: 1000, requestDelayMs: 0 });
+    const fetchFn = pagingFetch([
+      { result: [loginEvent("t1", "2026-06-03T01:00:00Z")], pagedResultsCookie: "c2" },
+      { result: [loginEvent("t2", "2026-06-03T02:00:00Z")], pagedResultsCookie: null },
+    ]);
+    const waits: number[] = [];
+    const sleepFn = vi.fn(async (ms: number) => { waits.push(ms); });
+
+    await runJourneyReport({ ...baseOpts(root), job, registry: reg, fetchFn, sleepFn });
+
+    expect(waits.every((w) => w < 5000)).toBe(true); // no 5s floor when delay is 0
+  });
+
   it("finalizes to 'aborted' on a plain abort", async () => {
     const root = tmpRoot();
     const reg = createJourneyReportRegistry(root);

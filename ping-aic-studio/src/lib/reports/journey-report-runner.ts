@@ -42,6 +42,10 @@ const MAX_WINDOW_HOURS = 24;
 const DEFAULT_WINDOW_CONCURRENCY = 4;
 const MAX_WINDOW_CONCURRENCY = 6;
 
+// Minimum delay between page requests within a window (proactively avoids 429s).
+const DEFAULT_REQUEST_DELAY_MS = 5_000;
+const MAX_REQUEST_DELAY_MS = 60_000;
+
 // How many of the most-recent matched events to surface live (for the UI feed).
 const RECENT_EVENTS_KEPT = 15;
 
@@ -180,6 +184,8 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
   registry.setJobStatus(job.id, "running");
 
   const { from, to, treeNames = [], maxEvents, summaryOnly, windowHours, windowConcurrency } = job.params;
+  // Floor on inter-page delay (default 5s); header pacing + adaptive 429 bump stack on top.
+  const baseDelayMs = Math.min(MAX_REQUEST_DELAY_MS, Math.max(0, job.params.requestDelayMs ?? DEFAULT_REQUEST_DELAY_MS));
   const baseFilter = summaryOnly ? SUMMARY_FILTER : BROAD_FILTER;
   // Live: server-side filter when the selection is small; otherwise (and for
   // every window) filter at analysis time via postFilter.
@@ -288,8 +294,8 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
 
       if (truncated || !cookie) break;
 
-      // Pace under the rate limit (header-based + adaptive floor), then check heap.
-      const wait = Math.max(paceDelayMs(res, nowMs()), pacing.floor);
+      // Pace under the rate limit: base floor, header-based pacing, and adaptive 429 bump.
+      const wait = Math.max(paceDelayMs(res, nowMs()), baseDelayMs, pacing.floor);
       if (wait > 0) await sleepFn(wait, signal);
       if (suspendOnHeap && heapPressureFn()) {
         return { outcome: "suspended", cursor: snapshot() };

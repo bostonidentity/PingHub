@@ -47,6 +47,11 @@ export interface JourneyReportParams {
    * (default 4). 1 = sequential.
    */
   windowConcurrency?: number;
+  /**
+   * Minimum delay (ms) between page requests within a window. Default 5000.
+   * Header-based pacing and the adaptive 429 backoff stack on top of this floor.
+   */
+  requestDelayMs?: number;
 }
 
 /** Accumulator persisted across windows of a chunked (multi-window) run. */

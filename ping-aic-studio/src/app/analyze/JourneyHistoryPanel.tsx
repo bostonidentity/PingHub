@@ -176,7 +176,8 @@ const SETTINGS_KEY = "pinghub.journeyReport.settings.v1";
 interface SavedSettings {
     env?: string; from?: string; to?: string; selectedJourneys?: string[];
     scope?: ScopeFilter; maxEvents?: number; summaryOnly?: boolean;
-    windowHours?: number; windowConcurrency?: number; dataSource?: "live" | "archive";
+    windowHours?: number; windowConcurrency?: number; requestDelaySec?: number;
+    dataSource?: "live" | "archive";
 }
 
 /** Last-used form settings from localStorage (survives app restart). */
@@ -203,6 +204,8 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     const [windowHours, setWindowHours] = useState(saved?.windowHours ?? 24);
     // Concurrent windows per chunked run (AIC throttles bursts above ~6).
     const [windowConcurrency, setWindowConcurrency] = useState(saved?.windowConcurrency ?? 4);
+    // Minimum delay between page requests, in seconds (default 5) — proactively avoids 429s.
+    const [requestDelaySec, setRequestDelaySec] = useState(saved?.requestDelaySec ?? 5);
     const [dataSource, setDataSource] = useState<"live" | "archive">(saved?.dataSource ?? "live");
     const [loading, setLoading] = useState(false); // archive (synchronous) only
     const [error, setError] = useState<string | null>(null);
@@ -258,10 +261,10 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
         if (typeof window === "undefined") return;
         try {
             localStorage.setItem(SETTINGS_KEY, JSON.stringify({
-                env, from, to, selectedJourneys, scope, maxEvents, summaryOnly, windowHours, windowConcurrency, dataSource,
+                env, from, to, selectedJourneys, scope, maxEvents, summaryOnly, windowHours, windowConcurrency, requestDelaySec, dataSource,
             } satisfies SavedSettings));
         } catch { /* ignore quota/availability errors */ }
-    }, [env, from, to, selectedJourneys, scope, maxEvents, summaryOnly, windowHours, windowConcurrency, dataSource]);
+    }, [env, from, to, selectedJourneys, scope, maxEvents, summaryOnly, windowHours, windowConcurrency, requestDelaySec, dataSource]);
 
     // When the live job finishes, pull its report into view (once) and save to history.
     useEffect(() => {
@@ -316,6 +319,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
             summaryOnly,
             windowHours,
             windowConcurrency,
+            requestDelayMs: Math.round(requestDelaySec * 1000),
         });
         // 409 = a job is already active for this env; polling will display it.
         if (!res.ok && res.status !== 409) {
@@ -553,6 +557,15 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                             <span className="block text-slate-600 mb-1">Parallel windows</span>
                             <input type="number" min={1} max={6} step={1} value={windowConcurrency}
                                 onChange={(e) => setWindowConcurrency(Math.max(1, Math.min(6, Math.floor(Number(e.target.value) || 1))))}
+                                className="w-24 rounded border border-slate-300 px-2 py-1.5 bg-white" />
+                        </label>
+                    )}
+                    {dataSource === "live" && (
+                        <label className="text-sm"
+                            title="Minimum delay between page requests (seconds). Default 5. Proactively avoids 429s; raise it if you still get rate-limited, lower it (toward 0) for speed.">
+                            <span className="block text-slate-600 mb-1">Request delay (s)</span>
+                            <input type="number" min={0} max={60} step={1} value={requestDelaySec}
+                                onChange={(e) => setRequestDelaySec(Math.max(0, Math.min(60, Math.floor(Number(e.target.value) || 0))))}
                                 className="w-24 rounded border border-slate-300 px-2 py-1.5 bg-white" />
                         </label>
                     )}
