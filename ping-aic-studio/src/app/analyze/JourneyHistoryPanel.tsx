@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JourneyHistoryReport, JourneyAttempt } from "@/lib/reports/journey-history";
+import type { JourneyHistoryMeta } from "@/lib/reports/journey-report-history";
 import { useJourneyReportJobs } from "@/hooks/useJourneyReportJobs";
 import { JourneyMultiSelect } from "./JourneyMultiSelect";
 
@@ -53,6 +54,8 @@ type ScanReport = JourneyHistoryReport & {
     windowHours?: number;
     /** Wall-clock time to generate the report. */
     durationMs?: number;
+    /** ISO time the report finished generating. */
+    generatedAt?: string;
     /** Journeys the report was scoped to (empty/absent = all). */
     selectedJourneys?: string[];
 };
@@ -130,6 +133,7 @@ function ScanDetails({ report, defaultOpen }: { report: ScanReport; defaultOpen:
         ...(typeof dropped === "number" ? [{ label: "Dropped (non-journey)", value: num(dropped) }] : []),
         { label: "Attempts reconstructed", value: num(report.summary.attempts) },
         { label: "Distinct transactions", value: num(report.summary.transactions) },
+        ...(report.generatedAt ? [{ label: "Generated at", value: fmtWindowTs(report.generatedAt) }] : []),
         ...(typeof report.durationMs === "number" ? [{ label: "Generated in", value: fmtDuration(report.durationMs) }] : []),
         { label: "Status", value: report.truncated ? "TRUNCATED — raise Max events or narrow window" : "Complete" },
     ];
@@ -167,22 +171,39 @@ function ScanDetails({ report, defaultOpen }: { report: ScanReport; defaultOpen:
 type AttemptFilter = "all" | "fail" | "incomplete";
 type ScopeFilter = "outer" | "inner" | "all";
 
+const SETTINGS_KEY = "pinghub.journeyReport.settings.v1";
+
+interface SavedSettings {
+    env?: string; from?: string; to?: string; selectedJourneys?: string[];
+    scope?: ScopeFilter; maxEvents?: number; summaryOnly?: boolean;
+    windowHours?: number; windowConcurrency?: number; dataSource?: "live" | "archive";
+}
+
+/** Last-used form settings from localStorage (survives app restart). */
+function loadSavedSettings(): SavedSettings | null {
+    if (typeof window === "undefined") return null;
+    try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null"); } catch { return null; }
+}
+
 export function JourneyHistoryPanel({ environments }: { environments: { name: string }[] }) {
     const initialWindow = useMemo(defaultWindow, []);
-    const [env, setEnv] = useState(environments[0]?.name ?? "");
-    const [from, setFrom] = useState(initialWindow.from);
-    const [to, setTo] = useState(initialWindow.to);
-    const [selectedJourneys, setSelectedJourneys] = useState<string[]>([]);
+    const saved = useMemo(loadSavedSettings, []);
+    const [env, setEnv] = useState(
+        saved?.env && environments.some((e) => e.name === saved.env) ? saved.env : (environments[0]?.name ?? ""),
+    );
+    const [from, setFrom] = useState(saved?.from ?? initialWindow.from);
+    const [to, setTo] = useState(saved?.to ?? initialWindow.to);
+    const [selectedJourneys, setSelectedJourneys] = useState<string[]>(saved?.selectedJourneys ?? []);
     const [journeyOptions, setJourneyOptions] = useState<string[]>([]);
     const [journeySource, setJourneySource] = useState<"config" | "none">("none");
-    const [scope, setScope] = useState<ScopeFilter>("outer");
-    const [maxEvents, setMaxEvents] = useState(20000);
-    const [summaryOnly, setSummaryOnly] = useState(true);
+    const [scope, setScope] = useState<ScopeFilter>(saved?.scope ?? "outer");
+    const [maxEvents, setMaxEvents] = useState(saved?.maxEvents ?? 20000);
+    const [summaryOnly, setSummaryOnly] = useState(saved?.summaryOnly ?? true);
     // AIC rejects queries spanning >1 day; long ranges are pulled in ≤24h windows.
-    const [windowHours, setWindowHours] = useState(24);
+    const [windowHours, setWindowHours] = useState(saved?.windowHours ?? 24);
     // Concurrent windows per chunked run (AIC throttles bursts above ~6).
-    const [windowConcurrency, setWindowConcurrency] = useState(4);
-    const [dataSource, setDataSource] = useState<"live" | "archive">("live");
+    const [windowConcurrency, setWindowConcurrency] = useState(saved?.windowConcurrency ?? 4);
+    const [dataSource, setDataSource] = useState<"live" | "archive">(saved?.dataSource ?? "live");
     const [loading, setLoading] = useState(false); // archive (synchronous) only
     const [error, setError] = useState<string | null>(null);
     const [report, setReport] = useState<ScanReport | null>(null);
@@ -190,6 +211,9 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     const [scanProgress, setScanProgress] = useState<{ page: number; rawFetched: number; matched: number } | null>(null);
     // Track which completed job's report we've already loaded into `report`.
     const [loadedReportJobId, setLoadedReportJobId] = useState<string | null>(null);
+    const [history, setHistory] = useState<JourneyHistoryMeta[]>([]);
+    // Skip the env-change selection-reset on the very first render (restored settings).
+    const didInitEnv = useRef(false);
 
     // Live reports run as resumable background jobs (retry, suspend/resume).
     const { jobs, start, suspend, resume, abort, fetchReport } = useJourneyReportJobs({ pollMs: 2000, includeFinished: true, env });
@@ -197,7 +221,49 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     const jobActive = !!job && ["queued", "running", "aborting", "suspending"].includes(job.status);
     const jobPaused = !!job && ["suspended", "interrupted"].includes(job.status);
 
-    // When the live job finishes, pull its report into view (once).
+    // Per-env report history (live + archive), persisted server-side.
+    const refreshHistory = useCallback(async () => {
+        if (!env) { setHistory([]); return; }
+        try {
+            const res = await fetch(`/api/analyze/journey-history/history?env=${encodeURIComponent(env)}`);
+            const d = res.ok ? await res.json() : { entries: [] };
+            setHistory(Array.isArray(d.entries) ? d.entries : []);
+        } catch { setHistory([]); }
+    }, [env]);
+    useEffect(() => { refreshHistory(); }, [refreshHistory]);
+
+    const saveToHistory = useCallback(async (rep: ScanReport) => {
+        if (!env) return;
+        try {
+            await fetch("/api/analyze/journey-history/history", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ env, report: rep }),
+            });
+            refreshHistory();
+        } catch { /* history save is non-fatal */ }
+    }, [env, refreshHistory]);
+
+    const loadHistory = useCallback(async (id: string) => {
+        if (!env) return;
+        try {
+            const res = await fetch(`/api/analyze/journey-history/history/${id}?env=${encodeURIComponent(env)}`);
+            if (!res.ok) return;
+            setReport(await res.json() as ScanReport);
+            setError(null);
+        } catch { /* non-fatal */ }
+    }, [env]);
+
+    // Persist the form so it survives an app restart.
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        try {
+            localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+                env, from, to, selectedJourneys, scope, maxEvents, summaryOnly, windowHours, windowConcurrency, dataSource,
+            } satisfies SavedSettings));
+        } catch { /* ignore quota/availability errors */ }
+    }, [env, from, to, selectedJourneys, scope, maxEvents, summaryOnly, windowHours, windowConcurrency, dataSource]);
+
+    // When the live job finishes, pull its report into view (once) and save to history.
     useEffect(() => {
         if (!job || job.status !== "completed" || !job.reportReady || loadedReportJobId === job.id) return;
         let cancelled = false;
@@ -206,17 +272,20 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
             setReport(rep as ScanReport);
             setLoadedReportJobId(job.id);
             setError(null);
+            void saveToHistory(rep as ScanReport);
         });
         return () => { cancelled = true; };
-    }, [job, loadedReportJobId, fetchReport]);
+    }, [job, loadedReportJobId, fetchReport, saveToHistory]);
 
     const displayError = error ?? (job?.status === "failed" ? job.fatalError ?? "Report failed." : null);
 
-    // Load the env's journeys for the picker; reset selection on env change.
+    // Load the env's journeys for the picker; reset selection when the env changes
+    // (but keep a restored selection on the first render).
     useEffect(() => {
         if (!env) { setJourneyOptions([]); setJourneySource("none"); return; }
         let cancelled = false;
-        setSelectedJourneys([]);
+        if (didInitEnv.current) setSelectedJourneys([]);
+        didInitEnv.current = true;
         fetch(`/api/analyze/journeys?env=${encodeURIComponent(env)}`)
             .then((r) => (r.ok ? r.json() : { journeys: [], source: "none" }))
             .then((d: { journeys: string[]; source: "config" | "none" }) => {
@@ -305,6 +374,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                         const { type: _t, ...rep } = msg;
                         void _t;
                         setReport(rep);
+                        void saveToHistory(rep as ScanReport);
                         finished = true;
                     }
                 }
@@ -584,6 +654,51 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                 {displayError ? <div className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded px-3 py-2">{displayError}</div> : null}
             </div>
 
+            {history.length > 0 ? (
+                <details className="rounded-md border border-slate-200 bg-white text-sm">
+                    <summary className="cursor-pointer select-none px-4 py-2 font-medium text-slate-700 hover:bg-slate-50">
+                        Report history ({history.length})
+                    </summary>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                            <thead className="bg-slate-50 text-slate-600">
+                                <tr>
+                                    <th className="text-left px-3 py-2 font-medium">Generated</th>
+                                    <th className="text-left px-3 py-2 font-medium">Source</th>
+                                    <th className="text-left px-3 py-2 font-medium">Window</th>
+                                    <th className="text-left px-3 py-2 font-medium">Journeys</th>
+                                    <th className="text-right px-3 py-2 font-medium">Attempts</th>
+                                    <th className="text-right px-3 py-2 font-medium">Fail rate</th>
+                                    <th className="text-right px-3 py-2 font-medium">Took</th>
+                                    <th className="px-3 py-2"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {history.map((h) => {
+                                    const denom = h.attempts - h.incomplete;
+                                    const fr = denom > 0 ? (h.fail / denom) * 100 : 0;
+                                    return (
+                                        <tr key={h.id} className="border-t border-slate-100 hover:bg-slate-50">
+                                            <td className="px-3 py-1.5 whitespace-nowrap text-slate-600">{fmtEventTs(h.generatedAt)}</td>
+                                            <td className="px-3 py-1.5">{h.source}{h.rollupOnly ? " · rates" : ""}</td>
+                                            <td className="px-3 py-1.5 whitespace-nowrap">{h.window ? `${fmtEventTs(h.window.from)} → ${fmtEventTs(h.window.to)}` : "—"}</td>
+                                            <td className="px-3 py-1.5">{h.selectedJourneys && h.selectedJourneys.length ? `${h.selectedJourneys.length} selected` : "all"}</td>
+                                            <td className="px-3 py-1.5 text-right">{h.attempts.toLocaleString()}</td>
+                                            <td className="px-3 py-1.5 text-right">{h.attempts ? `${fr.toFixed(1)}%` : "—"}</td>
+                                            <td className="px-3 py-1.5 text-right whitespace-nowrap">{typeof h.durationMs === "number" ? fmtDuration(h.durationMs) : "—"}</td>
+                                            <td className="px-3 py-1.5 text-right">
+                                                <button type="button" onClick={() => loadHistory(h.id)}
+                                                    className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50">Load</button>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                </details>
+            ) : null}
+
             {report && scopedSummary ? (
                 <>
                     {report.source === "archive" && report.coverage && report.coverage !== "full" ? (
@@ -595,9 +710,10 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                     ) : report.source === "archive" ? (
                         <div className="text-xs text-slate-500">Served from the local archive.</div>
                     ) : null}
-                    {typeof report.durationMs === "number" ? (
+                    {report.generatedAt || typeof report.durationMs === "number" ? (
                         <div className="text-xs text-slate-500">
-                            Generated in {fmtDuration(report.durationMs)}
+                            {report.generatedAt ? `Generated ${fmtWindowTs(report.generatedAt)}` : "Generated"}
+                            {typeof report.durationMs === "number" ? ` · in ${fmtDuration(report.durationMs)}` : ""}
                             {report.windows && report.windows > 1 ? ` · ${report.windows} windows` : ""}
                         </div>
                     ) : null}

@@ -175,6 +175,7 @@ export async function POST(req: NextRequest) {
                     rawFetched,
                     topEventNames,
                     durationMs: Math.max(0, Date.now() - startedAt),
+                    generatedAt: new Date().toISOString(),
                     ...(treeNames.length ? { selectedJourneys: treeNames } : {}),
                 });
                 controller.close();

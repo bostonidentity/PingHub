@@ -352,6 +352,7 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
           rawFetched: cursor.rawFetched,
           topEventNames,
           durationMs: Math.max(0, Date.now() - job.startedAt),
+          generatedAt: new Date().toISOString(),
           ...(treeNames.length ? { selectedJourneys: treeNames } : {}),
         });
         registry.markReportReady(job.id);
@@ -444,6 +445,7 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
         rawFetched: partial.rawTotal,
         topEventNames,
         durationMs: Math.max(0, Date.now() - job.startedAt),
+        generatedAt: new Date().toISOString(),
         ...(treeNames.length ? { selectedJourneys: treeNames } : {}),
         ...(partial.anyTruncated ? { truncated: true } : {}),
       });
