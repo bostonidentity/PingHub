@@ -545,6 +545,17 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                             ) : null}
                         </div>
                     </div>
+                    {jobActive && job.progress.throttles ? (
+                        <div className="flex items-center gap-2 rounded border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-800">
+                            <span className="inline-block h-3 w-3 shrink-0 animate-pulse rounded-full bg-amber-400" />
+                            <span>
+                                Rate limited by AIC {job.progress.throttles}× — auto-retrying with backoff
+                                {job.progress.lastThrottleAttempt
+                                    ? ` (attempt ${job.progress.lastThrottleAttempt}/6${job.progress.lastThrottleWaitMs ? `, waited ~${Math.ceil(job.progress.lastThrottleWaitMs / 1000)}s` : ""})`
+                                    : ""}. Pacing auto-raised; lower &ldquo;Parallel windows&rdquo; if it persists.
+                            </span>
+                        </div>
+                    ) : null}
                     {jobPaused && job.fatalError ? (
                         <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{job.fatalError}</div>
                     ) : null}

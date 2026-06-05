@@ -91,6 +91,12 @@ export interface JourneyReportProgress {
   partial?: JourneyReportPartial;
   /** Most-recent matched events, surfaced live to the UI feed. */
   recentEvents?: { ts: string; eventName: string; tree?: string }[];
+  /** Cumulative count of 429 throttles auto-retried during this job. */
+  throttles?: number;
+  /** Backoff (ms) of the most recent 429 retry. */
+  lastThrottleWaitMs?: number;
+  /** Retry attempt number of the most recent 429 (1..maxRetries). */
+  lastThrottleAttempt?: number;
 }
 
 export interface JourneyReportJob {

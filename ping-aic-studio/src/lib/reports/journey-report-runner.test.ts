@@ -313,6 +313,25 @@ describe("runJourneyReport", () => {
     expect(done.reportReady).toBeFalsy();
   });
 
+  it("records each retried 429 in progress (live throttle feedback)", async () => {
+    const root = tmpRoot();
+    const reg = createJourneyReportRegistry(root);
+    const job = reg.startJob("prod", { from: FROM, to: TO, maxEvents: 1000 });
+    let calls = 0;
+    const fetchFn = vi.fn(async () => {
+      calls++;
+      if (calls === 1) return jsonRes({ code: 429, errors: ["Rate Limit Exceeded"] }, 429); // first try throttled
+      return jsonRes({ result: [loginEvent("t1", "2026-06-03T01:00:00Z")], pagedResultsCookie: null });
+    });
+
+    await runJourneyReport({ ...baseOpts(root), job, registry: reg, fetchFn });
+
+    const done = reg.getJob(job.id)!;
+    expect(done.status).toBe("completed");          // 429 was retried, then succeeded
+    expect(done.progress.throttles).toBe(1);        // the reject was surfaced, not swallowed
+    expect(done.progress.lastThrottleAttempt).toBe(1);
+  });
+
   it("still fails (terminal) on a volume-quota 429", async () => {
     const root = tmpRoot();
     const reg = createJourneyReportRegistry(root);

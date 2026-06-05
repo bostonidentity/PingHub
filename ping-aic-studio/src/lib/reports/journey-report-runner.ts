@@ -198,8 +198,15 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
   const freshCursor = (): WindowCursor => ({ cookie: undefined, rawFetched: 0, matched: 0, pages: 0, truncated: false, byteLength: 0, eventNameCounts: new Map() });
 
   // Adaptive inter-page pacing floor: each throughput 429 raises it (mirrors log pull).
+  // Surface every 429 live (count + last wait/attempt) so the UI shows each reject,
+  // not just the final outcome — same idea as the Logs tab's per-429 message.
   const pacing = { floor: 0 };
-  const onThrottle = () => { pacing.floor = Math.min(MAX_BUMP_MS, pacing.floor + AUTO_BUMP_MS); };
+  let throttles = p.throttles ?? 0;
+  const onThrottle = (waitMs: number, attempt: number) => {
+    throttles++;
+    pacing.floor = Math.min(MAX_BUMP_MS, pacing.floor + AUTO_BUMP_MS);
+    registry.updateProgress(job.id, { throttles, lastThrottleWaitMs: waitMs, lastThrottleAttempt: attempt });
+  };
 
   // Page one window from `start` into its own staging file, calling `onProgress`
   // after each page. Returns a terminal outcome WITHOUT setting job status — the
