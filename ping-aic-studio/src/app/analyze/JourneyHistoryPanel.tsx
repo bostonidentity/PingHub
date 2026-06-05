@@ -374,6 +374,22 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
             .sort((a, b) => b.attempts - a.attempts);
     }, [report, scope]);
 
+    // Rows for the table: the rollup, plus an explicit 0-attempt row for any
+    // selected journey that had no events in the window (so it isn't silently absent).
+    const perJourneyRows = useMemo(() => {
+        const rows = scopedPerJourney.map((r) => ({
+            treeName: r.treeName, attempts: r.attempts, success: r.success, fail: r.fail, incomplete: r.incomplete, failRate: r.failRate,
+        }));
+        const selected = report?.selectedJourneys ?? [];
+        if (selected.length === 0) return rows;
+        const present = new Set(rows.map((r) => r.treeName));
+        const empties = selected.filter((n) => !present.has(n))
+            .map((treeName) => ({ treeName, attempts: 0, success: 0, fail: 0, incomplete: 0, failRate: 0 }));
+        return [...rows, ...empties];
+    }, [scopedPerJourney, report]);
+
+    const hasEmptySelected = perJourneyRows.some((r) => r.attempts === 0);
+
     const scopedSummary = useMemo(() => {
         if (!report) return null;
         // Rollup-only: drive the cards straight off the merged summary.
@@ -613,7 +629,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                     <div className="rounded-md border border-slate-200 bg-white">
                         <div className="px-4 py-2 border-b border-slate-200 flex items-center justify-between">
                             <h3 className="text-sm font-semibold text-slate-700">Per-journey rollup</h3>
-                            <div className="text-xs text-slate-500">{scopedPerJourney.length} journeys</div>
+                            <div className="text-xs text-slate-500">{perJourneyRows.length} journeys</div>
                         </div>
                         <div className="overflow-x-auto">
                             <table className="w-full text-sm">
@@ -628,22 +644,27 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {scopedPerJourney.map((p) => (
-                                        <tr key={p.treeName} className="border-t border-slate-100">
+                                    {perJourneyRows.map((p) => (
+                                        <tr key={p.treeName} className={`border-t border-slate-100 ${p.attempts === 0 ? "text-slate-400" : ""}`}>
                                             <td className="px-3 py-2 font-mono text-xs">{p.treeName}</td>
                                             <td className="px-3 py-2 text-right">{p.attempts}</td>
-                                            <td className="px-3 py-2 text-right text-emerald-700">{p.success}</td>
-                                            <td className="px-3 py-2 text-right text-rose-700">{p.fail}</td>
-                                            <td className="px-3 py-2 text-right text-amber-700">{p.incomplete}</td>
-                                            <td className="px-3 py-2 text-right">{(p.failRate * 100).toFixed(1)}%</td>
+                                            <td className={`px-3 py-2 text-right ${p.attempts === 0 ? "" : "text-emerald-700"}`}>{p.success}</td>
+                                            <td className={`px-3 py-2 text-right ${p.attempts === 0 ? "" : "text-rose-700"}`}>{p.fail}</td>
+                                            <td className={`px-3 py-2 text-right ${p.attempts === 0 ? "" : "text-amber-700"}`}>{p.incomplete}</td>
+                                            <td className="px-3 py-2 text-right">{p.attempts === 0 ? "—" : `${(p.failRate * 100).toFixed(1)}%`}</td>
                                         </tr>
                                     ))}
-                                    {scopedPerJourney.length === 0 ? (
+                                    {perJourneyRows.length === 0 ? (
                                         <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-500">No attempts in window.</td></tr>
                                     ) : null}
                                 </tbody>
                             </table>
                         </div>
+                        {hasEmptySelected ? (
+                            <div className="px-4 py-2 text-xs text-slate-500 border-t border-slate-200 bg-slate-50">
+                                Greyed rows are selected journeys with no matching events in this window (0 attempts).
+                            </div>
+                        ) : null}
                     </div>
 
                     {report.rollupOnly ? (
