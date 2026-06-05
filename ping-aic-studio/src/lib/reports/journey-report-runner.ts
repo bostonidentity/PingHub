@@ -3,6 +3,7 @@ import path from "node:path";
 import v8 from "node:v8";
 import { fetchLogPage, paceDelayMs, isVolumeQuota429, VOLUME_QUOTA_MESSAGE, AUTO_BUMP_MS, MAX_BUMP_MS } from "@/lib/logs/log-fetch";
 import { analyzeJourneyHistory, emptyRollup, mergeRollup, type RawAuthEvent } from "./journey-history";
+import { buildJourneyQueryFilter, filterEventsByJourneys, MAX_SERVER_FILTER_JOURNEYS } from "./journey-filter";
 import { stagingPath as stagingPathFor, reportPath as reportPathFor } from "./journey-report-paths";
 import type { JourneyReportJob, JourneyReportPartial } from "./journey-report-types";
 import type { JourneyReportRegistry } from "./journey-report-registry";
@@ -74,41 +75,6 @@ const defaultSleep = (ms: number, signal?: AbortSignal) =>
     const id = setTimeout(resolve, ms);
     signal?.addEventListener("abort", () => { clearTimeout(id); resolve(); }, { once: true });
   });
-
-/** Match a treeName substring against the two payload fields the analyzer reads. */
-function matchesTreeName(payload: unknown, treeFilterLc: string): boolean {
-  if (typeof payload !== "object" || payload === null) return false;
-  const p = payload as Record<string, unknown>;
-  const direct = typeof p.treeName === "string" ? p.treeName.toLowerCase() : "";
-  if (direct.includes(treeFilterLc)) return true;
-  const entries = p.entries;
-  if (Array.isArray(entries) && entries.length > 0) {
-    const info = (entries[0] as Record<string, unknown>)?.info;
-    const t = info && typeof info === "object" && typeof (info as Record<string, unknown>).treeName === "string"
-      ? ((info as Record<string, unknown>).treeName as string).toLowerCase() : "";
-    if (t.includes(treeFilterLc)) return true;
-  }
-  return false;
-}
-
-/** Keep only events whose transaction touched the filtered tree (companion events included). */
-function applyTreeFilter(events: RawAuthEvent[], treeName?: string): RawAuthEvent[] {
-  const lc = treeName?.trim().toLowerCase();
-  if (!lc) return events;
-  const keep = new Set<string>();
-  for (const e of events) {
-    if (!matchesTreeName(e.payload, lc)) continue;
-    if (typeof e.payload === "object" && e.payload !== null) {
-      const t = (e.payload as Record<string, unknown>).transactionId;
-      if (typeof t === "string") keep.add(t);
-    }
-  }
-  return events.filter((e) => {
-    if (typeof e.payload !== "object" || e.payload === null) return false;
-    const t = (e.payload as Record<string, unknown>).transactionId;
-    return typeof t === "string" && keep.has(t);
-  });
-}
 
 function readStaging(file: string): RawAuthEvent[] {
   if (!fs.existsSync(file)) return [];
@@ -189,8 +155,14 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
   if (signal.aborted) { finalizeAborted(); return; }
   registry.setJobStatus(job.id, "running");
 
-  const { from, to, treeName, maxEvents, summaryOnly, windowHours, windowConcurrency } = job.params;
-  const queryFilter = summaryOnly ? SUMMARY_FILTER : BROAD_FILTER;
+  const { from, to, treeNames = [], maxEvents, summaryOnly, windowHours, windowConcurrency } = job.params;
+  const baseFilter = summaryOnly ? SUMMARY_FILTER : BROAD_FILTER;
+  // Live: server-side filter when the selection is small; otherwise (and for
+  // every window) filter at analysis time via postFilter.
+  const serverFiltered = treeNames.length > 0 && treeNames.length <= MAX_SERVER_FILTER_JOURNEYS;
+  const queryFilter = buildJourneyQueryFilter(baseFilter, serverFiltered ? treeNames : []);
+  const postFilter = (events: RawAuthEvent[]) =>
+    treeNames.length > 0 && !serverFiltered ? filterEventsByJourneys(events, treeNames) : events;
   const wantedEventNames = summaryOnly ? SUMMARY_EVENT_NAMES : WANTED_EVENT_NAMES;
   const windows = splitWindows(from, to, windowHours);
   const chunked = windows.length > 1;
@@ -325,7 +297,7 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
 
       try {
         const events = readStaging(stagePath);
-        const analyzed = applyTreeFilter(events, treeName);
+        const analyzed = postFilter(events);
         const report = analyzeJourneyHistory(analyzed);
         if (cursor.truncated) report.truncated = true;
         const topEventNames = [...cursor.eventNameCounts.entries()]
@@ -340,6 +312,7 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
           rawFetched: cursor.rawFetched,
           topEventNames,
           durationMs: Math.max(0, Date.now() - job.startedAt),
+          ...(treeNames.length ? { selectedJourneys: treeNames } : {}),
         });
         registry.markReportReady(job.id);
         registry.setJobStatus(job.id, "completed");
@@ -367,7 +340,7 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
     // Fold a finished window into the rollup + persist. Runs synchronously (no
     // await), so concurrent workers never interleave a read-modify-write of `partial`.
     const foldWindow = (i: number, cursor: WindowCursor) => {
-      const winReport = analyzeJourneyHistory(applyTreeFilter(readStaging(winStagePath(i)), treeName));
+      const winReport = analyzeJourneyHistory(postFilter(readStaging(winStagePath(i))));
       const eventNameCounts = { ...partial.eventNameCounts };
       for (const [k, v] of cursor.eventNameCounts) eventNameCounts[k] = (eventNameCounts[k] ?? 0) + v;
       partial = {
@@ -426,6 +399,7 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
         rawFetched: partial.rawTotal,
         topEventNames,
         durationMs: Math.max(0, Date.now() - job.startedAt),
+        ...(treeNames.length ? { selectedJourneys: treeNames } : {}),
         ...(partial.anyTruncated ? { truncated: true } : {}),
       });
       registry.markReportReady(job.id);

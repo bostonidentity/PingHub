@@ -19,8 +19,9 @@ export interface JourneyReportParams {
   /** ISO window. */
   from: string;
   to: string;
-  /** Optional treeName substring filter (applied at analysis time). */
-  treeName?: string;
+  /** Exact journey names to include (empty = all). Server-side filters the AIC
+   * pull when small; analysis-time set filter for archive / large selections. */
+  treeNames?: string[];
   /** Cap on matched journey events staged. */
   maxEvents: number;
   /**

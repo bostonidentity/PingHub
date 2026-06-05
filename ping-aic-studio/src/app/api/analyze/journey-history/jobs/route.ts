@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
 
 /**
  * POST — start a background live journey-history report.
- * Body: { env, from, to, treeName?, maxEvents? }. Returns 202 with the jobId;
+ * Body: { env, from, to, treeNames?, maxEvents? }. Returns 202 with the jobId;
  * the client polls GET /jobs for progress and GET /jobs/{id}/report when done.
  */
 export async function POST(req: NextRequest) {
@@ -29,7 +29,11 @@ export async function POST(req: NextRequest) {
   const env = typeof body.env === "string" ? body.env : "";
   const from = typeof body.from === "string" ? body.from : "";
   const to = typeof body.to === "string" ? body.to : "";
-  const treeName = typeof body.treeName === "string" && body.treeName.trim() ? body.treeName.trim() : undefined;
+  const treeNames = Array.isArray(body.treeNames)
+    ? body.treeNames.filter((n: unknown): n is string => typeof n === "string" && n.trim() !== "").map((n: string) => n.trim())
+    : typeof body.treeName === "string" && body.treeName.trim()
+      ? [body.treeName.trim()]
+      : [];
   const maxEvents = Math.min(Math.max(1, Math.floor(Number(body.maxEvents) || DEFAULT_MAX_EVENTS)), HARD_MAX_EVENTS);
   const summaryOnly = body.summaryOnly === true;
   // AIC rejects queries spanning >1 day, so windows are sized in hours, capped at
@@ -64,7 +68,7 @@ export async function POST(req: NextRequest) {
   const registry = getJourneyReportRegistry();
   let job;
   try {
-    job = registry.startJob(env, { from, to, treeName, maxEvents, summaryOnly, windowHours, windowConcurrency });
+    job = registry.startJob(env, { from, to, treeNames, maxEvents, summaryOnly, windowHours, windowConcurrency });
   } catch (e) {
     if (e instanceof JourneyJobConflictError || (e as Error).name === "JourneyJobConflictError") {
       const existingId = (e as JourneyJobConflictError).existingJobId;

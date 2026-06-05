@@ -180,7 +180,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
         const res = await start(env, {
             from: localToIso(from),
             to: localToIso(to),
-            treeName: treeName.trim() || undefined,
+            treeNames: treeName.trim() ? [treeName.trim()] : [],
             maxEvents,
             summaryOnly,
             windowHours,

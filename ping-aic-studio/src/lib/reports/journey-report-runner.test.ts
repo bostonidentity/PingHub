@@ -167,6 +167,35 @@ describe("runJourneyReport", () => {
     expect(rep.summary.attempts).toBe(1);
   });
 
+  it("server-side filters by selected journeys, and falls back above the cap", async () => {
+    const root = tmpRoot();
+    const reg = createJourneyReportRegistry(root);
+    const job = reg.startJob("prod", { from: FROM, to: TO, maxEvents: 1000, treeNames: ["Login", "Signup"] });
+    const urls: string[] = [];
+    const fetchFn = vi.fn(async (url: string | URL | Request) => {
+      urls.push(String(url));
+      return jsonRes({ result: [loginEvent("t1", "2026-06-03T01:00:00Z")], pagedResultsCookie: null });
+    });
+
+    await runJourneyReport({ ...baseOpts(root), job, registry: reg, fetchFn });
+
+    const decoded = decodeURIComponent(urls[0].replace(/\+/g, " "));
+    expect(decoded).toContain('/payload/entries/info/treeName eq "Login" or /payload/entries/info/treeName eq "Signup"');
+    const rep = JSON.parse(fs.readFileSync(reportPath(baseOpts(root).reportRoot, job.id), "utf-8"));
+    expect(rep.selectedJourneys).toEqual(["Login", "Signup"]);
+
+    // Above the cap → no server clause (falls back to analysis-time filtering).
+    const many = Array.from({ length: 26 }, (_, i) => `J${i}`);
+    const job2 = reg.startJob("prod", { from: FROM, to: TO, maxEvents: 1000, treeNames: many });
+    const urls2: string[] = [];
+    const fetchFn2 = vi.fn(async (url: string | URL | Request) => {
+      urls2.push(String(url));
+      return jsonRes({ result: [], pagedResultsCookie: null });
+    });
+    await runJourneyReport({ ...baseOpts(root), job: job2, registry: reg, fetchFn: fetchFn2 });
+    expect(decodeURIComponent(urls2[0])).not.toContain("entries/info/treeName");
+  });
+
   it("chunks a multi-day range into windows and merges into a rollup-only report", async () => {
     const root = tmpRoot();
     const reg = createJourneyReportRegistry(root);
