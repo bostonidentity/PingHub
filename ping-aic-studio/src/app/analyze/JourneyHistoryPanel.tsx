@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JourneyHistoryReport, JourneyAttempt } from "@/lib/reports/journey-history";
 import type { JourneyHistoryMeta } from "@/lib/reports/journey-report-history";
 import { AUTO_RECOVERY_MAX_EPISODES } from "@/lib/reports/journey-report-types";
+import { buildInspectWindow, INSPECT_WINDOW_HOURS } from "@/lib/reports/journey-inspect";
 import { useJourneyReportJobs } from "@/hooks/useJourneyReportJobs";
 import { JourneyMultiSelect } from "./JourneyMultiSelect";
 
@@ -22,6 +23,14 @@ function defaultWindow(): { from: string; to: string } {
 /** Convert a datetime-local string (local time) to an ISO UTC string. */
 function localToIso(localStr: string): string {
     return new Date(localStr).toISOString();
+}
+
+/** Convert an ISO UTC string to a datetime-local string (local time) for the form. */
+function isoToLocal(iso: string): string {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function Stat({ label, value, sub, tone = "slate" }: { label: string; value: number | string; sub?: string; tone?: "slate" | "emerald" | "rose" | "amber" }) {
@@ -212,6 +221,8 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     const [error, setError] = useState<string | null>(null);
     const [report, setReport] = useState<ScanReport | null>(null);
     const [attemptFilter, setAttemptFilter] = useState<AttemptFilter>("all");
+    // Per-journey rollup row expanded to its failure-node breakdown + failed attempts.
+    const [expandedJourney, setExpandedJourney] = useState<string | null>(null);
     const [scanProgress, setScanProgress] = useState<{ page: number; rawFetched: number; matched: number } | null>(null);
     // Track which completed job's report we've already loaded into `report`.
     const [loadedReportJobId, setLoadedReportJobId] = useState<string | null>(null);
@@ -337,6 +348,42 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
         if (!res.ok && res.status !== 409) {
             setError(res.body.error ?? `Failed to start report (${res.status}).`);
         }
+    }
+
+    /**
+     * Drill into one journey's failures: re-run a focused, full-detail report —
+     * just this journey, Rates-only OFF (so node events are fetched), single-window,
+     * over the most-recent ≤24h of the current report's range (AIC's per-attempt
+     * limit). Pre-fills the form so the window is visible and editable for a re-run.
+     */
+    async function inspect(treeName: string) {
+        if (!env || !report?.window || jobActive) return;
+        const w = buildInspectWindow(report.window.from, report.window.to);
+        setSelectedJourneys([treeName]);
+        setSummaryOnly(false);
+        setWindowHours(0);
+        setFrom(isoToLocal(w.from));
+        setTo(isoToLocal(w.to));
+        setExpandedJourney(null);
+        setError(null);
+        setReport(null);
+        setLoadedReportJobId(null);
+        const res = await start(env, {
+            from: w.from, to: w.to, treeNames: [treeName], maxEvents,
+            summaryOnly: false, windowHours: 0, windowConcurrency,
+            requestDelayMs: Math.round(requestDelaySec * 1000),
+        });
+        if (res.body?.jobId) pendingJobIdRef.current = res.body.jobId;
+        if (!res.ok && res.status !== 409) {
+            setError(res.body.error ?? `Failed to start report (${res.status}).`);
+        }
+    }
+
+    /** Failure detail for one journey: node breakdown + that journey's failed attempts (detail reports only). */
+    function journeyDetail(treeName: string) {
+        const topFailureNodes = report?.perJourney.find((j) => j.treeName === treeName)?.topFailureNodes ?? [];
+        const failedAttempts = (report?.attempts ?? []).filter((a) => a.treeName === treeName && a.outcome === "fail");
+        return { topFailureNodes, failedAttempts };
     }
 
     /** Archive source: local NDJSON, instant, no 429 — keep the synchronous stream. */
@@ -799,16 +846,98 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {perJourneyRows.map((p) => (
-                                        <tr key={p.treeName} className={`border-t border-slate-100 ${p.attempts === 0 ? "text-slate-400" : ""}`}>
-                                            <td className="px-3 py-2 font-mono text-xs">{p.treeName}</td>
+                                    {perJourneyRows.map((p) => {
+                                        const expandable = p.attempts > 0;
+                                        const isOpen = expandedJourney === p.treeName;
+                                        const detail = isOpen ? journeyDetail(p.treeName) : null;
+                                        return (
+                                        <Fragment key={p.treeName}>
+                                        <tr
+                                            className={`border-t border-slate-100 ${p.attempts === 0 ? "text-slate-400" : "cursor-pointer hover:bg-slate-50"}`}
+                                            onClick={expandable ? () => setExpandedJourney(isOpen ? null : p.treeName) : undefined}>
+                                            <td className="px-3 py-2 font-mono text-xs">
+                                                <span className="mr-1 inline-block w-3 text-slate-400">{expandable ? (isOpen ? "▾" : "▸") : ""}</span>
+                                                {p.treeName}
+                                            </td>
                                             <td className="px-3 py-2 text-right">{p.attempts}</td>
                                             <td className={`px-3 py-2 text-right ${p.attempts === 0 ? "" : "text-emerald-700"}`}>{p.success}</td>
                                             <td className={`px-3 py-2 text-right ${p.attempts === 0 ? "" : "text-rose-700"}`}>{p.fail}</td>
                                             <td className={`px-3 py-2 text-right ${p.attempts === 0 ? "" : "text-amber-700"}`}>{p.incomplete}</td>
                                             <td className="px-3 py-2 text-right">{p.attempts === 0 ? "—" : `${(p.failRate * 100).toFixed(1)}%`}</td>
                                         </tr>
-                                    ))}
+                                        {isOpen && detail ? (
+                                            <tr className="bg-slate-50">
+                                                <td colSpan={6} className="px-4 py-3">
+                                                    <div className="space-y-3 text-xs">
+                                                        {detail.topFailureNodes.length > 0 ? (
+                                                            <div>
+                                                                <div className="font-semibold text-slate-700 mb-1">Top failure nodes</div>
+                                                                <ul className="space-y-0.5">
+                                                                    {detail.topFailureNodes.map((n) => (
+                                                                        <li key={n.node} className="flex items-center gap-2">
+                                                                            <span className="font-mono text-slate-700">{n.node}</span>
+                                                                            <span className="text-rose-700">{n.count.toLocaleString()}</span>
+                                                                            <span className="text-slate-400">({p.fail ? Math.round((n.count / p.fail) * 100) : 0}% of fails)</span>
+                                                                        </li>
+                                                                    ))}
+                                                                </ul>
+                                                            </div>
+                                                        ) : null}
+                                                        {detail.failedAttempts.length > 0 ? (
+                                                            <div>
+                                                                <div className="font-semibold text-slate-700 mb-1">Failed attempts ({detail.failedAttempts.length.toLocaleString()})</div>
+                                                                <div className="overflow-x-auto rounded border border-slate-200 bg-white">
+                                                                    <table className="w-full">
+                                                                        <thead className="bg-slate-50 text-slate-500">
+                                                                            <tr>
+                                                                                <th className="text-left px-2 py-1 font-medium">Started</th>
+                                                                                <th className="text-left px-2 py-1 font-medium">Failure node</th>
+                                                                                <th className="text-left px-2 py-1 font-medium">User</th>
+                                                                                <th className="text-left px-2 py-1 font-medium">Realm</th>
+                                                                                <th className="text-left px-2 py-1 font-medium">Transaction</th>
+                                                                            </tr>
+                                                                        </thead>
+                                                                        <tbody>
+                                                                            {detail.failedAttempts.slice(0, 50).map((a, i) => (
+                                                                                <tr key={`${a.transactionId}-${i}`} className="border-t border-slate-100">
+                                                                                    <td className="px-2 py-1 whitespace-nowrap text-slate-600">{a.startedAt.replace("T", " ").replace(/\.\d+Z$/, "Z")}</td>
+                                                                                    <td className="px-2 py-1">{a.failureNode ? `${a.failureNode}${a.failureNodeOutcome ? ` (${a.failureNodeOutcome})` : ""}` : "—"}</td>
+                                                                                    <td className="px-2 py-1">{a.userId ?? "—"}</td>
+                                                                                    <td className="px-2 py-1">{a.realm ?? "—"}</td>
+                                                                                    <td className="px-2 py-1 font-mono text-slate-500">
+                                                                                        <button type="button" title="Copy full transaction ID"
+                                                                                            onClick={(e) => { e.stopPropagation(); void navigator.clipboard?.writeText(a.transactionId); }}
+                                                                                            className="hover:text-sky-700">{a.transactionId.slice(0, 16)}… ⧉</button>
+                                                                                    </td>
+                                                                                </tr>
+                                                                            ))}
+                                                                        </tbody>
+                                                                    </table>
+                                                                </div>
+                                                                {detail.failedAttempts.length > 50 ? (
+                                                                    <div className="mt-1 text-slate-500">Showing first 50 of {detail.failedAttempts.length.toLocaleString()} — use the Attempts table (filter: fail) for all.</div>
+                                                                ) : null}
+                                                            </div>
+                                                        ) : (
+                                                            <div className="text-slate-500">
+                                                                No per-attempt / node detail in this report{report.rollupOnly ? " (multi-window rates-only rollup)" : ""}.
+                                                            </div>
+                                                        )}
+                                                        {dataSource === "live" && p.fail > 0 ? (
+                                                            <button type="button" disabled={jobActive}
+                                                                onClick={(e) => { e.stopPropagation(); void inspect(p.treeName); }}
+                                                                title={jobActive ? "A report is already running for this environment" : undefined}
+                                                                className="rounded border border-sky-300 bg-sky-50 px-2 py-1 text-sky-800 hover:bg-sky-100 disabled:opacity-50">
+                                                                Inspect failures — re-run last {INSPECT_WINDOW_HOURS}h, full detail
+                                                            </button>
+                                                        ) : null}
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        ) : null}
+                                        </Fragment>
+                                        );
+                                    })}
                                     {perJourneyRows.length === 0 ? (
                                         <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-500">No attempts in window.</td></tr>
                                     ) : null}
@@ -826,7 +955,9 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                         <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
                             Multi-window report{report.windows ? ` (${report.windows} × ${report.windowHours ?? "?"}h windows)` : ""}:
                             success/fail rates only. Per-attempt detail and node-level failure breakdown are omitted to keep
-                            a long range under AIC&apos;s 1-day query limit. For per-attempt rows, use a range ≤ 1 day with Window split 0.
+                            a long range under AIC&apos;s 1-day query limit. To see why a journey failed, expand its row above and
+                            click <span className="font-medium">Inspect failures</span> (re-runs the last {INSPECT_WINDOW_HOURS}h with full detail),
+                            or use a range ≤ 1 day with Window split 0.
                         </div>
                     ) : (
                     <div className="rounded-md border border-slate-200 bg-white">
