@@ -865,6 +865,26 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                                 ? "TRUNCATED — raise Max events or narrow window"
                                 : `${report.pagesFetched ?? 0} pages${typeof report.rawFetched === "number" ? ` · raw ${report.rawFetched}` : ""}`} />
                     </div>
+                    {report.truncated ? (() => {
+                        const multiWindow = !!(report.windows && report.windows > 1);
+                        const suggested = Math.max(1, Math.floor((report.windowHours ?? 24) / 2));
+                        return (
+                            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 flex flex-wrap items-center gap-2">
+                                <span>
+                                    A window hit the event cap and may undercount —{" "}
+                                    {multiWindow
+                                        ? <>each {report.windowHours ?? 24}h window held too many events. Use a smaller <span className="font-medium">Window split</span> so each window stays under the cap, or raise <span className="font-medium">Max events</span>.</>
+                                        : <>raise <span className="font-medium">Max events</span> or shorten the range.</>}
+                                </span>
+                                {multiWindow ? (
+                                    <button type="button" onClick={() => { setWindowHours(suggested); setDataSource("live"); }}
+                                        className="rounded border border-amber-400 bg-white px-2 py-0.5 text-amber-800 hover:bg-amber-100">
+                                        Set Window split to {suggested}h
+                                    </button>
+                                ) : null}
+                            </div>
+                        );
+                    })() : null}
                     {report.inspectedFromRaw ? (
                         <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800">
                             Re-analyzed from this run&apos;s stored events — no new AIC pull. Expand a journey for its failure-node breakdown and failed attempts.
