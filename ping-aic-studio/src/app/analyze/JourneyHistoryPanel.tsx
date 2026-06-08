@@ -4,7 +4,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import type { JourneyHistoryReport, JourneyAttempt } from "@/lib/reports/journey-history";
 import type { JourneyHistoryMeta } from "@/lib/reports/journey-report-history";
 import { AUTO_RECOVERY_MAX_EPISODES } from "@/lib/reports/journey-report-types";
-import { buildInspectWindow, INSPECT_WINDOW_HOURS } from "@/lib/reports/journey-inspect";
+import { buildInspectWindow, INSPECT_WINDOW_HOURS, singleWindowTooWide } from "@/lib/reports/journey-inspect";
 import { useJourneyReportJobs } from "@/hooks/useJourneyReportJobs";
 import { JourneyMultiSelect } from "./JourneyMultiSelect";
 
@@ -337,6 +337,10 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
         setError(null);
         if (dataSource === "archive") { await runArchive(); return; }
 
+        // Pre-flight: a single-window (split 0) run can't span more than a day (AIC limit).
+        const tooWide = singleWindowTooWide(localToIso(from), localToIso(to), windowHours);
+        if (tooWide) { setError(tooWide); return; }
+
         // Live → start (or surface) a resumable background job.
         setReport(null);
         setLoadedReportJobId(null);
@@ -565,6 +569,13 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
         };
     }, [report, filteredAttempts]);
 
+    // Pre-emptive hint: single-window (split 0) run can't span more than a day.
+    const rangeWarning = useMemo(() => {
+        if (dataSource !== "live" || !from || !to) return null;
+        try { return singleWindowTooWide(localToIso(from), localToIso(to), windowHours); }
+        catch { return null; }
+    }, [dataSource, from, to, windowHours]);
+
     return (
         <div className="space-y-4">
             <div className="rounded-md border border-slate-200 bg-slate-50 p-4 space-y-3">
@@ -665,8 +676,8 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                     <button
                         type="button"
                         onClick={run}
-                        disabled={dataSource === "archive" ? loading : jobActive}
-                        title={jobActive ? "A report is already running for this environment" : undefined}
+                        disabled={dataSource === "archive" ? loading : (jobActive || !!rangeWarning)}
+                        title={rangeWarning ?? (jobActive ? "A report is already running for this environment" : undefined)}
                         className="rounded bg-sky-600 px-4 py-1.5 text-white text-sm font-medium hover:bg-sky-700 disabled:opacity-50"
                     >
                         {dataSource === "archive"
@@ -691,6 +702,10 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                         </div>
                     ) : null}
                 </div>
+
+                {rangeWarning ? (
+                    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{rangeWarning}</div>
+                ) : null}
 
                 <div>
                     <JourneyMultiSelect
