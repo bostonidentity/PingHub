@@ -191,9 +191,11 @@ const SETTINGS_KEY = "pinghub.journeyReport.settings.v1";
 
 interface SavedSettings {
     env?: string; from?: string; to?: string; selectedJourneys?: string[];
-    scope?: ScopeFilter; maxEvents?: number; summaryOnly?: boolean;
+    scope?: ScopeFilter; maxEvents?: number;
     windowHours?: number; windowConcurrency?: number; requestDelaySec?: number;
     dataSource?: "live" | "archive"; retainRaw?: boolean;
+    // `summaryOnly` (Rates only) is intentionally NOT persisted — it always defaults
+    // to checked, so a one-off rates-off run (e.g. the Inspect drill-down) can't stick.
 }
 
 /** Last-used form settings from localStorage (survives app restart). */
@@ -215,7 +217,9 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     const [journeySource, setJourneySource] = useState<"config" | "none">("none");
     const [scope, setScope] = useState<ScopeFilter>(saved?.scope ?? "outer");
     const [maxEvents, setMaxEvents] = useState(saved?.maxEvents ?? 20000);
-    const [summaryOnly, setSummaryOnly] = useState(saved?.summaryOnly ?? true);
+    // Rates only (success/fail rates, no per-node events) — defaults checked every load,
+    // not remembered, so the Inspect drill-down's temporary rates-off can't become sticky.
+    const [summaryOnly, setSummaryOnly] = useState(true);
     // AIC rejects queries spanning >1 day; long ranges are pulled in ≤24h windows.
     const [windowHours, setWindowHours] = useState(saved?.windowHours ?? 24);
     // Concurrent windows per chunked run (AIC throttles bursts above ~6).
@@ -284,10 +288,10 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
         if (typeof window === "undefined") return;
         try {
             localStorage.setItem(SETTINGS_KEY, JSON.stringify({
-                env, from, to, selectedJourneys, scope, maxEvents, summaryOnly, windowHours, windowConcurrency, requestDelaySec, dataSource, retainRaw,
+                env, from, to, selectedJourneys, scope, maxEvents, windowHours, windowConcurrency, requestDelaySec, dataSource, retainRaw,
             } satisfies SavedSettings));
         } catch { /* ignore quota/availability errors */ }
-    }, [env, from, to, selectedJourneys, scope, maxEvents, summaryOnly, windowHours, windowConcurrency, requestDelaySec, dataSource, retainRaw]);
+    }, [env, from, to, selectedJourneys, scope, maxEvents, windowHours, windowConcurrency, requestDelaySec, dataSource, retainRaw]);
 
     // When a job the user started/resumed this session finishes, pull its report
     // into view (once) and save to history. Keyed on primitives (not the polled
