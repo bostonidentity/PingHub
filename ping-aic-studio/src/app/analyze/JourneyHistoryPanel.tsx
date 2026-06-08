@@ -4,7 +4,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import type { JourneyHistoryReport, JourneyAttempt } from "@/lib/reports/journey-history";
 import type { JourneyHistoryMeta } from "@/lib/reports/journey-report-history";
 import { AUTO_RECOVERY_MAX_EPISODES } from "@/lib/reports/journey-report-types";
-import { buildInspectWindow, INSPECT_WINDOW_HOURS, singleWindowTooWide } from "@/lib/reports/journey-inspect";
+import { buildInspectWindow, INSPECT_WINDOW_HOURS, singleWindowTooWide, retentionWarning } from "@/lib/reports/journey-inspect";
 import { useJourneyReportJobs } from "@/hooks/useJourneyReportJobs";
 import { JourneyMultiSelect } from "./JourneyMultiSelect";
 
@@ -576,6 +576,13 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
         catch { return null; }
     }, [dataSource, from, to, windowHours]);
 
+    // Non-blocking heads-up: From precedes AIC's ~30-day journey-log retention.
+    const retentionWarn = useMemo(() => {
+        if (dataSource !== "live" || !from) return null;
+        try { return retentionWarning(localToIso(from), Date.now()); }
+        catch { return null; }
+    }, [dataSource, from]);
+
     return (
         <div className="space-y-4">
             <div className="rounded-md border border-slate-200 bg-slate-50 p-4 space-y-3">
@@ -705,6 +712,9 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
 
                 {rangeWarning ? (
                     <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{rangeWarning}</div>
+                ) : null}
+                {retentionWarn ? (
+                    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{retentionWarn}</div>
                 ) : null}
 
                 <div>

@@ -34,3 +34,29 @@ export function singleWindowTooWide(fromIso: string, toIso: string, windowHours:
   return `This ${Math.round(days)}-day range can't be pulled as a single AIC query (max 1 day). ` +
     `Set “Window split (hours)” to 24 for a multi-window rollup, or shorten the range to ≤ 1 day for full per-attempt detail.`;
 }
+
+/**
+ * AIC retains journey (am-authentication) logs for a rolling ~30-day window — beyond
+ * it, queries return HTTP 200 with zero results (no error). Confirmed empirically
+ * against the prod tenant on 2026-06-08: data present at 29 days back, empty at 30+.
+ */
+export const JOURNEY_LOG_RETENTION_DAYS = 30;
+
+/**
+ * Warn when a query's `from` precedes AIC's rolling journey-log retention, so the
+ * user knows the earliest part of the range will simply be empty (not an error).
+ * Returns null when `from` is within retention or unparseable.
+ */
+export function retentionWarning(
+  fromIso: string,
+  nowMs: number,
+  retentionDays: number = JOURNEY_LOG_RETENTION_DAYS,
+): string | null {
+  const from = Date.parse(fromIso);
+  if (!Number.isFinite(from)) return null;
+  const earliest = nowMs - retentionDays * 24 * 3_600_000;
+  if (from >= earliest) return null;
+  const earliestDate = new Date(earliest).toISOString().slice(0, 10);
+  return `AIC retains journey logs for only ~${retentionDays} days, so data before ${earliestDate} won’t exist — ` +
+    `the earliest part of this range will come back empty.`;
+}

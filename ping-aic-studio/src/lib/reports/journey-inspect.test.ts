@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildInspectWindow, INSPECT_WINDOW_HOURS, singleWindowTooWide } from "./journey-inspect";
+import { buildInspectWindow, INSPECT_WINDOW_HOURS, singleWindowTooWide, retentionWarning, JOURNEY_LOG_RETENTION_DAYS } from "./journey-inspect";
 
 describe("buildInspectWindow", () => {
   it("clamps a long range to its most-recent 24h", () => {
@@ -50,5 +50,33 @@ describe("singleWindowTooWide", () => {
   it("ignores degenerate/unparseable ranges (other validation handles those)", () => {
     expect(singleWindowTooWide("nope", "also", 0)).toBeNull();
     expect(singleWindowTooWide("2026-06-08T00:00:00Z", "2026-06-08T00:00:00Z", 0)).toBeNull();
+  });
+});
+
+describe("retentionWarning", () => {
+  const NOW = Date.parse("2026-06-08T00:00:00Z");
+  // 30 days back = 2026-05-09.
+
+  it("warns when From is older than the retention window", () => {
+    const msg = retentionWarning("2026-04-01T00:00:00Z", NOW);
+    expect(msg).toMatch(/~30 days/);
+    expect(msg).toMatch(/2026-05-09/); // earliest available date (rolling)
+  });
+
+  it("is silent for a From inside the retention window", () => {
+    expect(retentionWarning("2026-06-01T00:00:00Z", NOW)).toBeNull();
+  });
+
+  it("is silent right at the retention edge", () => {
+    expect(retentionWarning("2026-05-09T00:00:00Z", NOW)).toBeNull(); // exactly 30 days
+    expect(retentionWarning("2026-05-08T00:00:00Z", NOW)).not.toBeNull(); // a day past the edge
+  });
+
+  it("ignores an unparseable From", () => {
+    expect(retentionWarning("nope", NOW)).toBeNull();
+  });
+
+  it("exposes the retention window length", () => {
+    expect(JOURNEY_LOG_RETENTION_DAYS).toBe(30);
   });
 });
