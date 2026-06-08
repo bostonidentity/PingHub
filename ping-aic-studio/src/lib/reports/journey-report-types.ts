@@ -55,6 +55,13 @@ export interface JourneyReportParams {
    * Header-based pacing and the adaptive 429 backoff stack on top of this floor.
    */
   requestDelayMs?: number;
+  /**
+   * Opt-in: keep each window's matched-event NDJSON after the run so its failures
+   * can be inspected offline (re-analyzed without re-pulling from AIC). Bounded by a
+   * per-env retention cap. Only preserves what was fetched — a Rates-only run has no
+   * AM-NODE events, so failure-node detail stays absent.
+   */
+  retainRaw?: boolean;
 }
 
 /** Accumulator persisted across windows of a chunked (multi-window) run. */

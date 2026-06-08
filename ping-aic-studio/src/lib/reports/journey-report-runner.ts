@@ -5,7 +5,8 @@ import { fetchLogPage, paceDelayMs, isVolumeQuota429, VOLUME_QUOTA_MESSAGE } fro
 import { ThrottleGovernor } from "./journey-throttle-governor";
 import { analyzeJourneyHistory, emptyRollup, mergeRollup, type RawAuthEvent } from "./journey-history";
 import { buildJourneyQueryFilter, filterEventsByJourneys, MAX_SERVER_FILTER_JOURNEYS } from "./journey-filter";
-import { stagingPath as stagingPathFor, reportPath as reportPathFor } from "./journey-report-paths";
+import { stagingPath as stagingPathFor, reportPath as reportPathFor, rawDir, rawWindowPath } from "./journey-report-paths";
+import { pruneRawRetention } from "./journey-raw";
 import { AUTO_RECOVERY_MAX_EPISODES, type JourneyReportJob, type JourneyReportPartial } from "./journey-report-types";
 import type { JourneyReportRegistry } from "./journey-report-registry";
 
@@ -198,7 +199,20 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
   if (signal.aborted) { finalizeAborted(); return; }
   registry.setJobStatus(job.id, "running");
 
-  const { from, to, treeNames = [], maxEvents, summaryOnly, windowHours, windowConcurrency } = job.params;
+  const { from, to, treeNames = [], maxEvents, summaryOnly, windowHours, windowConcurrency, retainRaw } = job.params;
+
+  // Opt-in: keep each window's matched-event NDJSON for offline inspection (re-analyze
+  // without re-pulling). Move a finished window's staging file into the raw store
+  // rather than deleting it; a successful run records `rawJobId` and prunes old runs.
+  const retainWindow = (srcFile: string, window: number) => {
+    if (!retainRaw) { try { fs.unlinkSync(srcFile); } catch { /* best-effort */ } return; }
+    try {
+      const dst = rawWindowPath(reportRoot, job.id, window);
+      fs.mkdirSync(rawDir(reportRoot, job.id), { recursive: true });
+      fs.renameSync(srcFile, dst);
+    } catch { try { fs.unlinkSync(srcFile); } catch { /* best-effort */ } }
+  };
+  const rawMeta = retainRaw ? { rawJobId: job.id } : {};
   // Floor on inter-page delay (default 5s); header pacing + adaptive 429 bump stack on top.
   const baseDelayMs = Math.min(MAX_REQUEST_DELAY_MS, Math.max(0, job.params.requestDelayMs ?? DEFAULT_REQUEST_DELAY_MS));
   const baseFilter = summaryOnly ? SUMMARY_FILTER : BROAD_FILTER;
@@ -420,10 +434,12 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
           durationMs: Math.max(0, Date.now() - job.startedAt),
           generatedAt: new Date().toISOString(),
           ...(treeNames.length ? { selectedJourneys: treeNames } : {}),
+          ...rawMeta,
         });
         registry.markReportReady(job.id);
         registry.setJobStatus(job.id, "completed");
-        try { fs.unlinkSync(stagePath); } catch { /* best-effort cleanup */ }
+        retainWindow(stagePath, 0); // delete, or keep the raw for offline inspection
+        if (retainRaw) pruneRawRetention(reportRoot);
       } catch (err) {
         registry.setJobStatus(job.id, "failed", `Analysis failed: ${(err as Error).message}`);
       }
@@ -460,7 +476,7 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
         anyTruncated: partial.anyTruncated || cursor.truncated,
       };
       completed.add(i);
-      try { fs.unlinkSync(winStagePath(i)); } catch { /* best-effort */ }
+      retainWindow(winStagePath(i), i); // delete, or move into the raw store when retaining
       registry.updateProgress(job.id, {
         windowsTotal: windows.length, windowsDone: completed.size, completedWindows: [...completed], partial,
         page: partial.pagesTotal, rawFetched: partial.rawTotal, matched: partial.matchedTotal,
@@ -548,11 +564,14 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
         generatedAt: new Date().toISOString(),
         ...(treeNames.length ? { selectedJourneys: treeNames } : {}),
         ...(partial.anyTruncated ? { truncated: true } : {}),
+        ...rawMeta,
       });
       registry.markReportReady(job.id);
       registry.setJobStatus(job.id, "completed");
+      // Folded windows were already moved into the raw store (or deleted); drop any stragglers.
       for (let i = 0; i < windows.length; i++) { try { fs.unlinkSync(winStagePath(i)); } catch { /* best-effort */ } }
       try { fs.unlinkSync(stagePath); } catch { /* best-effort cleanup */ }
+      if (retainRaw) pruneRawRetention(reportRoot);
     } catch (err) {
       registry.setJobStatus(job.id, "failed", `Analysis failed: ${(err as Error).message}`);
     }

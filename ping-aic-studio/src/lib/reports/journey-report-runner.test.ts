@@ -6,7 +6,7 @@ import { runJourneyReport } from "./journey-report-runner";
 import { AUTO_RECOVERY_MAX_EPISODES } from "./journey-report-types";
 import { analyzeJourneyHistory } from "./journey-history";
 import { createJourneyReportRegistry } from "./journey-report-registry";
-import { reportPath } from "./journey-report-paths";
+import { reportPath, rawDir, rawWindowPath } from "./journey-report-paths";
 
 function tmpRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "journey-run-"));
@@ -480,6 +480,43 @@ describe("runJourneyReport", () => {
     await runJourneyReport({ ...baseOpts(root), job, registry: reg, fetchFn, signal: ctl.signal, sleepFn });
 
     expect(reg.getJob(job.id)!.status).toBe("aborted");
+  });
+
+  it("retains per-window raw NDJSON for inspection when retainRaw is set", async () => {
+    const root = tmpRoot();
+    const reg = createJourneyReportRegistry(root);
+    const reportRoot = baseOpts(root).reportRoot;
+    // 2 windows; both retained, base staging dropped.
+    const job = reg.startJob("prod", {
+      from: "2026-06-01T00:00:00Z", to: "2026-06-03T00:00:00Z", maxEvents: 1000, windowHours: 24, retainRaw: true,
+    });
+    const fetchFn = vi.fn(async (url: string | URL | Request) => {
+      const d = new URL(String(url)).searchParams.get("beginTime")!.slice(8, 10);
+      return jsonRes({ result: [loginEvent(`t${d}`, `2026-06-${d}T01:00:00Z`)], pagedResultsCookie: null });
+    });
+
+    await runJourneyReport({ ...baseOpts(root), job, registry: reg, fetchFn });
+
+    expect(reg.getJob(job.id)!.status).toBe("completed");
+    expect(fs.existsSync(rawWindowPath(reportRoot, job.id, 0))).toBe(true);
+    expect(fs.existsSync(rawWindowPath(reportRoot, job.id, 1))).toBe(true);
+    const rep = JSON.parse(fs.readFileSync(reportPath(reportRoot, job.id), "utf-8"));
+    expect(rep.rawJobId).toBe(job.id);
+  });
+
+  it("deletes staging (no raw store) when retainRaw is off", async () => {
+    const root = tmpRoot();
+    const reg = createJourneyReportRegistry(root);
+    const reportRoot = baseOpts(root).reportRoot;
+    const job = reg.startJob("prod", { from: FROM, to: TO, maxEvents: 1000 });
+    const fetchFn = pagingFetch([{ result: [loginEvent("t1", "2026-06-03T01:00:00Z")], pagedResultsCookie: null }]);
+
+    await runJourneyReport({ ...baseOpts(root), job, registry: reg, fetchFn });
+
+    expect(reg.getJob(job.id)!.status).toBe("completed");
+    expect(fs.existsSync(rawDir(reportRoot, job.id))).toBe(false);
+    const rep = JSON.parse(fs.readFileSync(reportPath(reportRoot, job.id), "utf-8"));
+    expect(rep.rawJobId).toBeUndefined();
   });
 
   it("still fails (terminal) on a volume-quota 429", async () => {

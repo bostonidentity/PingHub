@@ -68,6 +68,12 @@ type ScanReport = JourneyHistoryReport & {
     generatedAt?: string;
     /** Journeys the report was scoped to (empty/absent = all). */
     selectedJourneys?: string[];
+    /** Job id whose raw was retained — present means failures can be inspected offline. */
+    rawJobId?: string;
+    /** This report came from re-analyzing retained raw (offline), not a fresh pull. */
+    inspectedFromRaw?: boolean;
+    /** The per-attempt list is a capped sample (summary counts are still full). */
+    attemptsTruncated?: boolean;
 };
 
 const num = (n: number) => n.toLocaleString();
@@ -187,7 +193,7 @@ interface SavedSettings {
     env?: string; from?: string; to?: string; selectedJourneys?: string[];
     scope?: ScopeFilter; maxEvents?: number; summaryOnly?: boolean;
     windowHours?: number; windowConcurrency?: number; requestDelaySec?: number;
-    dataSource?: "live" | "archive";
+    dataSource?: "live" | "archive"; retainRaw?: boolean;
 }
 
 /** Last-used form settings from localStorage (survives app restart). */
@@ -217,6 +223,8 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     // Minimum delay between page requests, in seconds (default 5) — proactively avoids 429s.
     const [requestDelaySec, setRequestDelaySec] = useState(saved?.requestDelaySec ?? 5);
     const [dataSource, setDataSource] = useState<"live" | "archive">(saved?.dataSource ?? "live");
+    // Opt-in: keep this run's raw events on disk so failures can be inspected offline.
+    const [retainRaw, setRetainRaw] = useState(saved?.retainRaw ?? false);
     const [loading, setLoading] = useState(false); // archive (synchronous) only
     const [error, setError] = useState<string | null>(null);
     const [report, setReport] = useState<ScanReport | null>(null);
@@ -276,10 +284,10 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
         if (typeof window === "undefined") return;
         try {
             localStorage.setItem(SETTINGS_KEY, JSON.stringify({
-                env, from, to, selectedJourneys, scope, maxEvents, summaryOnly, windowHours, windowConcurrency, requestDelaySec, dataSource,
+                env, from, to, selectedJourneys, scope, maxEvents, summaryOnly, windowHours, windowConcurrency, requestDelaySec, dataSource, retainRaw,
             } satisfies SavedSettings));
         } catch { /* ignore quota/availability errors */ }
-    }, [env, from, to, selectedJourneys, scope, maxEvents, summaryOnly, windowHours, windowConcurrency, requestDelaySec, dataSource]);
+    }, [env, from, to, selectedJourneys, scope, maxEvents, summaryOnly, windowHours, windowConcurrency, requestDelaySec, dataSource, retainRaw]);
 
     // When a job the user started/resumed this session finishes, pull its report
     // into view (once) and save to history. Keyed on primitives (not the polled
@@ -341,6 +349,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
             windowHours,
             windowConcurrency,
             requestDelayMs: Math.round(requestDelaySec * 1000),
+            retainRaw,
         });
         // Arm auto-load for this job (only reports the user runs are shown automatically).
         if (res.body?.jobId) pendingJobIdRef.current = res.body.jobId;
@@ -357,6 +366,23 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
      * limit). Pre-fills the form so the window is visible and editable for a re-run.
      */
     async function inspect(treeName: string) {
+        // Preferred: re-analyze this report's retained raw offline — instant, no AIC pull.
+        if (report?.rawJobId) {
+            try {
+                const res = await fetch(`/api/analyze/journey-history/jobs/${encodeURIComponent(report.rawJobId)}/inspect`, {
+                    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ treeName }),
+                });
+                if (res.ok) {
+                    setReport(await res.json() as ScanReport);
+                    setError(null);
+                    setExpandedJourney(treeName);
+                    return;
+                }
+                // 404 = raw aged out of retention → fall through to a fresh re-pull.
+            } catch { /* network error → fall through to re-pull */ }
+        }
+        // Fallback: re-pull a focused, full-detail report (single journey, rates-off,
+        // single-window, most-recent ≤24h of the range). Pre-fill the form so it's editable.
         if (!env || !report?.window || jobActive) return;
         const w = buildInspectWindow(report.window.from, report.window.to);
         setSelectedJourneys([treeName]);
@@ -371,7 +397,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
         const res = await start(env, {
             from: w.from, to: w.to, treeNames: [treeName], maxEvents,
             summaryOnly: false, windowHours: 0, windowConcurrency,
-            requestDelayMs: Math.round(requestDelaySec * 1000),
+            requestDelayMs: Math.round(requestDelaySec * 1000), retainRaw: true,
         });
         if (res.body?.jobId) pendingJobIdRef.current = res.body.jobId;
         if (!res.ok && res.status !== 409) {
@@ -602,6 +628,14 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                         </label>
                     )}
                     {dataSource === "live" && (
+                        <label className="text-sm flex items-center gap-1.5 pb-1.5"
+                            title="Keep this run's pulled events on disk so failures can be inspected offline (re-analyzed without re-pulling). Uses more disk; the last 10 retained runs per environment are kept. With 'Rates only' on, failure-node detail still won't be captured.">
+                            <input type="checkbox" checked={retainRaw}
+                                onChange={(e) => setRetainRaw(e.target.checked)} />
+                            <span className="text-slate-600">Retain raw for inspection</span>
+                        </label>
+                    )}
+                    {dataSource === "live" && (
                         <label className="text-sm"
                             title="AIC rejects queries spanning more than a day, so long ranges are pulled in chunks of this many hours (max 24) and the rollups are merged. 0 = single window (full per-attempt report; only valid for ranges ≤ 1 day). Multi-window runs report success/fail rates only.">
                             <span className="block text-slate-600 mb-1">Window split (hours)</span>
@@ -816,6 +850,12 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                                 ? "TRUNCATED — raise Max events or narrow window"
                                 : `${report.pagesFetched ?? 0} pages${typeof report.rawFetched === "number" ? ` · raw ${report.rawFetched}` : ""}`} />
                     </div>
+                    {report.inspectedFromRaw ? (
+                        <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800">
+                            Re-analyzed from this run&apos;s stored events — no new AIC pull. Expand a journey for its failure-node breakdown and failed attempts.
+                            {report.attemptsTruncated ? " The per-attempt list is a capped sample; success/fail counts are complete." : ""}
+                        </div>
+                    ) : null}
                     <ScanDetails report={report} defaultOpen={report.summary.attempts === 0} />
                     {report.summary.attempts === 0 ? (
                         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
@@ -923,12 +963,14 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                                                                 No per-attempt / node detail in this report{report.rollupOnly ? " (multi-window rates-only rollup)" : ""}.
                                                             </div>
                                                         )}
-                                                        {dataSource === "live" && p.fail > 0 ? (
-                                                            <button type="button" disabled={jobActive}
+                                                        {(report.rawJobId || dataSource === "live") && p.fail > 0 ? (
+                                                            <button type="button" disabled={!report.rawJobId && jobActive}
                                                                 onClick={(e) => { e.stopPropagation(); void inspect(p.treeName); }}
-                                                                title={jobActive ? "A report is already running for this environment" : undefined}
+                                                                title={report.rawJobId ? "Re-analyze this run's stored events — no AIC pull" : (jobActive ? "A report is already running for this environment" : undefined)}
                                                                 className="rounded border border-sky-300 bg-sky-50 px-2 py-1 text-sky-800 hover:bg-sky-100 disabled:opacity-50">
-                                                                Inspect failures — re-run last {INSPECT_WINDOW_HOURS}h, full detail
+                                                                {report.rawJobId
+                                                                    ? "Inspect failures — from stored data"
+                                                                    : `Inspect failures — re-run last ${INSPECT_WINDOW_HOURS}h, full detail`}
                                                             </button>
                                                         ) : null}
                                                     </div>
