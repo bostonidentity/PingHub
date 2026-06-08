@@ -98,6 +98,8 @@ export interface JourneyReportProgress {
   recentEvents?: { ts: string; eventName: string; tree?: string }[];
   /** Cumulative count of 429 throttles auto-retried during this job. */
   throttles?: number;
+  /** True while the run is *actively* being throttled (drives the live banner); clears once pages flow cleanly again. */
+  throttling?: boolean;
   /** Backoff (ms) of the most recent 429 retry. */
   lastThrottleWaitMs?: number;
   /** Retry attempt number of the most recent 429 (1..maxRetries). */

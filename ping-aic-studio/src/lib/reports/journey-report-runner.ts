@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import v8 from "node:v8";
-import { fetchLogPage, paceDelayMs, isVolumeQuota429, VOLUME_QUOTA_MESSAGE, AUTO_BUMP_MS, MAX_BUMP_MS } from "@/lib/logs/log-fetch";
+import { fetchLogPage, paceDelayMs, isVolumeQuota429, VOLUME_QUOTA_MESSAGE } from "@/lib/logs/log-fetch";
+import { ThrottleGovernor } from "./journey-throttle-governor";
 import { analyzeJourneyHistory, emptyRollup, mergeRollup, type RawAuthEvent } from "./journey-history";
 import { buildJourneyQueryFilter, filterEventsByJourneys, MAX_SERVER_FILTER_JOURNEYS } from "./journey-filter";
 import { stagingPath as stagingPathFor, reportPath as reportPathFor } from "./journey-report-paths";
@@ -203,15 +204,19 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
   const winStagePath = (i: number) => stagePath.replace(/\.ndjson$/i, `.w${i}.ndjson`);
   const freshCursor = (): WindowCursor => ({ cookie: undefined, rawFetched: 0, matched: 0, pages: 0, truncated: false, byteLength: 0, eventNameCounts: new Map() });
 
-  // Adaptive inter-page pacing floor: each throughput 429 raises it (mirrors log pull).
-  // Surface every 429 live (count + last wait/attempt) so the UI shows each reject,
-  // not just the final outcome — same idea as the Logs tab's per-429 message.
-  const pacing = { floor: 0 };
-  let throttles = p.throttles ?? 0;
+  // Self-tuning response to throughput 429s: the governor owns the adaptive pacing
+  // floor, the parallel-window concurrency (auto-lowers under pressure, recovers when
+  // clean), the per-page retry budget, and the "currently throttling" flag that drives
+  // the live banner. Concurrency recovers toward the user's setting, never above it.
+  const baseConcurrency = Math.min(Math.max(1, windowConcurrency || DEFAULT_WINDOW_CONCURRENCY), MAX_WINDOW_CONCURRENCY);
+  const governor = new ThrottleGovernor({ baseConcurrency, seedThrottles: p.throttles ?? 0 });
+  // Surface every 429 live (count + last wait/attempt + active flag) so the UI shows
+  // each reject, not just the final outcome — same idea as the Logs tab's per-429 message.
   const onThrottle = (waitMs: number, attempt: number) => {
-    throttles++;
-    pacing.floor = Math.min(MAX_BUMP_MS, pacing.floor + AUTO_BUMP_MS);
-    registry.updateProgress(job.id, { throttles, lastThrottleWaitMs: waitMs, lastThrottleAttempt: attempt });
+    governor.onThrottle(waitMs, attempt);
+    registry.updateProgress(job.id, {
+      throttles: governor.throttles, lastThrottleWaitMs: waitMs, lastThrottleAttempt: attempt, throttling: true,
+    });
   };
 
   // Page one window from `start` into its own staging file, calling `onProgress`
@@ -244,7 +249,8 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
       });
       const url = `${base}/monitoring/logs?${params}`;
 
-      const res = await fetchLogPage(url, headers, { fetchFn, signal, sleepFn, onThrottle });
+      const throttlesBefore = governor.throttles;
+      const res = await fetchLogPage(url, headers, { fetchFn, signal, sleepFn, onThrottle, maxRetries: governor.maxRetries() });
       if (!res.ok) {
         const body = await res.text().catch(() => "");
         // A throughput 429 that outlived fetchLogPage's retries → pause (resumable),
@@ -289,13 +295,18 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
         byteLength += Buffer.byteLength(lines);
       }
 
+      // Feed the page outcome back to the governor (adjusts concurrency/retry/pacing)
+      // and surface whether the run is still actively throttling.
+      governor.onPage(governor.throttles > throttlesBefore);
+      registry.updateProgress(job.id, { throttling: governor.isThrottling() });
+
       cookie = truncated ? undefined : (data.pagedResultsCookie ?? undefined);
       onProgress(snapshot(), lastTs, recent.slice());
 
       if (truncated || !cookie) break;
 
       // Pace under the rate limit: base floor, header-based pacing, and adaptive 429 bump.
-      const wait = Math.max(paceDelayMs(res, nowMs()), baseDelayMs, pacing.floor);
+      const wait = Math.max(paceDelayMs(res, nowMs()), baseDelayMs, governor.floorMs());
       if (wait > 0) await sleepFn(wait, signal);
       if (suspendOnHeap && heapPressureFn()) {
         return { outcome: "suspended", cursor: snapshot() };
@@ -370,10 +381,11 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
       return;
     }
 
-    // ---- Chunked: page windows in a bounded-concurrency pool, merge rollups. ----
+    // ---- Chunked: page windows in an adaptive-concurrency pool, merge rollups. ----
     // Resume is window-level: completed windows' rollups are folded into `partial`
     // and skipped; any window that didn't finish is re-run from its first page.
-    const concurrency = Math.min(Math.max(1, windowConcurrency || DEFAULT_WINDOW_CONCURRENCY), MAX_WINDOW_CONCURRENCY);
+    // In-flight windows track the governor's target, which auto-lowers under 429
+    // pressure and recovers toward `baseConcurrency` as pages come through clean.
     const completed = new Set<number>(p.completedWindows ?? []);
     let partial: JourneyReportPartial = p.partial ?? {
       rollup: emptyRollup(), eventNameCounts: {}, rawTotal: 0, matchedTotal: 0, pagesTotal: 0, anyTruncated: false,
@@ -407,27 +419,41 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
     };
 
     let nextIdx = 0;
+    let active = 0;
     let failed = false, aborted = false, rateLimited = false, failError: string | undefined;
+    const terminal = () => failed || aborted || rateLimited || signal.aborted;
     // Surface the latest matched events live (workers clobber, last write wins — fine for a feed).
     const onProgress = (_c: WindowCursor, _lastTs: string | undefined, recent: RecentEvent[]) =>
       registry.updateProgress(job.id, { recentEvents: recent });
-    const worker = async (): Promise<void> => {
-      while (!failed && !aborted && !rateLimited) {
-        if (signal.aborted) { aborted = true; return; }
-        const slot = nextIdx++;
-        if (slot >= pending.length) return;
-        const { w, i } = pending[slot];
-        fs.writeFileSync(winStagePath(i), ""); // fresh start (drop any prior partial window file)
-        const { outcome, cursor, error } = await pageWindow({
-          win: w, winStage: winStagePath(i), start: freshCursor(), suspendOnHeap: false, onProgress,
-        });
-        if (outcome === "aborted") { aborted = true; return; }
-        if (outcome === "rateLimited") { rateLimited = true; return; }
-        if (outcome === "failed") { failed = true; failError = error; return; }
-        foldWindow(i, cursor); // outcome === "done"
-      }
+
+    // Page a single window to completion, folding its rollup or latching a terminal flag.
+    const runWindow = async (slot: number): Promise<void> => {
+      const { w, i } = pending[slot];
+      fs.writeFileSync(winStagePath(i), ""); // fresh start (drop any prior partial window file)
+      const { outcome, cursor, error } = await pageWindow({
+        win: w, winStage: winStagePath(i), start: freshCursor(), suspendOnHeap: false, onProgress,
+      });
+      if (outcome === "aborted") { aborted = true; return; }
+      if (outcome === "rateLimited") { rateLimited = true; return; }
+      if (outcome === "failed") { failed = true; failError = error; return; }
+      foldWindow(i, cursor); // outcome === "done"
     };
-    await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(1, pending.length)) }, () => worker()));
+
+    // Adaptive pool: top the in-flight window count up to the governor's *current*
+    // target whenever a window finishes. A lowered target shrinks the pool (finished
+    // windows aren't replaced); a recovered target grows it back — both at one-window
+    // granularity. Each window is launched at most once (nextIdx only advances).
+    await new Promise<void>((resolve) => {
+      const supervise = () => {
+        while (!terminal() && active < governor.targetConcurrency() && nextIdx < pending.length) {
+          const slot = nextIdx++;
+          active++;
+          runWindow(slot).finally(() => { active--; supervise(); });
+        }
+        if (active === 0) resolve();
+      };
+      supervise();
+    });
 
     if (failed) { registry.setJobStatus(job.id, "failed", failError); return; }
     if (rateLimited) { registry.setJobStatus(job.id, "suspended", RATE_LIMITED_NOTE); return; }

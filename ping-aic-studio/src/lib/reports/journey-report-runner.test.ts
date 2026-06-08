@@ -332,6 +332,64 @@ describe("runJourneyReport", () => {
     expect(done.progress.lastThrottleAttempt).toBe(1);
   });
 
+  it("clears the throttling flag once pages flow cleanly again", async () => {
+    const root = tmpRoot();
+    const reg = createJourneyReportRegistry(root);
+    const job = reg.startJob("prod", { from: FROM, to: TO, maxEvents: 1000 });
+    // One 429 (→ throttling active) then several clean pages → flag clears by the end.
+    let calls = 0;
+    const cookies: (string | null)[] = ["c1", "c2", "c3", "c4", null];
+    const fetchFn = vi.fn(async () => {
+      if (calls === 0) { calls++; return jsonRes({ code: 429, errors: ["Rate Limit Exceeded"] }, 429); }
+      const cookie = cookies[Math.min(calls - 1, cookies.length - 1)];
+      calls++;
+      return jsonRes({ result: [loginEvent(`t${calls}`, "2026-06-03T01:00:00Z")], pagedResultsCookie: cookie });
+    });
+
+    await runJourneyReport({ ...baseOpts(root), job, registry: reg, fetchFn });
+
+    const done = reg.getJob(job.id)!;
+    expect(done.status).toBe("completed");
+    expect(done.progress.throttles).toBe(1);     // the 429 was recorded
+    expect(done.progress.throttling).toBe(false); // ...but the live flag cleared on recovery
+  });
+
+  it("auto-lowers in-flight windows under sustained throttling", async () => {
+    const root = tmpRoot();
+    const reg = createJourneyReportRegistry(root);
+    // 10 windows, start at 4 parallel; every window's first fetch 429s → governor
+    // ratchets concurrency down to 1, so the back windows run far below the cap.
+    const job = reg.startJob("prod", {
+      from: "2026-06-01T00:00:00Z", to: "2026-06-11T00:00:00Z", maxEvents: 1000, windowHours: 24, windowConcurrency: 4,
+    });
+    const attemptsByWindow = new Map<string, number>();
+    let inFlight = 0, maxInFlight = 0, lateMaxInFlight = 0, completed = 0;
+    const fetchFn = vi.fn(async (url: string | URL | Request) => {
+      const begin = new URL(String(url)).searchParams.get("beginTime")!;
+      const n = (attemptsByWindow.get(begin) ?? 0) + 1;
+      attemptsByWindow.set(begin, n);
+      if (n === 1) return jsonRes({ code: 429, errors: ["Rate Limit Exceeded"] }, 429); // throttle every window once
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      // Once half the windows are done, concurrency should have ratcheted to 1 —
+      // a fixed pool would still be running ~4 in flight here.
+      if (completed >= 5) lateMaxInFlight = Math.max(lateMaxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      completed++;
+      const d = begin.slice(8, 10);
+      return jsonRes({ result: [loginEvent(`t${d}`, `2026-06-${d}T01:00:00Z`)], pagedResultsCookie: null });
+    });
+
+    await runJourneyReport({ ...baseOpts(root), job, registry: reg, fetchFn });
+
+    expect(reg.getJob(job.id)!.status).toBe("completed");
+    expect(maxInFlight).toBe(4);       // reaches the configured cap initially
+    expect(lateMaxInFlight).toBe(1);   // ...then ratchets down to 1 under sustained pressure
+    const rep = JSON.parse(fs.readFileSync(reportPath(baseOpts(root).reportRoot, job.id), "utf-8"));
+    expect(rep.summary.attempts).toBe(10);        // all windows still processed
+  });
+
   it("still fails (terminal) on a volume-quota 429", async () => {
     const root = tmpRoot();
     const reg = createJourneyReportRegistry(root);
