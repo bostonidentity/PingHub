@@ -48,6 +48,8 @@ export async function POST(req: NextRequest) {
   // Min inter-page delay (ms). Default 5000; clamp [0, 60000].
   const rawDelay = Number(body.requestDelayMs);
   const requestDelayMs = Number.isFinite(rawDelay) ? Math.min(Math.max(0, Math.floor(rawDelay)), 60000) : 5000;
+  // Opt-in: keep this run's raw events on disk for offline failure inspection.
+  const retainRaw = body.retainRaw === true;
 
   if (!env || !from || !to) {
     return NextResponse.json({ error: "env, from, and to are required." }, { status: 400 });
@@ -68,7 +70,7 @@ export async function POST(req: NextRequest) {
   const registry = getJourneyReportRegistry();
   let job;
   try {
-    job = registry.startJob(env, { from, to, treeNames, maxEvents, summaryOnly, windowHours, windowConcurrency, requestDelayMs });
+    job = registry.startJob(env, { from, to, treeNames, maxEvents, summaryOnly, windowHours, windowConcurrency, requestDelayMs, retainRaw });
   } catch (e) {
     if (e instanceof JourneyJobConflictError || (e as Error).name === "JourneyJobConflictError") {
       const existingId = (e as JourneyJobConflictError).existingJobId;
