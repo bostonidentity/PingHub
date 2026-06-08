@@ -4,6 +4,9 @@
 
 import type { JourneyHistoryReport } from "./journey-history";
 
+/** Max automatic cooldown-and-retry episodes before a sustained 429 falls back to a manual pause. */
+export const AUTO_RECOVERY_MAX_EPISODES = 10;
+
 export type JourneyReportStatus =
   | "queued"
   | "running"
@@ -100,6 +103,12 @@ export interface JourneyReportProgress {
   throttles?: number;
   /** True while the run is *actively* being throttled (drives the live banner); clears once pages flow cleanly again. */
   throttling?: boolean;
+  /** True while the run is cooling down between auto-recovery retries after a sustained 429 (still "running"). */
+  recovering?: boolean;
+  /** Which auto-recovery attempt is in progress (1-based). */
+  recoveryAttempt?: number;
+  /** How long the current auto-recovery cooldown will wait (ms) before retrying. */
+  recoveryWaitMs?: number;
   /** Backoff (ms) of the most recent 429 retry. */
   lastThrottleWaitMs?: number;
   /** Retry attempt number of the most recent 429 (1..maxRetries). */

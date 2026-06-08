@@ -79,6 +79,20 @@ export class ThrottleGovernor {
     }
   }
 
+  /**
+   * A full rate-limit episode: the per-page retry budget was exhausted and the run
+   * is about to cool down and retry. Slam every lever to its most defensive setting
+   * so the retry restarts sequentially, paced maximally, with the largest retry
+   * budget — then it ramps back up through clean pages like any other recovery.
+   */
+  onRateLimitEpisode(): void {
+    this.target = MIN_CONCURRENCY;
+    this.floor = MAX_BUMP_MS;
+    this.throttledStreak = RETRY_EXTRA_CAP;
+    this.cleanStreak = 0;
+    this.active = true;
+  }
+
   /** Current inter-page pacing floor (ms). */
   floorMs(): number {
     return this.floor;

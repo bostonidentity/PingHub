@@ -106,4 +106,22 @@ describe("ThrottleGovernor", () => {
     for (let i = 0; i < 100; i++) g.onPage(true);
     expect(g.maxRetries()).toBe(12); // base + 6
   });
+
+  it("slams everything to the floor on a full rate-limit episode", () => {
+    const g = new ThrottleGovernor({ baseConcurrency: 5, baseMaxRetries: 6 });
+    g.onRateLimitEpisode();
+    expect(g.targetConcurrency()).toBe(1);     // retry sequentially
+    expect(g.floorMs()).toBe(MAX_BUMP_MS);     // pace maximally
+    expect(g.maxRetries()).toBe(12);           // give each page the most chances
+    expect(g.isThrottling()).toBe(true);
+  });
+
+  it("recovers normally after a rate-limit episode once pages flow clean", () => {
+    const g = new ThrottleGovernor({ baseConcurrency: 5 });
+    g.onRateLimitEpisode();
+    expect(g.targetConcurrency()).toBe(1);
+    for (let i = 0; i < CLEAN_TO_RECOVER; i++) g.onPage(false);
+    expect(g.targetConcurrency()).toBe(2);     // climbs back, one clean run at a time
+    expect(g.isThrottling()).toBe(false);
+  });
 });

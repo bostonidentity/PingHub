@@ -6,7 +6,7 @@ import { ThrottleGovernor } from "./journey-throttle-governor";
 import { analyzeJourneyHistory, emptyRollup, mergeRollup, type RawAuthEvent } from "./journey-history";
 import { buildJourneyQueryFilter, filterEventsByJourneys, MAX_SERVER_FILTER_JOURNEYS } from "./journey-filter";
 import { stagingPath as stagingPathFor, reportPath as reportPathFor } from "./journey-report-paths";
-import type { JourneyReportJob, JourneyReportPartial } from "./journey-report-types";
+import { AUTO_RECOVERY_MAX_EPISODES, type JourneyReportJob, type JourneyReportPartial } from "./journey-report-types";
 import type { JourneyReportRegistry } from "./journey-report-registry";
 
 const JOURNEY_SOURCE = "am-authentication";
@@ -50,10 +50,20 @@ const MAX_REQUEST_DELAY_MS = 60_000;
 // How many of the most-recent matched events to surface live (for the UI feed).
 const RECENT_EVENTS_KEPT = 15;
 
-// A throughput 429 that survived all fetchLogPage retries pauses the job
-// (resumable) instead of failing — completed windows/pages are preserved.
+// A throughput 429 that survives fetchLogPage's retries triggers an automatic
+// cooldown-and-retry (resuming from the persisted cursor) rather than pausing.
+// After AUTO_RECOVERY_MAX_EPISODES failed episodes it gives up and pauses (resumable).
+// Cooldown before the k-th (1-based) auto-recovery retry: 30s, 60s, 120s … capped.
+const AUTO_RECOVERY_BASE_MS = 30_000;
+const AUTO_RECOVERY_CAP_MS = 300_000;
+const recoveryCooldownMs = (attempt: number) =>
+  Math.min(AUTO_RECOVERY_CAP_MS, AUTO_RECOVERY_BASE_MS * 2 ** Math.max(0, attempt - 1));
+
+// Only reached once auto-recovery is exhausted — the run pauses (resumable);
+// completed windows/pages are preserved.
 const RATE_LIMITED_NOTE =
-  'Rate limited by AIC (HTTP 429) — paused. Resume to continue; lower "Parallel windows" if it recurs.';
+  `Rate limited by AIC (HTTP 429) — auto-retried ${AUTO_RECOVERY_MAX_EPISODES}× without ` +
+  'clearing, so the run is paused. Resume to keep trying, or lower "Parallel windows".';
 
 /** Journey/tree name for a payload, for the live event feed. */
 function recentTreeName(payload: Record<string, unknown>): string | undefined {
@@ -219,6 +229,28 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
     });
   };
 
+  // A throughput 429 outlived the per-page retries. Instead of pausing for a manual
+  // resume, cool down (concurrency slammed to 1, paced maximally) and retry from the
+  // persisted cursor — up to AUTO_RECOVERY_MAX_EPISODES times. The job stays "running"
+  // so the UI shows live auto-retry progress, not a stuck pause.
+  let recoveryEpisodes = 0;
+  const coolDownAndRetry = async (): Promise<"retry" | "exhausted" | "aborted"> => {
+    recoveryEpisodes++;
+    if (recoveryEpisodes > AUTO_RECOVERY_MAX_EPISODES) {
+      registry.updateProgress(job.id, { recovering: false, recoveryAttempt: AUTO_RECOVERY_MAX_EPISODES });
+      return "exhausted";
+    }
+    governor.onRateLimitEpisode();
+    const waitMs = recoveryCooldownMs(recoveryEpisodes);
+    registry.updateProgress(job.id, {
+      throttling: true, recovering: true, recoveryAttempt: recoveryEpisodes, recoveryWaitMs: waitMs,
+    });
+    await sleepFn(waitMs, signal);
+    if (signal.aborted) return "aborted";
+    registry.updateProgress(job.id, { recovering: false });
+    return "retry";
+  };
+
   // Page one window from `start` into its own staging file, calling `onProgress`
   // after each page. Returns a terminal outcome WITHOUT setting job status — the
   // caller maps it (single-window persists a resume cursor + auto-suspends on
@@ -344,13 +376,24 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
         byteLength: c.byteLength, lastTimestamp: lastTs, truncated: c.truncated,
         eventNameCounts: Object.fromEntries(c.eventNameCounts), recentEvents: recent,
       });
-      const { outcome, cursor, error } = await pageWindow({
-        win: windows[0], winStage: stagePath, start: prepareCursor(wantsResume), suspendOnHeap: true, onProgress,
-      });
-      if (outcome === "failed") { registry.setJobStatus(job.id, "failed", error); return; }
-      if (outcome === "rateLimited") { registry.setJobStatus(job.id, "suspended", RATE_LIMITED_NOTE); return; }
-      if (outcome === "suspended") { registry.setJobStatus(job.id, "suspended"); return; }
-      if (outcome === "aborted") { finalizeAborted(); return; }
+      // Page the window, auto-recovering through cooldowns on rate-limited outcomes.
+      let start = prepareCursor(wantsResume);
+      let cursor: WindowCursor;
+      for (;;) {
+        const r = await pageWindow({ win: windows[0], winStage: stagePath, start, suspendOnHeap: true, onProgress });
+        cursor = r.cursor;
+        if (r.outcome === "failed") { registry.setJobStatus(job.id, "failed", r.error); return; }
+        if (r.outcome === "suspended") { registry.setJobStatus(job.id, "suspended"); return; }
+        if (r.outcome === "aborted") { finalizeAborted(); return; }
+        if (r.outcome === "rateLimited") {
+          const decision = await coolDownAndRetry();
+          if (decision === "aborted") { finalizeAborted(); return; }
+          if (decision === "exhausted") { registry.setJobStatus(job.id, "suspended", RATE_LIMITED_NOTE); return; }
+          start = r.cursor; // resume from the last good page
+          continue;
+        }
+        break; // done
+      }
 
       try {
         const events = readStaging(stagePath);
@@ -390,7 +433,7 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
     let partial: JourneyReportPartial = p.partial ?? {
       rollup: emptyRollup(), eventNameCounts: {}, rawTotal: 0, matchedTotal: 0, pagesTotal: 0, anyTruncated: false,
     };
-    const pending = windows.map((w, i) => ({ w, i })).filter(({ i }) => !completed.has(i));
+    let pending = windows.map((w, i) => ({ w, i })).filter(({ i }) => !completed.has(i));
 
     registry.updateProgress(job.id, {
       windowsTotal: windows.length, windowsDone: completed.size, completedWindows: [...completed], partial,
@@ -439,25 +482,40 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
       foldWindow(i, cursor); // outcome === "done"
     };
 
-    // Adaptive pool: top the in-flight window count up to the governor's *current*
-    // target whenever a window finishes. A lowered target shrinks the pool (finished
-    // windows aren't replaced); a recovered target grows it back — both at one-window
-    // granularity. Each window is launched at most once (nextIdx only advances).
-    await new Promise<void>((resolve) => {
-      const supervise = () => {
-        while (!terminal() && active < governor.targetConcurrency() && nextIdx < pending.length) {
-          const slot = nextIdx++;
-          active++;
-          runWindow(slot).finally(() => { active--; supervise(); });
-        }
-        if (active === 0) resolve();
-      };
-      supervise();
-    });
+    // Run the pool, auto-recovering through cooldowns on rate-limited outcomes. Each
+    // attempt re-pages only the still-incomplete windows (completed ones are already
+    // folded into `partial`); a rate-limited window simply stays pending and re-runs.
+    for (;;) {
+      pending = windows.map((w, i) => ({ w, i })).filter(({ i }) => !completed.has(i));
+      if (pending.length === 0) break;
+      nextIdx = 0; active = 0; rateLimited = false;
 
-    if (failed) { registry.setJobStatus(job.id, "failed", failError); return; }
-    if (rateLimited) { registry.setJobStatus(job.id, "suspended", RATE_LIMITED_NOTE); return; }
-    if (aborted || signal.aborted) { finalizeAborted(); return; }
+      // Adaptive pool: top the in-flight window count up to the governor's *current*
+      // target whenever a window finishes. A lowered target shrinks the pool (finished
+      // windows aren't replaced); a recovered target grows it back — both at one-window
+      // granularity. Each window is launched at most once (nextIdx only advances).
+      await new Promise<void>((resolve) => {
+        const supervise = () => {
+          while (!terminal() && active < governor.targetConcurrency() && nextIdx < pending.length) {
+            const slot = nextIdx++;
+            active++;
+            runWindow(slot).finally(() => { active--; supervise(); });
+          }
+          if (active === 0) resolve();
+        };
+        supervise();
+      });
+
+      if (failed) { registry.setJobStatus(job.id, "failed", failError); return; }
+      if (aborted || signal.aborted) { finalizeAborted(); return; }
+      if (rateLimited) {
+        const decision = await coolDownAndRetry();
+        if (decision === "aborted") { finalizeAborted(); return; }
+        if (decision === "exhausted") { registry.setJobStatus(job.id, "suspended", RATE_LIMITED_NOTE); return; }
+        continue;
+      }
+      break; // all windows done
+    }
 
     try {
       const topEventNames = Object.entries(partial.eventNameCounts)

@@ -3,6 +3,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { runJourneyReport } from "./journey-report-runner";
+import { AUTO_RECOVERY_MAX_EPISODES } from "./journey-report-types";
 import { analyzeJourneyHistory } from "./journey-history";
 import { createJourneyReportRegistry } from "./journey-report-registry";
 import { reportPath } from "./journey-report-paths";
@@ -388,6 +389,55 @@ describe("runJourneyReport", () => {
     expect(lateMaxInFlight).toBe(1);   // ...then ratchets down to 1 under sustained pressure
     const rep = JSON.parse(fs.readFileSync(reportPath(baseOpts(root).reportRoot, job.id), "utf-8"));
     expect(rep.summary.attempts).toBe(10);        // all windows still processed
+  });
+
+  it("auto-recovers from a sustained throughput 429 and completes", async () => {
+    const root = tmpRoot();
+    const reg = createJourneyReportRegistry(root);
+    const job = reg.startJob("prod", { from: FROM, to: TO, maxEvents: 1000 });
+    // First page exhausts its retry budget (→ rate-limited), then a cooldown retry succeeds.
+    let calls = 0;
+    const fetchFn = vi.fn(async () => {
+      calls++;
+      if (calls <= 10) return jsonRes({ code: 429, errors: ["Rate Limit Exceeded"] }, 429);
+      return jsonRes({ result: [loginEvent("t1", "2026-06-03T01:00:00Z")], pagedResultsCookie: null });
+    });
+
+    await runJourneyReport({ ...baseOpts(root), job, registry: reg, fetchFn });
+
+    const done = reg.getJob(job.id)!;
+    expect(done.status).toBe("completed");        // recovered without manual resume
+    expect(done.progress.recoveryAttempt).toBe(1); // it took one cooldown-and-retry
+    expect(done.progress.recovering).toBe(false);  // not stuck cooling down
+  });
+
+  it("falls back to a manual pause after the auto-recovery cap", async () => {
+    const root = tmpRoot();
+    const reg = createJourneyReportRegistry(root);
+    const job = reg.startJob("prod", { from: FROM, to: TO, maxEvents: 1000 });
+    const fetchFn = vi.fn(async () => jsonRes({ code: 429, errors: ["Rate Limit Exceeded"] }, 429));
+
+    await runJourneyReport({ ...baseOpts(root), job, registry: reg, fetchFn });
+
+    const done = reg.getJob(job.id)!;
+    expect(done.status).toBe("suspended");                  // resumable, not failed
+    expect(done.progress.recoveryAttempt).toBe(AUTO_RECOVERY_MAX_EPISODES);
+    expect(done.progress.recovering).toBe(false);
+    expect(done.fatalError).toMatch(/auto-retr/i);
+  });
+
+  it("aborts cleanly if cancelled during an auto-recovery cooldown", async () => {
+    const root = tmpRoot();
+    const reg = createJourneyReportRegistry(root);
+    const job = reg.startJob("prod", { from: FROM, to: TO, maxEvents: 1000 });
+    const fetchFn = vi.fn(async () => jsonRes({ code: 429, errors: ["Rate Limit Exceeded"] }, 429));
+    const ctl = new AbortController();
+    // Cancel the moment the run enters a cooldown (recovering flag is set just before the wait).
+    const sleepFn = async () => { if (reg.getJob(job.id)?.progress.recovering) ctl.abort(); };
+
+    await runJourneyReport({ ...baseOpts(root), job, registry: reg, fetchFn, signal: ctl.signal, sleepFn });
+
+    expect(reg.getJob(job.id)!.status).toBe("aborted");
   });
 
   it("still fails (terminal) on a volume-quota 429", async () => {
