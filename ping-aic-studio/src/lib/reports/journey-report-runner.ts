@@ -469,11 +469,15 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
 
     let nextIdx = 0;
     let active = 0;
+    let livePages = 0;
     let failed = false, aborted = false, rateLimited = false, failError: string | undefined;
     const terminal = () => failed || aborted || rateLimited || signal.aborted;
-    // Surface the latest matched events live (workers clobber, last write wins — fine for a feed).
+    // Per page across all in-flight windows: surface the latest matched events and a
+    // live "still working" signal (page tick + how many windows are paging right now)
+    // so the status line keeps moving between window completions and reflects the
+    // governor's auto-tuned concurrency. Workers clobber recentEvents — fine for a feed.
     const onProgress = (_c: WindowCursor, _lastTs: string | undefined, recent: RecentEvent[]) =>
-      registry.updateProgress(job.id, { recentEvents: recent });
+      registry.updateProgress(job.id, { recentEvents: recent, livePages: ++livePages, windowsInFlight: active });
 
     // Page a single window to completion, folding its rollup or latching a terminal flag.
     const runWindow = async (slot: number): Promise<void> => {

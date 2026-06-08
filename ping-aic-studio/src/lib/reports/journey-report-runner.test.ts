@@ -355,6 +355,29 @@ describe("runJourneyReport", () => {
     expect(done.progress.throttling).toBe(false); // ...but the live flag cleared on recovery
   });
 
+  it("surfaces live page progress + in-flight windows for chunked runs", async () => {
+    const root = tmpRoot();
+    const reg = createJourneyReportRegistry(root);
+    // 2 windows, 2 pages each → 4 pages total fetched.
+    const job = reg.startJob("prod", {
+      from: "2026-06-01T00:00:00Z", to: "2026-06-03T00:00:00Z", maxEvents: 1000, windowHours: 24, windowConcurrency: 2,
+    });
+    const fetchFn = vi.fn(async (url: string | URL | Request) => {
+      const cookie = new URL(String(url)).searchParams.get("_pagedResultsCookie");
+      const d = new URL(String(url)).searchParams.get("beginTime")!.slice(8, 10);
+      return cookie
+        ? jsonRes({ result: [loginEvent(`t${d}b`, `2026-06-${d}T02:00:00Z`)], pagedResultsCookie: null })
+        : jsonRes({ result: [loginEvent(`t${d}a`, `2026-06-${d}T01:00:00Z`)], pagedResultsCookie: "c1" });
+    });
+
+    await runJourneyReport({ ...baseOpts(root), job, registry: reg, fetchFn });
+
+    const done = reg.getJob(job.id)!;
+    expect(done.status).toBe("completed");
+    expect(done.progress.livePages).toBe(4);                 // motion: every page ticked
+    expect(typeof done.progress.windowsInFlight).toBe("number"); // in-flight count surfaced
+  });
+
   it("auto-lowers in-flight windows under sustained throttling", async () => {
     const root = tmpRoot();
     const reg = createJourneyReportRegistry(root);

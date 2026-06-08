@@ -95,6 +95,10 @@ export interface JourneyReportProgress {
   completedWindows?: number[];
   /** Chunked runs: count of completed windows (for progress display). */
   windowsDone?: number;
+  /** Chunked runs: windows currently being paged (reveals auto-tuned concurrency, and that work is in flight between completions). */
+  windowsInFlight?: number;
+  /** Chunked runs: monotonic count of pages fetched across all windows this run — a live "still working" signal between window completions. */
+  livePages?: number;
   /** Chunked runs: merged rollup + cumulative tallies for windows already finalized. */
   partial?: JourneyReportPartial;
   /** Most-recent matched events, surfaced live to the UI feed. */

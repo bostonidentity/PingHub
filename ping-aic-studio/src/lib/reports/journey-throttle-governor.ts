@@ -4,7 +4,7 @@ import { AUTO_BUMP_MS, MAX_BUMP_MS } from "@/lib/logs/log-fetch";
 /** Clear the "actively throttling" flag (hides the banner) after this many clean pages. */
 export const CLEAN_TO_CLEAR = 3;
 /** Step parallel windows back up by one (and decay pacing) after this many clean pages. */
-export const CLEAN_TO_RECOVER = 8;
+export const CLEAN_TO_RECOVER = 4;
 
 const MIN_CONCURRENCY = 1;
 /** Most extra retries the budget can grow by while throttling persists. */

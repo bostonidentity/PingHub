@@ -632,7 +632,10 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                             <span className="flex items-center gap-2 text-slate-600">
                                 <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-300 border-t-sky-600" />
                                 {job.progress.windowsTotal && job.progress.windowsTotal > 1
-                                    ? <>windows {job.progress.windowsDone ?? 0}/{job.progress.windowsTotal} done · {job.progress.matched.toLocaleString()} journey events</>
+                                    ? <>windows {job.progress.windowsDone ?? 0}/{job.progress.windowsTotal} done
+                                        {job.progress.windowsInFlight ? ` · ${job.progress.windowsInFlight} paging` : ""}
+                                        {job.progress.livePages ? ` · ${job.progress.livePages.toLocaleString()} pages fetched` : ""}
+                                        {` · ${job.progress.matched.toLocaleString()} journey events`}</>
                                     : <>page {job.progress.page} · {job.progress.rawFetched.toLocaleString()} raw · {job.progress.matched.toLocaleString()} journey events</>}
                             </span>
                         ) : jobPaused ? (
