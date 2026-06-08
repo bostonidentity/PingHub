@@ -41,6 +41,14 @@ export interface FetchLogPageOpts {
     signal?: AbortSignal;
     sleepFn?: (ms: number, signal?: AbortSignal) => Promise<void>;
     maxRetries?: number;
+    /**
+     * Floor (ms) on each 429 backoff. When set, the wait becomes
+     * `max(Retry-After, exponential, minBackoffMs)` (capped) instead of trusting
+     * Retry-After alone — so it starts no lower than this and still grows under
+     * sustained throttling. Default 0 keeps the legacy behavior (honor Retry-After
+     * exactly, else exponential).
+     */
+    minBackoffMs?: number;
     /** Called each time a 429 forces a backoff (for progress/telemetry). */
     onThrottle?: (waitMs: number, attempt: number) => void;
 }
@@ -76,9 +84,14 @@ export async function fetchLogPage(
         // AIC sends numeric seconds per the timing baseline. An HTTP-date Retry-After
         // would parse to NaN and fall through to exponential backoff — a safe default.
         const retryAfter = Number(res.headers.get("retry-after"));
-        const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
-            ? retryAfter * 1000
-            : Math.min(MAX_BACKOFF_MS, 1000 * 2 ** attempt);
+        const retryAfterMs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 0;
+        const expoMs = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** attempt);
+        const floor = opts.minBackoffMs ?? 0;
+        // Legacy (no floor): trust Retry-After, else exponential. With a floor: never
+        // wait less than it, and grow past a low/inaccurate Retry-After as attempts pile up.
+        const waitMs = floor > 0
+            ? Math.min(MAX_BACKOFF_MS, Math.max(floor, retryAfterMs, expoMs))
+            : (retryAfterMs > 0 ? retryAfterMs : expoMs);
         opts.onThrottle?.(waitMs, attempt);
         await sleepFn(waitMs, opts.signal);
     }

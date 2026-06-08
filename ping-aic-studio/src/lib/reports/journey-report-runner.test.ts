@@ -391,6 +391,25 @@ describe("runJourneyReport", () => {
     expect(rep.summary.attempts).toBe(10);        // all windows still processed
   });
 
+  it("backs off at least 5s per 429 (doesn't trust a low Retry-After)", async () => {
+    const root = tmpRoot();
+    const reg = createJourneyReportRegistry(root);
+    const job = reg.startJob("prod", { from: FROM, to: TO, maxEvents: 1000 });
+    // AIC asks for only 3s; the runner should floor it to 5s. No real waiting (sleepFn noop).
+    const res429 = { status: 429, ok: false, headers: { get: (k: string) => (k.toLowerCase() === "retry-after" ? "3" : null) }, json: async () => ({ code: 429 }), text: async () => "rate limit", clone() { return res429; } } as unknown as Response;
+    let calls = 0;
+    const fetchFn = vi.fn(async () => {
+      if (calls++ === 0) return res429;
+      return jsonRes({ result: [loginEvent("t1", "2026-06-03T01:00:00Z")], pagedResultsCookie: null });
+    });
+
+    await runJourneyReport({ ...baseOpts(root), job, registry: reg, fetchFn });
+
+    const done = reg.getJob(job.id)!;
+    expect(done.status).toBe("completed");
+    expect(done.progress.lastThrottleWaitMs).toBe(5000); // 3s Retry-After floored to 5s
+  });
+
   it("auto-recovers from a sustained throughput 429 and completes", async () => {
     const root = tmpRoot();
     const reg = createJourneyReportRegistry(root);

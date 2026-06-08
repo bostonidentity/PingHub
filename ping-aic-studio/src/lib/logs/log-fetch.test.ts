@@ -47,6 +47,32 @@ describe("fetchLogPage", () => {
         expect(sleeps).toEqual([2000, 4000]); // 1000 * 2^attempt
     });
 
+    it("with minBackoffMs, floors the wait and grows it past a (possibly low) Retry-After", async () => {
+        const fetchFn = vi.fn()
+            .mockResolvedValueOnce(res(429, { "retry-after": "3" })) // attempt 1: max(5000, 3000, 2000)
+            .mockResolvedValueOnce(res(429, { "retry-after": "3" })) // attempt 2: max(5000, 3000, 4000)
+            .mockResolvedValueOnce(res(429))                         // attempt 3: max(5000, 0,    8000)
+            .mockResolvedValueOnce(res(200));
+        const sleeps: number[] = [];
+        const r = await fetchLogPage("http://x", {}, {
+            fetchFn, sleepFn: async (ms) => { sleeps.push(ms); }, minBackoffMs: 5000,
+        });
+        expect(r.status).toBe(200);
+        expect(sleeps).toEqual([5000, 5000, 8000]);
+    });
+
+    it("with minBackoffMs, still honors a Retry-After larger than the floor/backoff", async () => {
+        const fetchFn = vi.fn()
+            .mockResolvedValueOnce(res(429, { "retry-after": "20" }))
+            .mockResolvedValueOnce(res(200));
+        const sleeps: number[] = [];
+        const r = await fetchLogPage("http://x", {}, {
+            fetchFn, sleepFn: async (ms) => { sleeps.push(ms); }, minBackoffMs: 5000,
+        });
+        expect(r.status).toBe(200);
+        expect(sleeps).toEqual([20000]); // 20s Retry-After wins over the 5s floor
+    });
+
     it("gives up after maxRetries and returns the last 429", async () => {
         const fetchFn = vi.fn().mockResolvedValue(res(429, { "retry-after": "1" }));
         const r = await fetchLogPage("http://x", {}, { fetchFn, sleepFn: async () => {}, maxRetries: 2 });

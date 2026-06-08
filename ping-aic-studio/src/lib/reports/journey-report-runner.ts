@@ -47,6 +47,10 @@ const MAX_WINDOW_CONCURRENCY = 6;
 const DEFAULT_REQUEST_DELAY_MS = 5_000;
 const MAX_REQUEST_DELAY_MS = 60_000;
 
+// Floor on each 429 retry backoff. AIC's Retry-After can under-report (e.g. 3s),
+// so start no lower than this and grow past it under sustained throttling.
+const RETRY_BACKOFF_FLOOR_MS = 5_000;
+
 // How many of the most-recent matched events to surface live (for the UI feed).
 const RECENT_EVENTS_KEPT = 15;
 
@@ -282,7 +286,9 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
       const url = `${base}/monitoring/logs?${params}`;
 
       const throttlesBefore = governor.throttles;
-      const res = await fetchLogPage(url, headers, { fetchFn, signal, sleepFn, onThrottle, maxRetries: governor.maxRetries() });
+      const res = await fetchLogPage(url, headers, {
+        fetchFn, signal, sleepFn, onThrottle, maxRetries: governor.maxRetries(), minBackoffMs: RETRY_BACKOFF_FLOOR_MS,
+      });
       if (!res.ok) {
         const body = await res.text().catch(() => "");
         // A throughput 429 that outlived fetchLogPage's retries → pause (resumable),
