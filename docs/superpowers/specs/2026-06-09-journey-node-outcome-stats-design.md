@@ -1,7 +1,10 @@
 # Journey Report — Per-Node Outcome Statistics
 
 **Date:** 2026-06-09
-**Status:** Approved (design)
+**Status:** Implemented (node outcomes). Inner-tree nesting design has since
+evolved — see the current reference, which supersedes the edge/heuristic notes
+below for the UAT-style tenant:
+`ping-aic-studio/docs/journey-report-node-outcomes.md`.
 
 ## Goal
 

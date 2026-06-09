@@ -468,7 +468,7 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
       const eventNameCounts = { ...partial.eventNameCounts };
       for (const [k, v] of cursor.eventNameCounts) eventNameCounts[k] = (eventNameCounts[k] ?? 0) + v;
       partial = {
-        rollup: mergeRollup(partial.rollup, { summary: winReport.summary, perJourney: winReport.perJourney }),
+        rollup: mergeRollup(partial.rollup, { summary: winReport.summary, perJourney: winReport.perJourney, nodeStructure: winReport.nodeStructure }),
         eventNameCounts,
         rawTotal: partial.rawTotal + cursor.rawFetched,
         matchedTotal: partial.matchedTotal + cursor.matched,
@@ -550,6 +550,7 @@ export async function runJourneyReport(opts: RunJourneyReportOpts): Promise<void
         summary: partial.rollup.summary,
         attempts: [],
         perJourney: partial.rollup.perJourney,
+        nodeStructure: partial.rollup.nodeStructure,
         rollupOnly: true,
         windows: windows.length,
         windowHours,

@@ -225,3 +225,181 @@ describe("analyzeJourneyHistory", () => {
         });
     });
 });
+
+// ── Node outcomes & tree structure ─────────────────────────────────────────
+
+/** Node visit allowing an explicit internal nodeName (else falls back to display). */
+function nodeVisitN(ts: string, txn: string, display: string, outcome: string | undefined, name?: string): RawAuthEvent {
+    const info: Record<string, unknown> = { displayName: display };
+    if (name) info.nodeName = name;
+    if (outcome !== undefined) info.nodeOutcome = outcome;
+    return { timestamp: ts, payload: { eventName: "AM-NODE-LOGIN-COMPLETED", transactionId: txn, entries: [{ info }] } };
+}
+
+describe("nodeStructure", () => {
+    it("aggregates per-node outcomes with visit counts and a (none) bucket", () => {
+        const events: RawAuthEvent[] = [
+            init("2026-06-03T10:00:00Z", "t1", "Login"),
+            nodeVisitN("2026-06-03T10:00:01Z", "t1", "User ID Lookup", "TRUE"),
+            nodeVisitN("2026-06-03T10:00:02Z", "t1", "User ID Lookup", "TRUE"),
+            nodeVisitN("2026-06-03T10:00:03Z", "t1", "User ID Lookup", "FALSE"),
+            nodeVisitN("2026-06-03T10:00:04Z", "t1", "User ID Lookup", undefined),
+            completed("2026-06-03T10:00:05Z", "t1", "Login", "SUCCESSFUL"),
+        ];
+        const r = analyzeJourneyHistory(events);
+        const node = r.nodeStructure.nodes.find((n) => n.displayName === "User ID Lookup")!;
+        expect(node).toMatchObject({ treeName: "Login", nodeName: "User ID Lookup", visits: 4 });
+        expect(node.outcomes).toEqual({ TRUE: 2, FALSE: 1, "(none)": 1 });
+        expect(r.nodeStructure.outerTrees).toEqual(["Login"]);
+        expect(r.nodeStructure.edges).toEqual([]);
+    });
+
+    it("records parent→child edges and outerTrees for inner trees, and links the evaluator outcome", () => {
+        const events: RawAuthEvent[] = [
+            init("2026-06-03T10:00:00Z", "t3", "Login"),
+            nodeVisitN("2026-06-03T10:00:01Z", "t3", "User ID Lookup", "TRUE"),
+            init("2026-06-03T10:00:02Z", "t3", "MFA-Inner"),
+            nodeVisitN("2026-06-03T10:00:03Z", "t3", "Push", "Approved"),
+            completed("2026-06-03T10:00:04Z", "t3", "MFA-Inner", "SUCCESSFUL"),
+            // Parent's InnerTreeEvaluatorNode fires right after the inner tree completes:
+            nodeVisitN("2026-06-03T10:00:05Z", "t3", "Evaluate MFA", "Continue", "MfaEvaluator"),
+            completed("2026-06-03T10:00:06Z", "t3", "Login", "SUCCESSFUL"),
+        ];
+        const r = analyzeJourneyHistory(events);
+        expect(r.nodeStructure.outerTrees).toEqual(["Login"]);
+        expect(r.nodeStructure.edges).toEqual([
+            { parent: "Login", child: "MFA-Inner", invocations: 1, evaluatorNodeName: "MfaEvaluator" },
+        ]);
+        const evalNode = r.nodeStructure.nodes.find((n) => n.nodeName === "MfaEvaluator")!;
+        expect(evalNode.evaluatorForTree).toBe("MFA-Inner");
+        expect(evalNode.treeName).toBe("Login");
+        // The inner tree's own node is attributed to the inner tree.
+        const push = r.nodeStructure.nodes.find((n) => n.displayName === "Push")!;
+        expect(push.treeName).toBe("MFA-Inner");
+    });
+
+    it("handles three levels of nesting (depth is unbounded)", () => {
+        const events: RawAuthEvent[] = [
+            init("2026-06-03T10:00:00Z", "t", "Login"),
+            init("2026-06-03T10:00:01Z", "t", "A"),
+            init("2026-06-03T10:00:02Z", "t", "B"),
+            nodeVisitN("2026-06-03T10:00:03Z", "t", "Deep", "x"),
+            completed("2026-06-03T10:00:04Z", "t", "B", "SUCCESSFUL"),
+            completed("2026-06-03T10:00:05Z", "t", "A", "SUCCESSFUL"),
+            completed("2026-06-03T10:00:06Z", "t", "Login", "SUCCESSFUL"),
+        ];
+        const r = analyzeJourneyHistory(events);
+        expect(r.nodeStructure.outerTrees).toEqual(["Login"]);
+        const edges = r.nodeStructure.edges.map((e) => `${e.parent}>${e.child}`).sort();
+        expect(edges).toEqual(["A>B", "Login>A"]);
+    });
+
+    it("leaves an edge evaluator-less when no node follows the inner tree", () => {
+        const events: RawAuthEvent[] = [
+            init("2026-06-03T10:00:00Z", "t", "Login"),
+            init("2026-06-03T10:00:01Z", "t", "Inner"),
+            nodeVisitN("2026-06-03T10:00:02Z", "t", "X", "ok"),
+            completed("2026-06-03T10:00:03Z", "t", "Inner", "SUCCESSFUL"),
+            completed("2026-06-03T10:00:04Z", "t", "Login", "SUCCESSFUL"), // no node between
+        ];
+        const r = analyzeJourneyHistory(events);
+        expect(r.nodeStructure.edges).toEqual([{ parent: "Login", child: "Inner", invocations: 1 }]);
+    });
+
+    it("yields two edges and one merged node set for a reused inner tree", () => {
+        const mk = (txn: string, parent: string): RawAuthEvent[] => [
+            init("2026-06-03T10:00:00Z", txn, parent),
+            init("2026-06-03T10:00:01Z", txn, "Shared"),
+            nodeVisitN("2026-06-03T10:00:02Z", txn, "Common", "ok"),
+            completed("2026-06-03T10:00:03Z", txn, "Shared", "SUCCESSFUL"),
+            completed("2026-06-03T10:00:04Z", txn, parent, "SUCCESSFUL"),
+        ];
+        const r = analyzeJourneyHistory([...mk("a", "Login"), ...mk("b", "Register")]);
+        const edges = r.nodeStructure.edges.map((e) => `${e.parent}>${e.child}`).sort();
+        expect(edges).toEqual(["Login>Shared", "Register>Shared"]);
+        const common = r.nodeStructure.nodes.filter((n) => n.displayName === "Common");
+        expect(common).toHaveLength(1);
+        expect(common[0]).toMatchObject({ treeName: "Shared", visits: 2 });
+    });
+
+    it("attributes node outcomes to the synthesized tree when INITIATED is omitted", () => {
+        // Tenant emits no AM-TREE-LOGIN-INITIATED: node events arrive before the
+        // COMPLETED reveals the tree. Their outcomes must still land on that tree.
+        const events: RawAuthEvent[] = [
+            nodeVisitN("2026-06-03T10:00:01Z", "n1", "Check Session", "noSession"),
+            nodeVisitN("2026-06-03T10:00:02Z", "n1", "Fetch App ID", "true"),
+            completed("2026-06-03T10:00:03Z", "n1", "MasterLogin", "SUCCESSFUL"),
+            // second attempt, same tenant style:
+            nodeVisitN("2026-06-03T10:01:01Z", "n2", "Check Session", "noSession"),
+            completed("2026-06-03T10:01:02Z", "n2", "MasterLogin", "SUCCESSFUL"),
+        ];
+        const r = analyzeJourneyHistory(events);
+        expect(r.nodeStructure.outerTrees).toEqual(["MasterLogin"]);
+        const check = r.nodeStructure.nodes.find((n) => n.displayName === "Check Session")!;
+        expect(check).toMatchObject({ treeName: "MasterLogin", visits: 2 });
+        expect(check.outcomes).toEqual({ noSession: 2 });
+        // No node should leak into an "(unknown)" bucket.
+        expect(r.nodeStructure.nodes.some((n) => n.treeName === "(unknown)")).toBe(false);
+    });
+
+    it("reconstructs inner-tree nesting when INITIATED is omitted (last COMPLETED is outer)", () => {
+        // No INITIATED: inner tree B completes before outer journey A in one txn.
+        const events: RawAuthEvent[] = [
+            nodeVisitN("2026-06-03T10:00:01Z", "x", "B Step", "ok"),
+            completed("2026-06-03T10:00:02Z", "x", "B", "SUCCESSFUL"),       // inner first
+            nodeVisitN("2026-06-03T10:00:03Z", "x", "A Eval", "Continue"),
+            completed("2026-06-03T10:00:04Z", "x", "A", "SUCCESSFUL"),       // outer last
+        ];
+        const r = analyzeJourneyHistory(events);
+        expect(r.nodeStructure.outerTrees).toEqual(["A"]);
+        expect(r.nodeStructure.edges.map((e) => `${e.parent}>${e.child}`)).toEqual(["A>B"]);
+        expect(r.attempts.find((a) => a.treeName === "B")!).toMatchObject({ isInner: true, outerTreeName: "A" });
+        expect(r.attempts.find((a) => a.treeName === "A")!).toMatchObject({ isInner: false });
+    });
+
+    it("produces empty nodes (but can still see edges) when no node events are present", () => {
+        const events: RawAuthEvent[] = [
+            init("2026-06-03T10:00:00Z", "t", "Login"),
+            init("2026-06-03T10:00:01Z", "t", "Inner"),
+            completed("2026-06-03T10:00:02Z", "t", "Inner", "SUCCESSFUL"),
+            completed("2026-06-03T10:00:03Z", "t", "Login", "SUCCESSFUL"),
+        ];
+        const r = analyzeJourneyHistory(events);
+        expect(r.nodeStructure.nodes).toEqual([]);
+        expect(r.nodeStructure.edges).toEqual([{ parent: "Login", child: "Inner", invocations: 1 }]);
+    });
+
+    describe("mergeRollup folds nodeStructure", () => {
+        it("sums node visits/outcomes and edge invocations, unions outerTrees", () => {
+            const w1 = analyzeJourneyHistory([
+                init("2026-06-03T10:00:00Z", "a", "Login"),
+                nodeVisitN("2026-06-03T10:00:01Z", "a", "Lookup", "TRUE"),
+                init("2026-06-03T10:00:02Z", "a", "Inner"),
+                nodeVisitN("2026-06-03T10:00:03Z", "a", "Deep", "ok"),
+                completed("2026-06-03T10:00:04Z", "a", "Inner", "SUCCESSFUL"),
+                completed("2026-06-03T10:00:05Z", "a", "Login", "SUCCESSFUL"),
+            ]);
+            const w2 = analyzeJourneyHistory([
+                init("2026-06-03T11:00:00Z", "b", "Login"),
+                nodeVisitN("2026-06-03T11:00:01Z", "b", "Lookup", "FALSE"),
+                init("2026-06-03T11:00:02Z", "b", "Inner"),
+                nodeVisitN("2026-06-03T11:00:03Z", "b", "Deep", "ok"),
+                completed("2026-06-03T11:00:04Z", "b", "Inner", "SUCCESSFUL"),
+                completed("2026-06-03T11:00:05Z", "b", "Login", "SUCCESSFUL"),
+            ]);
+            const merged = mergeRollup(mergeRollup(emptyRollup(), w1), w2);
+            const ns = merged.nodeStructure!;
+            const lookup = ns.nodes.find((n) => n.displayName === "Lookup")!;
+            expect(lookup.outcomes).toEqual({ TRUE: 1, FALSE: 1 });
+            expect(ns.edges).toEqual([{ parent: "Login", child: "Inner", invocations: 2 }]);
+            expect(ns.outerTrees).toEqual(["Login"]);
+        });
+
+        it("tolerates rollups without nodeStructure (legacy windows)", () => {
+            const legacy = { summary: { eventsProcessed: 1, attempts: 1, success: 1, fail: 0, incomplete: 0, transactions: 1 },
+                perJourney: [{ treeName: "Login", innerOnly: false, attempts: 1, success: 1, fail: 0, incomplete: 0, failRate: 0, topFailureNodes: [] }] };
+            const merged = mergeRollup(emptyRollup(), legacy);
+            expect(merged.nodeStructure).toEqual({ outerTrees: [], edges: [], nodes: [] });
+        });
+    });
+});

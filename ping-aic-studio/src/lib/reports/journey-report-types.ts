@@ -2,7 +2,7 @@
 // pull job (resumable, persisted, one active per env) so a 429-throttled report
 // retries, runs in the background, and can be suspended/resumed.
 
-import type { JourneyHistoryReport } from "./journey-history";
+import type { JourneyHistoryReport, JourneyRollup } from "./journey-history";
 
 /** Max automatic cooldown-and-retry episodes before a sustained 429 falls back to a manual pause. */
 export const AUTO_RECOVERY_MAX_EPISODES = 10;
@@ -67,7 +67,7 @@ export interface JourneyReportParams {
 /** Accumulator persisted across windows of a chunked (multi-window) run. */
 export interface JourneyReportPartial {
   /** Merged journey rollup over all completed windows. */
-  rollup: Pick<JourneyHistoryReport, "summary" | "perJourney">;
+  rollup: JourneyRollup;
   /** Cumulative event-name tally across completed windows (for "top event names"). */
   eventNameCounts: Record<string, number>;
   rawTotal: number;

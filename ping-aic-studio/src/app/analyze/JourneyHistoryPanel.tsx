@@ -7,6 +7,7 @@ import { AUTO_RECOVERY_MAX_EPISODES } from "@/lib/reports/journey-report-types";
 import { buildInspectWindow, INSPECT_WINDOW_HOURS, singleWindowTooWide, retentionWarning } from "@/lib/reports/journey-inspect";
 import { useJourneyReportJobs } from "@/hooks/useJourneyReportJobs";
 import { JourneyMultiSelect } from "./JourneyMultiSelect";
+import { NodeOutcomeTree } from "./NodeOutcomeTree";
 
 /** Default window: last 24 hours, rounded to the second. */
 function defaultWindow(): { from: string; to: string } {
@@ -1041,6 +1042,17 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                             </div>
                         ) : null}
                     </div>
+
+                    {report.nodeStructure && report.nodeStructure.nodes.length > 0 ? (
+                        <NodeOutcomeTree structure={report.nodeStructure} />
+                    ) : (
+                        <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
+                            <span className="font-semibold text-slate-700">Node outcomes</span> — no node-level data in this report.
+                            Per-node outcome stats need <span className="font-mono">AM-NODE-LOGIN-COMPLETED</span> events, which a{" "}
+                            <span className="font-medium">Rates only</span> run skips. Re-run with <span className="font-medium">Rates only</span>{" "}
+                            off — use a range ≤ 1 day with <span className="font-medium">Window split 0</span> for full per-node detail.
+                        </div>
+                    )}
 
                     {report.rollupOnly ? (
                         <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
