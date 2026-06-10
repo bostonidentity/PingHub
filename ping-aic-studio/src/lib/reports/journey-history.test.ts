@@ -530,6 +530,48 @@ describe("nodeStructure", () => {
         });
     });
 
+    it("does not list a pulled-along inner journey as a root, even across differing txn ids", () => {
+        const trace = "1bf7651916cd43dd8448eb211c80319c";
+        const txnA = `00-${trace}-aaaaaaaaaaaaaaaa-01/1`;
+        const txnB = `00-${trace}-bbbbbbbbbbbbbbbb-01/1`;
+        const events: RawAuthEvent[] = [
+            nodeEv("2026-06-03T10:00:01Z", txnA, { tree: "Master", display: "Page Node", outcome: "true" }),
+            nodeEv("2026-06-03T10:00:02Z", txnB, { tree: "Inner", display: "Step", outcome: "ok" }),
+            completed("2026-06-03T10:00:03Z", txnB, "Inner", "SUCCESSFUL"),
+            nodeEv("2026-06-03T10:00:04Z", txnA, { tree: "Master", display: "IJ: Inner", name: "E", outcome: "true", type: "InnerTreeEvaluatorNode" }),
+            completed("2026-06-03T10:00:05Z", txnA, "Master", "SUCCESSFUL"),
+        ];
+        const r = analyzeJourneyHistory(events);
+        expect(r.nodeStructure.outerTrees).toEqual(["Master"]);
+    });
+
+    it("keeps a journey a root when it also runs standalone in another trace", () => {
+        const events: RawAuthEvent[] = [
+            // Trace 1: Inner runs nested under Master.
+            nodeEv("2026-06-03T10:00:01Z", "tr1", { tree: "Master", display: "Page Node", outcome: "true" }),
+            nodeEv("2026-06-03T10:00:02Z", "tr1", { tree: "Inner", display: "Step", outcome: "ok" }),
+            nodeEv("2026-06-03T10:00:03Z", "tr1", { tree: "Master", display: "IJ: Inner", name: "E", outcome: "true", type: "InnerTreeEvaluatorNode" }),
+            completed("2026-06-03T10:00:04Z", "tr1", "Master", "SUCCESSFUL"),
+            // Trace 2: Inner runs standalone.
+            nodeEv("2026-06-03T11:00:01Z", "tr2", { tree: "Inner", display: "Step", outcome: "ok" }),
+            completed("2026-06-03T11:00:02Z", "tr2", "Inner", "SUCCESSFUL"),
+        ];
+        const r = analyzeJourneyHistory(events);
+        expect([...r.nodeStructure.outerTrees].sort()).toEqual(["Inner", "Master"]);
+    });
+
+    it("treats the outer journey as root when its first node IS the evaluator (INITIATED-less)", () => {
+        // Child events precede ALL parent events; last COMPLETED still identifies the outer.
+        const events: RawAuthEvent[] = [
+            nodeEv("2026-06-03T10:00:01Z", "tx", { tree: "Child", display: "Step", outcome: "ok" }),
+            completed("2026-06-03T10:00:02Z", "tx", "Child", "SUCCESSFUL"),
+            nodeEv("2026-06-03T10:00:03Z", "tx", { tree: "Parent", display: "IJ: Child", name: "E", outcome: "true", type: "InnerTreeEvaluatorNode" }),
+            completed("2026-06-03T10:00:04Z", "tx", "Parent", "SUCCESSFUL"),
+        ];
+        const r = analyzeJourneyHistory(events);
+        expect(r.nodeStructure.outerTrees).toEqual(["Parent"]);
+    });
+
     describe("mergeRollup folds nodeStructure", () => {
         it("sums node visits/outcomes and edge invocations, unions outerTrees", () => {
             const w1 = analyzeJourneyHistory([

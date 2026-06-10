@@ -266,7 +266,6 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
             if (kind === "tree-init") {
                 const treeName = str(info?.treeName) ?? str(p.treeName) ?? "(unknown)";
                 if (!outerTreeName) outerTreeName = treeName;
-                if (stack.length === 0) outerSet.add(treeName);    // entrypoint journey (replaced by trace rule in a later commit)
                 stack.push({
                     treeName,
                     startedAt: ts,
@@ -402,7 +401,6 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
         // COMPLETED is the outer journey; earlier ones are its inner trees.
         if (synthAttempts.length > 0) {
             const outer = synthAttempts[synthAttempts.length - 1];
-            outerSet.add(outer.tree);
             for (let i = 0; i < synthAttempts.length - 1; i++) {
                 const inner = synthAttempts[i];
                 inner.ref.isInner = true;
@@ -417,6 +415,16 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
     // contiguous run of foreign-tree events just before it identifies the child.
     for (const evs of byTrace.values()) {
         evs.sort((a, b) => a.ts.localeCompare(b.ts) || a.counter - b.counter);
+        // Outer tree per trace (spec "Outer trees"): first INITIATED if the tenant
+        // emits them (exact); else the LAST tree-completed (inner trees complete
+        // before their parent); else first event with a treeName (window-truncated
+        // traces, best effort).
+        const firstInit = evs.find((e) => e.kind === "tree-init" && e.treeName);
+        let lastCompleted: TraceEv | undefined;
+        for (const e of evs) if (e.kind === "tree-completed" && e.treeName) lastCompleted = e;
+        const firstNamed = evs.find((e) => e.treeName);
+        const outer = firstInit?.treeName ?? lastCompleted?.treeName ?? firstNamed?.treeName;
+        if (outer) outerSet.add(outer);
         const nodeEvs = evs.filter((e) => e.kind === "node-completed" && e.treeName);
         for (let i = 0; i < nodeEvs.length; i++) {
             const ev = nodeEvs[i];
