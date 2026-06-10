@@ -16,6 +16,9 @@ export async function GET(req: NextRequest) {
   if (!journey) {
     return NextResponse.json({ error: "journey is required" }, { status: 400 });
   }
+  if (journey.includes("/") || journey.includes("\\") || journey.includes("..") || journey.includes("\0")) {
+    return NextResponse.json({ error: "invalid journey name" }, { status: 400 });
+  }
   const configDir = getConfigDir(env);
   if (!configDir) {
     return NextResponse.json({ error: "no pulled config for environment" }, { status: 404 });

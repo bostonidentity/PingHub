@@ -123,4 +123,13 @@ describe("resolveJourneyDepTree", () => {
         for (const g of ghosts) expect(g.missing).toBe(true);
         expect(flattenDepTree(tree)).toEqual(["Mid"]);
     });
+
+    it("treats path-syntax journey names as missing instead of joining them", () => {
+        const dir = tempDir();
+        writeJourneyNode(dir, "Login", "ij.json", { _type: { _id: "InnerTreeEvaluatorNode" }, tree: "../../../etc" });
+        const tree = resolveJourneyDepTree(dir, "Login");
+        expect(tree.children).toEqual([{ name: "../../../etc", children: [], missing: true }]);
+        expect(flattenDepTree(tree)).toEqual([]);
+        expect(resolveJourneyDepTree(dir, "../escape")).toEqual({ name: "../escape", children: [], missing: true });
+    });
 });

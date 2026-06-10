@@ -105,6 +105,9 @@ export interface JourneyDepNode {
 export function resolveJourneyDepTree(configDir: string, journeyName: string): JourneyDepNode {
   const expanded = new Set<string>();
   const build = (name: string): JourneyDepNode => {
+    // Journey names come from config dirs / node `tree` refs; anything with path
+    // syntax is hostile or corrupt — treat as not-found rather than join it.
+    if (/[/\\]|\.\.|\0/.test(name)) return { name, children: [], missing: true };
     if (expanded.has(name)) return { name, children: [], repeated: true };
     const realmRoots = getRealmRoots(configDir, path.join("journeys", name, "nodes"));
     if (realmRoots.length === 0) return { name, children: [], missing: true };
