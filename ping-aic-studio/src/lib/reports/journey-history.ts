@@ -196,7 +196,8 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
         if (!p) continue;
         const txn = str(p.transactionId);
         if (!txn) continue;
-        if (classifyEvent(p) === "other") continue;
+        const gkind = classifyEvent(p);
+        if (gkind === "other") continue;
         processed++;
         if (!byTxn.has(txn)) byTxn.set(txn, { txn, events: [] });
         byTxn.get(txn)!.events.push({ ts: ev.timestamp, p });
@@ -206,8 +207,12 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
         byTrace.get(tr)!.push({
             ts: ev.timestamp,
             counter: counterOf(txn),
-            kind: classifyEvent(p) as TraceEv["kind"],
-            treeName: str(ginfo?.treeName) ?? str(p.treeName),
+            kind: gkind,
+            // Node stats key on the event's own (info-level) treeName, so
+            // node-completed trace records must not fall back to the payload-
+            // level treeName — that would produce edges naming trees that no
+            // NodeOutcomeStat carries. Tree lifecycle events keep the fallback.
+            treeName: gkind === "node-completed" ? str(ginfo?.treeName) : (str(ginfo?.treeName) ?? str(p.treeName)),
             nodeName: str(ginfo?.nodeName) ?? str(ginfo?.displayName) ?? "(unknown)",
             displayName: str(ginfo?.displayName) ?? str(ginfo?.nodeName) ?? "(unknown)",
             isEvaluator: ginfo?.nodeType === "InnerTreeEvaluatorNode",

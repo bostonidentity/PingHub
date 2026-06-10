@@ -501,6 +501,21 @@ describe("nodeStructure", () => {
         ]);
     });
 
+    it("counts repeated invocations of the same inner tree within one trace", () => {
+        const events: RawAuthEvent[] = [
+            nodeEv("2026-06-03T10:00:01Z", "m6", { tree: "P", display: "Start", outcome: "ok" }),
+            nodeEv("2026-06-03T10:00:02Z", "m6", { tree: "C", display: "C Step", outcome: "retry" }),
+            nodeEv("2026-06-03T10:00:03Z", "m6", { tree: "P", display: "IJ: C", name: "CEval", outcome: "false", type: "InnerTreeEvaluatorNode" }),
+            nodeEv("2026-06-03T10:00:04Z", "m6", { tree: "C", display: "C Step", outcome: "ok" }),
+            nodeEv("2026-06-03T10:00:05Z", "m6", { tree: "P", display: "IJ: C", name: "CEval", outcome: "true", type: "InnerTreeEvaluatorNode" }),
+            completed("2026-06-03T10:00:06Z", "m6", "P", "SUCCESSFUL"),
+        ];
+        const r = analyzeJourneyHistory(events);
+        expect(r.nodeStructure.edges).toEqual([
+            { parent: "P", child: "C", invocations: 2, evaluatorNodeName: "CEval" },
+        ]);
+    });
+
     it("keeps synth failure attribution for buffered nodes that carried their own treeName", () => {
         const events: RawAuthEvent[] = [
             nodeEv("2026-06-03T10:00:01Z", "n5", { tree: "Master", display: "Page Node", outcome: "true" }),
