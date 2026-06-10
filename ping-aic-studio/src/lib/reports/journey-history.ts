@@ -227,7 +227,7 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
         // AM-TREE-LOGIN-INITIATED still let us reconstruct attempts: buffer the
         // orphan node visits here and attach them (and their outcome stats) to the
         // next COMPLETED, once it reveals which tree they belonged to.
-        let pendingNodes: { displayName?: string; nodeName?: string; outcome?: string; ts: string; userId?: string }[] = [];
+        let pendingNodes: { displayName?: string; nodeName?: string; outcome?: string; ts: string; userId?: string; counted?: boolean }[] = [];
         // Synth attempts (no INITIATED) in completion order. Inner trees complete
         // before their parent, so the LAST is the outer journey and earlier ones
         // are its inner trees — reconstructed at end-of-transaction.
@@ -257,18 +257,24 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
                 const display = str(info?.displayName) ?? str(info?.nodeName) ?? "(unknown)";
                 const nodeName = str(info?.nodeName) ?? str(info?.displayName) ?? "(unknown)";
                 const outcome = str(info?.nodeOutcome);
-                // Stash on the topmost open attempt for failure attribution.
+                // Per-node outcome stats: prefer the event's OWN treeName — inner journeys
+                // log their nodes under their own tree (doc §3.3) — falling back to the
+                // currently-executing tree for events that omit it.
+                const ownTree = str(info?.treeName);
                 const top = stack[stack.length - 1];
+                let node: NodeOutcomeStat | undefined;
+                if (ownTree) node = recordNode(ownTree, display, nodeName, outcome);
+                else if (top) node = recordNode(top.treeName, display, nodeName, outcome);
+
                 if (top) {
-                    // Per-node outcome stats: attribute to the currently-executing tree.
-                    const node = recordNode(top.treeName, display, nodeName, outcome);
+                    // Failure attribution still follows the open-attempt stack.
                     top.lastNodeDisplayName = str(info?.displayName) ?? str(info?.nodeName) ?? top.lastNodeDisplayName;
                     top.lastNodeOutcome = outcome ?? top.lastNodeOutcome;
                     // userId may only become known mid-flow.
                     top.userId = top.userId ?? str(p.userId) ?? str(p.principal);
                     // Best-effort evaluator linkage: the first node-completed in the
                     // parent right after an inner tree finished is its evaluator.
-                    if (top.awaitingEvaluatorFor) {
+                    if (top.awaitingEvaluatorFor && node) {
                         const child = top.awaitingEvaluatorFor;
                         node.evaluatorForTree = child;
                         const edge = edgeMap.get(`${top.treeName}${SEP}${child}`);
@@ -276,15 +282,15 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
                         top.awaitingEvaluatorFor = undefined;
                     }
                 } else {
-                    // No open INITIATED attempt — buffer; the COMPLETED reveals the
-                    // owning tree, so its outcome stats are recorded there (otherwise
-                    // tenants that omit INITIATED would lose all node outcomes).
+                    // No open INITIATED attempt — buffer for attempt synthesis. Stats were
+                    // already recorded above when the event carried its own treeName.
                     pendingNodes.push({
                         displayName: str(info?.displayName) ?? str(info?.nodeName),
                         nodeName: str(info?.nodeName) ?? str(info?.displayName),
                         outcome,
                         ts,
                         userId: str(p.userId) ?? str(p.principal),
+                        counted: !!ownTree,
                     });
                 }
                 continue;
@@ -334,6 +340,7 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
                     synthAttempts.push({ ref: synthAttempt, tree: synthTree });
                     // Now that the tree is known, record the buffered nodes' outcomes.
                     for (const pn of pendingNodes) {
+                        if (pn.counted) continue;
                         recordNode(synthTree, pn.displayName ?? pn.nodeName ?? "(unknown)", pn.nodeName ?? pn.displayName ?? "(unknown)", pn.outcome);
                     }
                     pendingNodes = [];
@@ -381,6 +388,7 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
         // know (outermost), else a synthetic bucket, so their outcomes aren't lost.
         const leftoverOwner = outerTreeName ?? stack[0]?.treeName ?? "(unknown)";
         for (const pn of pendingNodes) {
+            if (pn.counted) continue;
             recordNode(leftoverOwner, pn.displayName ?? pn.nodeName ?? "(unknown)", pn.nodeName ?? pn.displayName ?? "(unknown)", pn.outcome);
         }
         // Reconstruct inner-tree nesting for INITIATED-less tenants: the last synth

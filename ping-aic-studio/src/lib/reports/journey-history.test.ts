@@ -236,6 +236,16 @@ function nodeVisitN(ts: string, txn: string, display: string, outcome: string | 
     return { timestamp: ts, payload: { eventName: "AM-NODE-LOGIN-COMPLETED", transactionId: txn, entries: [{ info }] } };
 }
 
+/** Node-completed event with full control over the info block (tree/type/etc.). */
+function nodeEv(ts: string, txn: string, o: { tree?: string; display: string; name?: string; outcome?: string; type?: string }): RawAuthEvent {
+    const info: Record<string, unknown> = { displayName: o.display };
+    if (o.tree) info.treeName = o.tree;
+    if (o.name) info.nodeName = o.name;
+    if (o.outcome !== undefined) info.nodeOutcome = o.outcome;
+    if (o.type) info.nodeType = o.type;
+    return { timestamp: ts, payload: { eventName: "AM-NODE-LOGIN-COMPLETED", transactionId: txn, entries: [{ info }] } };
+}
+
 describe("nodeStructure", () => {
     it("aggregates per-node outcomes with visit counts and a (none) bucket", () => {
         const events: RawAuthEvent[] = [
@@ -367,6 +377,38 @@ describe("nodeStructure", () => {
         const r = analyzeJourneyHistory(events);
         expect(r.nodeStructure.nodes).toEqual([]);
         expect(r.nodeStructure.edges).toEqual([{ parent: "Login", child: "Inner", invocations: 1 }]);
+    });
+
+    it("attributes nodes to their own treeName even with no COMPLETED at all", () => {
+        const events: RawAuthEvent[] = [
+            nodeEv("2026-06-03T10:00:01Z", "n3", { tree: "Master", display: "Page Node", outcome: "true" }),
+            nodeEv("2026-06-03T10:00:02Z", "n3", { tree: "Inner", display: "Script", outcome: "true" }),
+            // window truncated: no COMPLETED events
+        ];
+        const r = analyzeJourneyHistory(events);
+        expect(r.nodeStructure.nodes.find((n) => n.displayName === "Page Node")).toMatchObject({ treeName: "Master", visits: 1 });
+        expect(r.nodeStructure.nodes.find((n) => n.displayName === "Script")).toMatchObject({ treeName: "Inner", visits: 1 });
+        expect(r.nodeStructure.nodes.some((n) => n.treeName === "(unknown)")).toBe(false);
+    });
+
+    it("prefers the event's own treeName over the open attempt's tree", () => {
+        const events: RawAuthEvent[] = [
+            init("2026-06-03T10:00:00Z", "t9", "Outer"),
+            // A child journey's node logged while Outer is the open attempt:
+            nodeEv("2026-06-03T10:00:01Z", "t9", { tree: "Child", display: "Child Step", outcome: "ok" }),
+            completed("2026-06-03T10:00:02Z", "t9", "Outer", "SUCCESSFUL"),
+        ];
+        const r = analyzeJourneyHistory(events);
+        expect(r.nodeStructure.nodes.find((n) => n.displayName === "Child Step")!.treeName).toBe("Child");
+    });
+
+    it("does not double-count buffered nodes that carried their own treeName", () => {
+        const events: RawAuthEvent[] = [
+            nodeEv("2026-06-03T10:00:01Z", "n4", { tree: "Master", display: "Check", outcome: "ok" }),
+            completed("2026-06-03T10:00:02Z", "n4", "Master", "SUCCESSFUL"),
+        ];
+        const r = analyzeJourneyHistory(events);
+        expect(r.nodeStructure.nodes.find((n) => n.displayName === "Check")!.visits).toBe(1);
     });
 
     describe("mergeRollup folds nodeStructure", () => {
