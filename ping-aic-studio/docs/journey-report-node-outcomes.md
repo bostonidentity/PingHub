@@ -37,11 +37,10 @@ across windows; the UI composes the tree client-side.
 | `nodeStructure` in report + windowed merge | **Implemented** |
 | Node attribution for INITIATED-less tenants (buffer→COMPLETED) | **Implemented** |
 | "Expand all" expands tree rows **and** node breakdowns | **Implemented (bugfix)** |
-| Inner-tree nesting via parent/child **edges** | Implemented for tenants that emit inner-tree `INITIATED`/`COMPLETED` — **inert for the UAT tenant** (see §3) |
-| Inner-tree nesting via **trace correlation** | **Designed + data-validated, NOT yet implemented** (see §4) |
+| Inner-tree nesting via parent/child **edges** | **Removed (2026-06-10)** — superseded by trace correlation |
+| Inner-tree nesting via **trace correlation** | **Implemented (2026-06-10)** (see §4) |
+| Inner-journey picker (config-resolved closure checklist) | **Implemented (2026-06-10)** |
 | Hint shown when no node data (rates-only run) | **Implemented** |
-
-Not committed to git yet as of this writing — changes live in the working tree.
 
 ---
 
@@ -158,14 +157,16 @@ the parent + its inner journeys).
 
 ---
 
-## 4. Inner-tree reconstruction via trace correlation (PROPOSED)
+## 4. Inner-tree reconstruction via trace correlation (IMPLEMENTED 2026-06-10)
+
+Spec: `superpowers/specs/2026-06-10-journey-inner-tree-trace-nesting-design.md` · Plan: `superpowers/plans/2026-06-10-journey-inner-tree-trace-nesting.md` (paths relative to `docs/`).
 
 Data-validated approach to render genuine inner-tree nodes nested under their
-`IJ:` evaluator, multi-level — **not yet implemented**.
+`IJ:` evaluator, multi-level.
 
 1. **Pull must include inner-journey events** → run unfiltered, or select the
    parent + its inner journeys. (The single-journey filter is what hides them.)
-2. **Analyzer changes:**
+2. **Analyzer (implemented):**
    - Attribute each node to its **own `info.treeName`** (not the open-attempt
      stack). This alone fixes attribution in every case.
    - Correlate events by **trace ID** (2nd segment of `transactionId`).
@@ -175,7 +176,7 @@ Data-validated approach to render genuine inner-tree nodes nested under their
      hint as a tiebreaker).
 3. **UI:** nest the child journey's real nodes under its `IJ:` evaluator row.
 
-This **supersedes** the current edge-from-`INITIATED` logic and the
+This **superseded and removed** the edge-from-`INITIATED` logic and the
 "last-COMPLETED-is-outer" heuristic (both inert on this tenant).
 
 Caveats: traces split across window boundaries (rare; traces are sub-second over
