@@ -181,7 +181,22 @@ This **superseded and removed** the edge-from-`INITIATED` logic and the
 
 Caveats: traces split across window boundaries (rare; traces are sub-second over
 hour-sized windows) won't correlate; evaluator→child mapping is heuristic when
-several inner journeys interleave.
+several inner journeys interleave. A trace truncated after a child's events but
+before its evaluator leaves that child's node stats present but unreachable in
+the tree UI (no edge, not a root) — previously such children showed as spurious
+roots; now they're invisible until a complete trace links them. Truncated
+traces can also promote an inner journey to a root (its COMPLETED is the last
+one seen), so a busy inner tree may legitimately appear both nested and as a
+root.
+
+**Validated on real data (2026-06-10):** re-analyzed a retained-raw unfiltered
+uat run (3 windows, ~110k events): 57 edges, all with evaluator linkage, zero
+`(unknown)` nodes. The §3.3 chains reproduce exactly — `MasterLogin → IJ:
+Kerberos → KerberosMain` (×1649), `IJ: MFA → MFA_RegistrationAndAuthentication`
+(×1534), `IJ: PTA/JIT → PTAJITMain → JIT → PTA_JIT`, and three levels deep
+`MFA_Reg → IJ:EvaluateRiskLevel → PingProtectRiskLevelEval` (×106). A
+MasterLogin-only filtered run correctly yields zero edges (§3.5: single-journey
+pulls can't nest).
 
 ---
 
