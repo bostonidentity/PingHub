@@ -90,19 +90,29 @@ export function NodeOutcomeTree({ structure }: { structure: NodeStructure }) {
         if (next.has(key)) next.delete(key); else next.add(key);
         return next;
     });
+    // Keys of every tree row AND node breakdown under `tree` (inclusive), cycle-safe.
+    const collectKeys = (tree: string, treeKey: string, keys: Set<string>, seen: Set<string>) => {
+        keys.add(treeKey);
+        for (const n of b.plainNodesOf.get(tree) ?? []) keys.add(K(treeKey, "n", n.nodeName));
+        if (seen.has(tree)) return;
+        const s = new Set(seen); s.add(tree);
+        for (const e of b.childrenOf.get(tree) ?? []) collectKeys(e.child, K(treeKey, "t", e.child), keys, s);
+    };
     const setAll = (expand: boolean) => {
         if (!expand) { setOpen(new Set()); return; }
         const keys = new Set<string>();
-        // Expand every tree row AND every node's outcome breakdown.
-        const walk = (tree: string, treeKey: string, seen: Set<string>) => {
-            keys.add(treeKey);
-            for (const n of b.plainNodesOf.get(tree) ?? []) keys.add(K(treeKey, "n", n.nodeName));
-            if (seen.has(tree)) return;
-            const s = new Set(seen); s.add(tree);
-            for (const e of b.childrenOf.get(tree) ?? []) walk(e.child, K(treeKey, "t", e.child), s);
-        };
-        for (const r of b.roots) walk(r, K("root", "t", r), new Set());
+        for (const r of b.roots) collectKeys(r, K("root", "t", r), keys, new Set());
         setOpen(keys);
+    };
+    /** Expand/collapse one journey's whole subtree (incl. node breakdowns). */
+    const setAllUnder = (tree: string, treeKey: string, expand: boolean) => {
+        const keys = new Set<string>();
+        collectKeys(tree, treeKey, keys, new Set());
+        setOpen((prev) => {
+            const next = new Set(prev);
+            for (const k of keys) { if (expand) next.add(k); else next.delete(k); }
+            return next;
+        });
     };
 
     const Row = ({ children, depth, onClick, caret }: { children: ReactNode; depth: number; onClick?: () => void; caret: string }) => (
@@ -135,7 +145,27 @@ export function NodeOutcomeTree({ structure }: { structure: NodeStructure }) {
                 </span>
                 {reused && !isRoot ? <span className="text-[10px] italic text-amber-700">· reused</span> : null}
                 {cyclic ? <span className="text-[10px] italic text-slate-400">↻ shown above</span> : null}
-                {edge ? <span className="ml-auto text-xs tabular-nums text-slate-500">{edge.invocations.toLocaleString()}×</span> : null}
+                <span className="ml-auto flex items-center gap-2">
+                    {edge ? <span className="text-xs tabular-nums text-slate-500">{edge.invocations.toLocaleString()}×</span> : null}
+                    {!cyclic ? (
+                        <>
+                            <button
+                                type="button"
+                                className="text-[10px] text-violet-700 hover:underline"
+                                onClick={(ev) => { ev.stopPropagation(); setAllUnder(tree, key, true); }}
+                            >
+                                expand all
+                            </button>
+                            <button
+                                type="button"
+                                className="text-[10px] text-violet-700 hover:underline"
+                                onClick={(ev) => { ev.stopPropagation(); setAllUnder(tree, key, false); }}
+                            >
+                                collapse all
+                            </button>
+                        </>
+                    ) : null}
+                </span>
             </Row>
         );
 

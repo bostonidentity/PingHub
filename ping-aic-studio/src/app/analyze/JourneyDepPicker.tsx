@@ -20,31 +20,75 @@ function selectableNames(root: JourneyDepNode): string[] {
     return [...out];
 }
 
-function DepRow({ node, root, depth, checked, onToggle }: {
-    node: JourneyDepNode; root: string; depth: number; checked: Set<string>; onToggle: (name: string) => void;
+/** Paths (rooted at the section's parent journey) of every branch row — i.e.
+ *  nodes with children — under `root`. These are the keys expand/collapse uses. */
+function branchPaths(root: JourneyDepNode, rootPath: string): string[] {
+    const out: string[] = [];
+    const walk = (n: JourneyDepNode, path: string) => {
+        if (n.children.length === 0) return;
+        out.push(path);
+        for (const c of n.children) walk(c, `${path}>${c.name}`);
+    };
+    for (const c of root.children) walk(c, `${rootPath}>${c.name}`);
+    return out;
+}
+
+/** Distinct checked names hidden below `node` (its own checkbox excluded). */
+function checkedDescendants(node: JourneyDepNode, root: string, checked: Set<string>): number {
+    const names = new Set<string>();
+    const walk = (n: JourneyDepNode) => {
+        for (const c of n.children) {
+            if (!c.missing && c.name !== root && checked.has(c.name)) names.add(c.name);
+            walk(c);
+        }
+    };
+    walk(node);
+    return names.size;
+}
+
+function DepRow({ node, root, path, depth, checked, open, onToggle, onToggleBranch }: {
+    node: JourneyDepNode; root: string; path: string; depth: number;
+    checked: Set<string>; open: Set<string>;
+    onToggle: (name: string) => void; onToggleBranch: (path: string) => void;
 }) {
     const selectable = !node.missing && node.name !== root;
+    const hasChildren = node.children.length > 0;
+    const expanded = open.has(path);
+    const hiddenChecked = hasChildren && !expanded ? checkedDescendants(node, root, checked) : 0;
     return (
         <>
-            <label
-                className={`flex items-center gap-2 text-xs ${node.missing ? "text-slate-400" : "text-slate-700"}`}
-                style={{ paddingLeft: depth * 16 }}
-            >
-                <input
-                    type="checkbox"
-                    className="accent-sky-600"
-                    disabled={!selectable}
-                    checked={checked.has(node.name)}
-                    onChange={() => onToggle(node.name)}
+            <div className="flex items-center gap-2" style={{ paddingLeft: depth * 16 }}>
+                {hasChildren ? (
+                    <button
+                        type="button"
+                        className="w-3 text-slate-400 text-[10px]"
+                        aria-label={expanded ? `Collapse ${node.name}` : `Expand ${node.name}`}
+                        onClick={() => onToggleBranch(path)}
+                    >
+                        {expanded ? "▾" : "▸"}
+                    </button>
+                ) : <span className="w-3" />}
+                <label className={`flex items-center gap-2 text-xs ${node.missing ? "text-slate-400" : "text-slate-700"}`}>
+                    <input
+                        type="checkbox"
+                        className="accent-sky-600"
+                        disabled={!selectable}
+                        checked={checked.has(node.name)}
+                        onChange={() => onToggle(node.name)}
+                    />
+                    <span>
+                        {node.name}
+                        {node.missing ? " (not in config)" : node.repeated ? " (repeated)" : ""}
+                        {hiddenChecked > 0 ? <span className="text-sky-700"> · {hiddenChecked} selected</span> : null}
+                    </span>
+                </label>
+            </div>
+            {expanded ? node.children.map((c) => (
+                <DepRow
+                    key={`${node.name}>${c.name}`} node={c} root={root} path={`${path}>${c.name}`} depth={depth + 1}
+                    checked={checked} open={open} onToggle={onToggle} onToggleBranch={onToggleBranch}
                 />
-                <span>
-                    {node.name}
-                    {node.missing ? " (not in config)" : node.repeated ? " (repeated)" : ""}
-                </span>
-            </label>
-            {node.children.map((c) => (
-                <DepRow key={`${node.name}>${c.name}`} node={c} root={root} depth={depth + 1} checked={checked} onToggle={onToggle} />
-            ))}
+            )) : null}
         </>
     );
 }
@@ -115,6 +159,16 @@ export function JourneyDepPicker({ env, parents, checked, onChange }: {
         onChange(checkedSet.has(name) ? checked.filter((c) => c !== name) : [...checked, name]);
     };
 
+    // Expanded branch rows, keyed by path from the section's parent journey —
+    // path-keyed so a reused inner journey collapses independently per branch.
+    // Collapsed by default (first level is always visible). Ephemeral.
+    const [openBranches, setOpenBranches] = useState<Set<string>>(new Set());
+    const toggleBranch = (path: string) => setOpenBranches((prev) => {
+        const next = new Set(prev);
+        if (next.has(path)) next.delete(path); else next.add(path);
+        return next;
+    });
+
     const sections = parents.filter((parent) => (trees[parent]?.children.length ?? 0) > 0);
     if (sections.length === 0) return null;
 
@@ -124,6 +178,8 @@ export function JourneyDepPicker({ env, parents, checked, onChange }: {
                 const tree = trees[parent]!;
                 const names = selectableNames(tree);
                 const allOn = names.length > 0 && names.every((n) => checkedSet.has(n));
+                const branches = branchPaths(tree, parent);
+                const allExpanded = branches.length > 0 && branches.every((p) => openBranches.has(p));
                 return (
                     <div key={parent} className="space-y-1">
                         <div className="flex items-center gap-2">
@@ -137,9 +193,25 @@ export function JourneyDepPicker({ env, parents, checked, onChange }: {
                             >
                                 {allOn ? "Clear" : "Select all"}
                             </button>
+                            {branches.length > 0 ? (
+                                <button
+                                    type="button"
+                                    className="text-[11px] text-sky-700 hover:underline"
+                                    onClick={() => setOpenBranches((prev) => {
+                                        const next = new Set(prev);
+                                        for (const p of branches) { if (allExpanded) next.delete(p); else next.add(p); }
+                                        return next;
+                                    })}
+                                >
+                                    {allExpanded ? "Collapse all" : "Expand all"}
+                                </button>
+                            ) : null}
                         </div>
                         {tree.children.map((c) => (
-                            <DepRow key={`${parent}>${c.name}`} node={c} root={parent} depth={0} checked={checkedSet} onToggle={toggle} />
+                            <DepRow
+                                key={`${parent}>${c.name}`} node={c} root={parent} path={`${parent}>${c.name}`} depth={0}
+                                checked={checkedSet} open={openBranches} onToggle={toggle} onToggleBranch={toggleBranch}
+                            />
                         ))}
                     </div>
                 );
