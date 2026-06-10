@@ -7,7 +7,9 @@ import { AUTO_RECOVERY_MAX_EPISODES } from "@/lib/reports/journey-report-types";
 import { buildInspectWindow, INSPECT_WINDOW_HOURS, singleWindowTooWide, retentionWarning } from "@/lib/reports/journey-inspect";
 import { useJourneyReportJobs } from "@/hooks/useJourneyReportJobs";
 import { JourneyMultiSelect } from "./JourneyMultiSelect";
+import { JourneyDepPicker } from "./JourneyDepPicker";
 import { NodeOutcomeTree } from "./NodeOutcomeTree";
+import { MAX_SERVER_FILTER_JOURNEYS } from "@/lib/reports/journey-filter";
 
 /** Default window: last 24 hours, rounded to the second. */
 function defaultWindow(): { from: string; to: string } {
@@ -214,6 +216,8 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     const [from, setFrom] = useState(saved?.from ?? initialWindow.from);
     const [to, setTo] = useState(saved?.to ?? initialWindow.to);
     const [selectedJourneys, setSelectedJourneys] = useState<string[]>(saved?.selectedJourneys ?? []);
+    // Inner journeys (from the dep picker) pulled along with the selected parents.
+    const [innerChecked, setInnerChecked] = useState<string[]>([]);
     const [journeyOptions, setJourneyOptions] = useState<string[]>([]);
     const [journeySource, setJourneySource] = useState<"config" | "none">("none");
     const [scope, setScope] = useState<ScopeFilter>(saved?.scope ?? "outer");
@@ -251,6 +255,12 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     const job = useMemo(() => jobs.filter((j) => j.env === env)[0] ?? null, [jobs, env]);
     const jobActive = !!job && ["queued", "running", "aborting", "suspending"].includes(job.status);
     const jobPaused = !!job && ["suspended", "interrupted"].includes(job.status);
+
+    // Journeys actually pulled by a run: the selected parents plus any checked inner journeys.
+    const runTreeNames = useMemo(
+        () => [...new Set([...selectedJourneys, ...innerChecked])],
+        [selectedJourneys, innerChecked],
+    );
 
     // Per-env report history (live + archive), persisted server-side.
     const refreshHistory = useCallback(async () => {
@@ -321,7 +331,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     useEffect(() => {
         if (!env) { setJourneyOptions([]); setJourneySource("none"); return; }
         let cancelled = false;
-        if (didInitEnv.current) setSelectedJourneys([]);
+        if (didInitEnv.current) { setSelectedJourneys([]); setInnerChecked([]); }
         didInitEnv.current = true;
         fetch(`/api/analyze/journeys?env=${encodeURIComponent(env)}`)
             .then((r) => (r.ok ? r.json() : { journeys: [], source: "none" }))
@@ -352,7 +362,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
         const res = await start(env, {
             from: localToIso(from),
             to: localToIso(to),
-            treeNames: selectedJourneys,
+            treeNames: runTreeNames,
             maxEvents,
             summaryOnly,
             windowHours,
@@ -434,7 +444,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                     env,
                     from: localToIso(from),
                     to: localToIso(to),
-                    treeNames: selectedJourneys,
+                    treeNames: runTreeNames,
                     maxEvents,
                     source: "archive",
                 }),
@@ -730,6 +740,15 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                         freeText={journeySource === "none"}
                     />
                 </div>
+                {journeySource === "config" && selectedJourneys.length > 0 ? (
+                    <JourneyDepPicker env={env} parents={selectedJourneys} checked={innerChecked} onChange={setInnerChecked} />
+                ) : null}
+                {runTreeNames.length > MAX_SERVER_FILTER_JOURNEYS ? (
+                    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                        {runTreeNames.length} journeys selected — above {MAX_SERVER_FILTER_JOURNEYS}, the run pulls all
+                        journeys and filters locally, which is much slower. Consider narrowing the selection.
+                    </div>
+                ) : null}
 
                 {/* Live background-job status — runs server-side, survives navigation, resumable. */}
                 {dataSource === "live" && job && job.status !== "completed" ? (
