@@ -106,9 +106,9 @@ export function resolveJourneyDepTree(configDir: string, journeyName: string): J
   const expanded = new Set<string>();
   const build = (name: string): JourneyDepNode => {
     if (expanded.has(name)) return { name, children: [], repeated: true };
-    expanded.add(name);
     const realmRoots = getRealmRoots(configDir, path.join("journeys", name, "nodes"));
     if (realmRoots.length === 0) return { name, children: [], missing: true };
+    expanded.add(name);
     const childNames = new Set<string>();
     for (const realmRoot of realmRoots) {
       const nodesDir = path.join(realmRoot, "journeys", name, "nodes");

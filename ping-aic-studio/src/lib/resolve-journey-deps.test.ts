@@ -106,4 +106,21 @@ describe("resolveJourneyDepTree", () => {
         expect(tree.children).toEqual([{ name: "Ghost", children: [], missing: true }]);
         expect(flattenDepTree(tree)).toEqual([]);
     });
+
+    it("marks a twice-referenced missing journey as missing both times", () => {
+        const dir = tempDir();
+        writeJourneyNode(dir, "Root", "ij1.json", { _type: { _id: "InnerTreeEvaluatorNode" }, tree: "Mid" });
+        writeJourneyNode(dir, "Root", "ij2.json", { _type: { _id: "InnerTreeEvaluatorNode" }, tree: "Ghost" });
+        writeJourneyNode(dir, "Mid", "ij.json", { _type: { _id: "InnerTreeEvaluatorNode" }, tree: "Ghost" });
+        const tree = resolveJourneyDepTree(dir, "Root");
+        const ghosts: Array<{ missing?: true; repeated?: true }> = [];
+        const walk = (n: { name: string; children: typeof tree.children; missing?: true; repeated?: true }) => {
+            if (n.name === "Ghost") ghosts.push({ missing: n.missing, repeated: n.repeated });
+            n.children.forEach(walk);
+        };
+        walk(tree);
+        expect(ghosts).toHaveLength(2);
+        for (const g of ghosts) expect(g.missing).toBe(true);
+        expect(flattenDepTree(tree)).toEqual(["Mid"]);
+    });
 });
