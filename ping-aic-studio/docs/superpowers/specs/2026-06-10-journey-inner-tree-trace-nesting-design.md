@@ -102,9 +102,24 @@ at best and double-count `invocations` at worst on tenants that emit both.
 
 ### Outer trees
 
-A tree is outer iff it is the tree of the **first** event of at least one
-trace. This stops pulled-along inner journeys from appearing as spurious roots
-while keeping a genuinely standalone run of that same journey a root.
+Per trace, the outer tree is, in priority order:
+
+1. the tree of the first `AM-TREE-LOGIN-INITIATED` event (INITIATED-emitting
+   tenants — exact);
+2. else the tree of the **last** `AM-TREE-LOGIN-COMPLETED` event (INITIATED-less
+   tenants: inner trees complete before their parent, so the last completion is
+   the entrypoint — same rationale as today's per-transaction synth rule, but
+   trace-wide so it stays correct when nested journeys carry different full
+   `transactionId`s);
+3. else the tree of the first event that carries a `treeName` (best-effort for
+   traces truncated by a window boundary).
+
+`outerTrees` is the union of these per-trace outer trees. This stops
+pulled-along inner journeys from appearing as spurious roots while keeping a
+genuinely standalone run of that same journey a root. (An earlier draft used
+"tree of the first event of the trace", which misattributes the root when a
+parent's very first node is the inner-tree evaluator — the child's events
+precede the parent's.)
 
 ## Unit 2: Inner-journey picker
 
