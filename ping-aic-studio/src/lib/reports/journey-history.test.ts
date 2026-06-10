@@ -606,6 +606,23 @@ describe("nodeStructure", () => {
             const merged = mergeRollup(emptyRollup(), legacy);
             expect(merged.nodeStructure).toEqual({ outerTrees: [], edges: [], nodes: [] });
         });
+
+        it("does not correlate a trace split across two windows (documented limitation)", () => {
+            const trace = "2cf7651916cd43dd8448eb211c80319c";
+            const txn = `00-${trace}-aaaaaaaaaaaaaaaa-01/1`;
+            // Window 1 ends after the child's events; window 2 has only the evaluator.
+            const w1 = analyzeJourneyHistory([
+                nodeEv("2026-06-03T10:59:58Z", txn, { tree: "Child", display: "Step", outcome: "ok" }),
+            ]);
+            const w2 = analyzeJourneyHistory([
+                nodeEv("2026-06-03T11:00:01Z", txn, { tree: "Master", display: "IJ: Child", name: "E", outcome: "true", type: "InnerTreeEvaluatorNode" }),
+                completed("2026-06-03T11:00:02Z", txn, "Master", "SUCCESSFUL"),
+            ]);
+            const merged = mergeRollup(mergeRollup(emptyRollup(), w1), w2);
+            // No edge: each window saw only half the trace. Node stats still both present.
+            expect(merged.nodeStructure!.edges).toEqual([]);
+            expect(merged.nodeStructure!.nodes.map((n) => n.treeName).sort()).toEqual(["Child", "Master"]);
+        });
     });
 });
 

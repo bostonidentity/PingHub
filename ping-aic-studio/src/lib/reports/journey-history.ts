@@ -334,8 +334,8 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
                     if (!outerTreeName) outerTreeName = synthTree;
                     const lastNode = pendingNodes[pendingNodes.length - 1];
                     const firstNode = pendingNodes[0];
-                    // outer/inner + outerSet are decided at end-of-transaction once we
-                    // know which COMPLETED is last (the outermost journey).
+                    // outer/inner are decided at end-of-transaction once we know which
+                    // COMPLETED is last; outerSet is decided per trace in pass 3b.
                     const synthAttempt: JourneyAttempt = {
                         transactionId: g.txn,
                         treeName: synthTree,
