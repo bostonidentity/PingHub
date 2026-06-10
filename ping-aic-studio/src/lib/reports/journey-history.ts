@@ -117,9 +117,6 @@ interface OpenAttempt {
     lastNodeDisplayName?: string;
     lastNodeOutcome?: string;
     isOuter: boolean;
-    /** Set when an inner tree just completed under this attempt: the next
-     *  node-completed here is its best-effort evaluator. */
-    awaitingEvaluatorFor?: string;
 }
 
 /** NUL key separator — safe against names containing spaces/punctuation. */
@@ -131,6 +128,17 @@ interface EdgeAcc {
     invocations: number;
     /** evaluator nodeName -> times seen, to resolve the most common at emit. */
     evalNames: Map<string, number>;
+}
+
+/** Minimal per-event record for the trace-ordered edge/outer pass. */
+interface TraceEv {
+    ts: string;
+    counter: number;
+    kind: "tree-init" | "tree-completed" | "node-completed";
+    treeName?: string;
+    nodeName: string;
+    displayName: string;
+    isEvaluator: boolean;
 }
 
 function asObj(p: Record<string, unknown> | string): Record<string, unknown> | null {
@@ -180,6 +188,7 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
     // 1. Group by transactionId; chronologically order within each txn.
     type Grouped = { txn: string; events: { ts: string; p: Record<string, unknown> }[] };
     const byTxn = new Map<string, Grouped>();
+    const byTrace = new Map<string, TraceEv[]>();
     let processed = 0;
 
     for (const ev of events) {
@@ -191,6 +200,18 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
         processed++;
         if (!byTxn.has(txn)) byTxn.set(txn, { txn, events: [] });
         byTxn.get(txn)!.events.push({ ts: ev.timestamp, p });
+        const ginfo = entryInfo(p);
+        const tr = traceOf(txn);
+        if (!byTrace.has(tr)) byTrace.set(tr, []);
+        byTrace.get(tr)!.push({
+            ts: ev.timestamp,
+            counter: counterOf(txn),
+            kind: classifyEvent(p) as TraceEv["kind"],
+            treeName: str(ginfo?.treeName) ?? str(p.treeName),
+            nodeName: str(ginfo?.nodeName) ?? str(ginfo?.displayName) ?? "(unknown)",
+            displayName: str(ginfo?.displayName) ?? str(ginfo?.nodeName) ?? "(unknown)",
+            isEvaluator: ginfo?.nodeType === "InnerTreeEvaluatorNode",
+        });
     }
     for (const g of byTxn.values()) {
         g.events.sort((a, b) => a.ts.localeCompare(b.ts));
@@ -240,9 +261,7 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
             if (kind === "tree-init") {
                 const treeName = str(info?.treeName) ?? str(p.treeName) ?? "(unknown)";
                 if (!outerTreeName) outerTreeName = treeName;
-                const parent = stack[stack.length - 1];
-                if (parent) recordEdge(parent.treeName, treeName); // inner-tree nesting
-                else outerSet.add(treeName);                       // entrypoint journey
+                if (stack.length === 0) outerSet.add(treeName);    // entrypoint journey (replaced by trace rule in a later commit)
                 stack.push({
                     treeName,
                     startedAt: ts,
@@ -262,9 +281,8 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
                 // currently-executing tree for events that omit it.
                 const ownTree = str(info?.treeName);
                 const top = stack[stack.length - 1];
-                let node: NodeOutcomeStat | undefined;
-                if (ownTree) node = recordNode(ownTree, display, nodeName, outcome);
-                else if (top) node = recordNode(top.treeName, display, nodeName, outcome);
+                if (ownTree) recordNode(ownTree, display, nodeName, outcome);
+                else if (top) recordNode(top.treeName, display, nodeName, outcome);
 
                 if (top) {
                     // Failure attribution still follows the open-attempt stack.
@@ -272,15 +290,6 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
                     top.lastNodeOutcome = outcome ?? top.lastNodeOutcome;
                     // userId may only become known mid-flow.
                     top.userId = top.userId ?? str(p.userId) ?? str(p.principal);
-                    // Best-effort evaluator linkage: the first node-completed in the
-                    // parent right after an inner tree finished is its evaluator.
-                    if (top.awaitingEvaluatorFor && node) {
-                        const child = top.awaitingEvaluatorFor;
-                        node.evaluatorForTree = child;
-                        const edge = edgeMap.get(`${top.treeName}${SEP}${child}`);
-                        if (edge) edge.evalNames.set(nodeName, (edge.evalNames.get(nodeName) ?? 0) + 1);
-                        top.awaitingEvaluatorFor = undefined;
-                    }
                 } else {
                     // No open INITIATED attempt — buffer for attempt synthesis. Stats were
                     // already recorded above when the event carried its own treeName.
@@ -348,13 +357,6 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
                 }
 
                 const open = stack.splice(idx, 1)[0];
-                // An inner tree just finished: the next node-completed attributed to
-                // the parent is its best-effort evaluator (carries the inner result).
-                if (!open.isOuter) {
-                    const parent = stack[stack.length - 1];
-                    if (parent) parent.awaitingEvaluatorFor = open.treeName;
-                }
-
                 attempts.push({
                     transactionId: g.txn,
                     treeName: open.treeName,
@@ -400,8 +402,33 @@ export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryRep
                 const inner = synthAttempts[i];
                 inner.ref.isInner = true;
                 inner.ref.outerTreeName = outer.tree;
-                if (inner.tree !== outer.tree) recordEdge(outer.tree, inner.tree);
             }
+        }
+    }
+
+    // 3b. Evaluator-anchored edge pass: order each trace's node events and emit one
+    // edge per InnerTreeEvaluatorNode event. The child journey's events run
+    // immediately before their evaluator within the trace (doc §3.3), so the
+    // contiguous run of foreign-tree events just before it identifies the child.
+    for (const evs of byTrace.values()) {
+        evs.sort((a, b) => a.ts.localeCompare(b.ts) || a.counter - b.counter);
+        const nodeEvs = evs.filter((e) => e.kind === "node-completed" && e.treeName);
+        for (let i = 0; i < nodeEvs.length; i++) {
+            const ev = nodeEvs[i];
+            if (!ev.isEvaluator) continue;
+            const parent = ev.treeName!;
+            const candidates: string[] = []; // most recent first
+            for (let j = i - 1; j >= 0; j--) {
+                const t = nodeEvs[j].treeName!;
+                if (t === parent) break;
+                if (!candidates.includes(t)) candidates.push(t);
+            }
+            if (candidates.length === 0) continue; // child not selected / outside window → IJ row stays a leaf
+            const child = pickEdgeChild(candidates, ev.displayName);
+            const edge = recordEdge(parent, child);
+            edge.evalNames.set(ev.nodeName, (edge.evalNames.get(ev.nodeName) ?? 0) + 1);
+            const stat = nodeMap.get(`${parent}${SEP}${ev.nodeName}`);
+            if (stat) stat.evaluatorForTree = child;
         }
     }
 
@@ -473,6 +500,20 @@ function mostCommon(m: Map<string, number>): string | undefined {
     let best: string | undefined; let bestN = -1;
     for (const [k, n] of m) if (n > bestN) { best = k; bestN = n; }
     return best;
+}
+
+/** Choose the evaluator's child tree from candidate trees (most recent first),
+ *  preferring one whose name contains the display-name hint ("IJ: MFA" → "MFA")
+ *  when interleaved children make the recency answer ambiguous. */
+function pickEdgeChild(candidates: string[], evaluatorDisplay: string): string {
+    if (candidates.length > 1) {
+        const hint = evaluatorDisplay.replace(/^IJ:?\s*/i, "").trim().toLowerCase();
+        if (hint) {
+            const hit = candidates.find((c) => c.toLowerCase().includes(hint));
+            if (hit) return hit;
+        }
+    }
+    return candidates[0];
 }
 
 // nodeStructure is optional on the rollup so legacy/partial rollups (and merges
