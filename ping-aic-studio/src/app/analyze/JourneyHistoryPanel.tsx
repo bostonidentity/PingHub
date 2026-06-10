@@ -258,7 +258,8 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
 
     // Journeys actually pulled by a run: the selected parents plus any checked inner journeys.
     const runTreeNames = useMemo(
-        () => [...new Set([...selectedJourneys, ...innerChecked])],
+        // No parents selected → no filter at all; inner picks only ride along with parents.
+        () => (selectedJourneys.length === 0 ? [] : [...new Set([...selectedJourneys, ...innerChecked])]),
         [selectedJourneys, innerChecked],
     );
 
