@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { analyzeJourneyHistory, emptyRollup, mergeRollup, type RawAuthEvent } from "./journey-history";
+import { analyzeJourneyHistory, emptyRollup, mergeRollup, traceOf, counterOf, type RawAuthEvent } from "./journey-history";
 
 // ── Test fixture helpers ───────────────────────────────────────────────────
 
@@ -401,5 +401,20 @@ describe("nodeStructure", () => {
             const merged = mergeRollup(emptyRollup(), legacy);
             expect(merged.nodeStructure).toEqual({ outerTrees: [], edges: [], nodes: [] });
         });
+    });
+});
+
+describe("traceOf / counterOf", () => {
+    it("extracts the trace segment from a W3C-style transactionId", () => {
+        expect(traceOf("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01/5"))
+            .toBe("0af7651916cd43dd8448eb211c80319c");
+    });
+    it("falls back to the full id on unexpected shapes", () => {
+        expect(traceOf("t1")).toBe("t1");
+        expect(traceOf("")).toBe("");
+    });
+    it("parses the request counter, defaulting to 0", () => {
+        expect(counterOf("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01/12")).toBe(12);
+        expect(counterOf("t1")).toBe(0);
     });
 });

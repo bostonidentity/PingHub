@@ -158,6 +158,24 @@ export function classifyEvent(payload: Record<string, unknown>): "tree-init" | "
     return "other";
 }
 
+/** Trace segment (2nd `-`-field) of an AIC transactionId
+ *  (`00-<trace>-<span>-01/<counter>`). Nested journeys in one user flow can
+ *  carry different full transactionIds but always share the trace, so it is
+ *  the robust correlation key. Falls back to the full id when the shape
+ *  doesn't match (degrades to per-transaction grouping). */
+export function traceOf(transactionId: string): string {
+    const m = /^[0-9a-f]{1,2}-([0-9a-f]{8,})-[0-9a-f]+-/i.exec(transactionId);
+    return m ? m[1] : transactionId;
+}
+
+/** Numeric `/<counter>` suffix of a transactionId — secondary sort key for
+ *  events sharing a timestamp. 0 when absent/non-numeric. */
+export function counterOf(transactionId: string): number {
+    const i = transactionId.lastIndexOf("/");
+    const n = i >= 0 ? Number(transactionId.slice(i + 1)) : NaN;
+    return Number.isFinite(n) ? n : 0;
+}
+
 export function analyzeJourneyHistory(events: RawAuthEvent[]): JourneyHistoryReport {
     // 1. Group by transactionId; chronologically order within each txn.
     type Grouped = { txn: string; events: { ts: string; p: Record<string, unknown> }[] };
