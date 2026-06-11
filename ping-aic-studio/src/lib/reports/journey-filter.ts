@@ -85,3 +85,19 @@ export function parseTreeNames(body: unknown): string[] {
   if (typeof b.treeName === "string" && b.treeName.trim()) return [b.treeName.trim()];
   return [];
 }
+
+/**
+ * Journeys a report run actually pulls: the selected parents minus any
+ * excluded ones (parents kept selected only to expose their inner-journey
+ * tree for picking), plus the checked inner journeys.
+ *
+ * No parents selected → [] (no filter at all); inner picks only ride along
+ * with parents. NOTE: a non-empty selection can still produce [] (every
+ * parent excluded, nothing checked) — callers must treat that as "nothing to
+ * pull" and block the run, NOT fall through to an unfiltered pull.
+ */
+export function runTreeNames(selected: string[], excludedParents: string[], innerChecked: string[]): string[] {
+  if (selected.length === 0) return [];
+  const excluded = new Set(excludedParents);
+  return [...new Set([...selected.filter((j) => !excluded.has(j)), ...innerChecked])];
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildJourneyQueryFilter, filterEventsByJourneys, parseTreeNames, MAX_SERVER_FILTER_JOURNEYS } from "./journey-filter";
+import { buildJourneyQueryFilter, filterEventsByJourneys, parseTreeNames, runTreeNames, MAX_SERVER_FILTER_JOURNEYS } from "./journey-filter";
 import type { RawAuthEvent } from "./journey-history";
 
 const BASE = '(/payload/eventName co "AM-TREE-LOGIN-")';
@@ -64,5 +64,40 @@ describe("parseTreeNames", () => {
     expect(parseTreeNames({ treeNames: "nope" })).toEqual([]);
     expect(parseTreeNames(null)).toEqual([]);
     expect(parseTreeNames({ treeName: "   " })).toEqual([]);
+  });
+});
+
+describe("runTreeNames", () => {
+  it("returns [] (no filter) when no parents are selected, even with inner picks", () => {
+    expect(runTreeNames([], [], [])).toEqual([]);
+    expect(runTreeNames([], [], ["Inner1"])).toEqual([]);
+  });
+
+  it("returns the selected parents when nothing is excluded or inner-checked", () => {
+    expect(runTreeNames(["Master"], [], [])).toEqual(["Master"]);
+  });
+
+  it("unions selected parents with checked inner journeys", () => {
+    expect(runTreeNames(["Master"], [], ["Inner1", "Inner2"])).toEqual(["Master", "Inner1", "Inner2"]);
+  });
+
+  it("drops an excluded parent but keeps its inner picks", () => {
+    expect(runTreeNames(["Master"], ["Master"], ["Inner1"])).toEqual(["Inner1"]);
+  });
+
+  it("only excludes the named parent when several are selected", () => {
+    expect(runTreeNames(["A", "B"], ["A"], [])).toEqual(["B"]);
+  });
+
+  it("returns [] when every parent is excluded and nothing is inner-checked", () => {
+    expect(runTreeNames(["Master"], ["Master"], [])).toEqual([]);
+  });
+
+  it("ignores excluded names that are not selected parents", () => {
+    expect(runTreeNames(["A"], ["B"], [])).toEqual(["A"]);
+  });
+
+  it("dedupes a name that is both a selected parent and inner-checked", () => {
+    expect(runTreeNames(["A", "B"], [], ["B"])).toEqual(["A", "B"]);
   });
 });
