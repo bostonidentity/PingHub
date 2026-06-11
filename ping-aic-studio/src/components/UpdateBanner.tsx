@@ -192,7 +192,10 @@ export function UpdateBanner() {
             content = (
                 <>
                     {notes ? (
-                        <ReleaseNotes notes={notes} />
+                        <>
+                            <p className="mb-2 text-sm text-slate-700">You are now running v{status.installed.version}.</p>
+                            <ReleaseNotes notes={notes} />
+                        </>
                     ) : (
                         <p className="text-sm text-slate-700">
                             PingHub was updated to v{status.installed.version}.{" "}
