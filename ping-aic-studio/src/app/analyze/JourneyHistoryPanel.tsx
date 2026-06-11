@@ -345,7 +345,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     useEffect(() => {
         if (!env) { setJourneyOptions([]); setJourneySource("none"); return; }
         let cancelled = false;
-        if (didInitEnv.current) { setSelectedJourneys([]); setInnerChecked([]); }
+        if (didInitEnv.current) { setSelectedJourneys([]); setInnerChecked([]); setExcludedParents([]); }
         didInitEnv.current = true;
         fetch(`/api/analyze/journeys?env=${encodeURIComponent(env)}`)
             .then((r) => (r.ok ? r.json() : { journeys: [], source: "none" }))
