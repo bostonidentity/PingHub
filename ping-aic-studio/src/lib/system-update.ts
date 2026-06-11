@@ -171,7 +171,12 @@ export function pickAssetForInstall(installed: InstalledInfo, raw: { name: strin
 export async function getVersionStatus(force = false): Promise<VersionStatus> {
     const installed = readInstalledInfo();
     if (installed.source === "dev") {
-        return { installed, latest: null, canUpdate: false, newerAvailable: false, reason: "running from source (no packaged install detected)" };
+        // Source installs update via git (the start script's pull prompt), so a
+        // newer release never makes newerAvailable true here — but the latest
+        // release still rides along so the what's-new popup can show its notes
+        // inline after a pull (the popup matches latest.version to installed).
+        const latest = await fetchLatestRelease(force);
+        return { installed, latest, canUpdate: false, newerAvailable: false, reason: "running from source (no packaged install detected)" };
     }
     // Fetch and pick asset.
     try {

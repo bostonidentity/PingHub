@@ -105,6 +105,19 @@ modal. New pieces inside the component:
 The component file is renamed in spirit but keeps its name and mount point
 (`src/app/layout.tsx:44`) — one component, banner + popups.
 
+## Amendment (2026-06-11): inline notes for source installs
+
+Source-dev mode (`./start` script users) originally returned `latest: null`,
+so the what's-new popup could never show notes inline. `getVersionStatus`'s
+dev path now calls the existing cached `fetchLatestRelease()` and returns it
+with `canUpdate: false` and `newerAvailable: false` **unchanged** — the
+new-version popup and banner stay hidden for source installs (git is their
+update channel), but after pulling a released version the what's-new popup
+shows that release's notes inline (the popup's existing
+`latest.version === installed.version` match). GitHub unreachable or no tag
+for the pulled version → the previous "View releases" fallback.
+Unit-tested in `src/lib/system-update.test.ts`.
+
 ## Out of scope
 
 - Markdown rendering of release notes.
