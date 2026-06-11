@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { updateNotice } from "@/lib/update-notice";
+import { ReleaseNotes } from "@/components/ReleaseNotes";
 
 interface VersionStatus {
     installed: { version: string; platform: string; arch: string; bundledNode: boolean; source: "package" | "dev" };
@@ -191,7 +192,7 @@ export function UpdateBanner() {
             content = (
                 <>
                     {notes ? (
-                        <div className="max-h-64 overflow-y-auto whitespace-pre-wrap rounded bg-slate-50 p-3 text-xs text-slate-700">{notes}</div>
+                        <ReleaseNotes notes={notes} />
                     ) : (
                         <p className="text-sm text-slate-700">
                             PingHub was updated to v{status.installed.version}.{" "}
@@ -216,7 +217,7 @@ export function UpdateBanner() {
                 <>
                     <p className="mb-2 text-sm text-slate-700">You have v{status.installed.version}.</p>
                     {latest.notes ? (
-                        <div className="max-h-64 overflow-y-auto whitespace-pre-wrap rounded bg-slate-50 p-3 text-xs text-slate-700">{latest.notes}</div>
+                        <ReleaseNotes notes={latest.notes} />
                     ) : null}
                     <div className="mt-4 flex justify-end gap-2">
                         <button

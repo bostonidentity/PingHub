@@ -118,9 +118,20 @@ shows that release's notes inline (the popup's existing
 for the pulled version → the previous "View releases" fallback.
 Unit-tested in `src/lib/system-update.test.ts`.
 
+## Amendment (2026-06-11): markdown rendering of release notes
+
+Release notes are now rendered as markdown by `src/components/ReleaseNotes.tsx`
+(`react-markdown` + `remark-gfm`), used by both popups in place of the plain
+`whitespace-pre-wrap` block. react-markdown renders to React elements — no
+innerHTML, so raw HTML embedded in a release body is ignored, not injected.
+Element styling is mapped to Tailwind classes inline (headings, lists, links
+opening in a new tab, code, pre, tables). Component-tested in
+`src/components/ReleaseNotes.test.tsx` (jsdom): markdown becomes elements,
+links get target=_blank, embedded HTML does not render. This supersedes the
+"Markdown rendering of release notes" out-of-scope entry below.
+
 ## Out of scope
 
-- Markdown rendering of release notes.
 - A by-tag GitHub API call for what's-new notes when installed ≠ latest
   (shows a releases link instead).
 - Suppressing popups while report jobs run.
