@@ -1,7 +1,7 @@
 # Parent-journey include checkbox in the inner-journey picker
 
 **Date:** 2026-06-11
-**Status:** Approved
+**Status:** Implemented (2026-06-11)
 
 ## Problem
 
