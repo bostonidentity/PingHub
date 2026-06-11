@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-11
+
+### Added
+
+- **Journey report: per-node outcome tree.** Each journey's report now includes its node structure with per-node outcome counts, reconstructed from `AM-NODE-LOGIN-COMPLETED` events.
+- **Journey report: inner-journey nesting via trace correlation.** Inner trees (which AIC logs under their own `treeName`) are joined to the parent's `InnerTreeEvaluatorNode` rows by trace ID, with multi-level nesting and expand/collapse controls on the inner-journey displays.
+- **Journey report: journey multi-select + inner-journey picker.** Filter a report to selected journeys (server-side for ≤25, client fallback above); each selected journey shows its inner-journey closure from pulled config as a checkbox tree, and checked inner journeys are pulled along with the run.
+- **Journey report: parent include checkbox.** A selected master journey can be used for structure/picking only — uncheck *include this journey's own events* to pull just the chosen inner journeys (with a guard against accidentally-empty pulls).
+- **Journey report: faster, resumable pulls.** Rates-only mode (drops per-node events server-side, ~10x fewer events), window-split chunking for long ranges, parallel window pulling with an adaptive 429 governor, configurable request delay, opt-in raw retention for offline re-analysis, and a live event feed with resumable rate-limit pauses.
+- **Run-setting defaults, persistence, and reset.** Faster defaults (1h window split, 6 parallel windows, 2s request delay, retain raw on, rates only off); every run setting now persists across restarts (including Rates only); a *Reset settings* button reverts the run-tuning settings.
+- **Update notifications.** A one-time popup when a new version is published (with the GitHub release notes rendered as markdown, and one-click upgrade where self-update is available) and a one-time *What's new* popup after an upgrade — for both packaged and source installs. The running version is always visible in the page footer.
+
+### Changed
+
+- **`./start` / `start.cmd` auto-update.** The interactive *Pull and rebuild now?* prompt is gone — the start scripts pull fast-forward updates automatically and rebuild; a pull that can't fast-forward warns and starts on the current code. Opt out with `--skip-update`.
+
+### Fixed
+
+- Inner-journey picks are dropped when their parent journey is deselected, instead of silently riding along.
+- The journey-deps endpoint rejects path-syntax journey names.
+- The journey picker sits on its own row so its dropdown isn't buried under later controls.
+
 ## [0.3.9] - 2026-06-04
 
 ### Added
