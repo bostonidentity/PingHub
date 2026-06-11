@@ -1,7 +1,7 @@
 # One-time update popup and what's-new popup
 
 **Date:** 2026-06-11
-**Status:** Approved
+**Status:** Implemented (2026-06-11)
 
 ## Problem
 
