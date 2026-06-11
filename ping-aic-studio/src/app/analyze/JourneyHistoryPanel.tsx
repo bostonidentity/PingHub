@@ -425,6 +425,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
         if (!env || !report?.window || jobActive) return;
         const w = buildInspectWindow(report.window.from, report.window.to);
         setSelectedJourneys([treeName]);
+        setExcludedParents([]); // a stale exclusion of treeName would silently change the prefilled re-run
         setSummaryOnly(false);
         setWindowHours(0);
         setFrom(isoToLocal(w.from));
