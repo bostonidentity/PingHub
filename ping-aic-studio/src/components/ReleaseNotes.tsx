@@ -11,7 +11,7 @@ import remarkGfm from "remark-gfm";
  */
 export function ReleaseNotes({ notes }: { notes: string }) {
     return (
-        <div className="max-h-64 overflow-y-auto rounded bg-slate-50 p-3 text-xs text-slate-700">
+        <div className="max-h-[60vh] overflow-y-auto rounded bg-slate-50 p-3 text-xs text-slate-700">
             <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{

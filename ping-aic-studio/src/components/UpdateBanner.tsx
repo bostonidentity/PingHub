@@ -250,7 +250,7 @@ export function UpdateBanner() {
 
         return (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4">
-                <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-xl">
+                <div className="w-full max-w-2xl rounded-lg bg-white p-5 shadow-xl">
                     <h2 className="mb-3 text-sm font-semibold text-slate-800">{title}</h2>
                     {content}
                 </div>
