@@ -216,6 +216,7 @@ export function JourneyDepPicker({ env, parents, checked, onChange, excludedPare
                                 </button>
                             ) : null}
                         </div>
+                        {/* Layout mirrors DepRow's depth-0 row so the parent aligns with its children. */}
                         <div className="flex items-center gap-2">
                             <span className="w-3" />
                             <label className="flex items-center gap-2 text-xs text-slate-700">
