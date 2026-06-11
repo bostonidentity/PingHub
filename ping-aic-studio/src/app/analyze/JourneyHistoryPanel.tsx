@@ -9,7 +9,7 @@ import { useJourneyReportJobs } from "@/hooks/useJourneyReportJobs";
 import { JourneyMultiSelect } from "./JourneyMultiSelect";
 import { JourneyDepPicker } from "./JourneyDepPicker";
 import { NodeOutcomeTree } from "./NodeOutcomeTree";
-import { MAX_SERVER_FILTER_JOURNEYS } from "@/lib/reports/journey-filter";
+import { MAX_SERVER_FILTER_JOURNEYS, runTreeNames as computeRunTreeNames } from "@/lib/reports/journey-filter";
 
 /** Default window: last 24 hours, rounded to the second. */
 function defaultWindow(): { from: string; to: string } {
@@ -218,6 +218,10 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     const [selectedJourneys, setSelectedJourneys] = useState<string[]>(saved?.selectedJourneys ?? []);
     // Inner journeys (from the dep picker) pulled along with the selected parents.
     const [innerChecked, setInnerChecked] = useState<string[]>([]);
+    // Selected parents whose OWN events are excluded from the pull (kept selected
+    // only so their inner-journey tree stays visible for picking). Ephemeral,
+    // like innerChecked — deliberately not in SavedSettings.
+    const [excludedParents, setExcludedParents] = useState<string[]>([]);
     const [journeyOptions, setJourneyOptions] = useState<string[]>([]);
     const [journeySource, setJourneySource] = useState<"config" | "none">("none");
     const [scope, setScope] = useState<ScopeFilter>(saved?.scope ?? "outer");
@@ -256,12 +260,21 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     const jobActive = !!job && ["queued", "running", "aborting", "suspending"].includes(job.status);
     const jobPaused = !!job && ["suspended", "interrupted"].includes(job.status);
 
-    // Journeys actually pulled by a run: the selected parents plus any checked inner journeys.
+    // Journeys actually pulled by a run: selected parents minus excluded ones,
+    // plus any checked inner journeys.
     const runTreeNames = useMemo(
-        // No parents selected → no filter at all; inner picks only ride along with parents.
-        () => (selectedJourneys.length === 0 ? [] : [...new Set([...selectedJourneys, ...innerChecked])]),
-        [selectedJourneys, innerChecked],
+        () => computeRunTreeNames(selectedJourneys, excludedParents, innerChecked),
+        [selectedJourneys, excludedParents, innerChecked],
     );
+
+    // An exclusion must never outlive its parent's selection (mirrors the dep
+    // picker's pruning of inner picks whose parent was deselected).
+    useEffect(() => {
+        setExcludedParents((prev) => {
+            const pruned = prev.filter((p) => selectedJourneys.includes(p));
+            return pruned.length === prev.length ? prev : pruned;
+        });
+    }, [selectedJourneys]);
 
     // Per-env report history (live + archive), persisted server-side.
     const refreshHistory = useCallback(async () => {
@@ -351,6 +364,12 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
             return;
         }
         setError(null);
+        // Pre-flight: parents selected but every box unchecked → an empty filter
+        // would pull/analyze EVERY journey, the opposite of the user's intent.
+        if (selectedJourneys.length > 0 && runTreeNames.length === 0) {
+            setError("Nothing selected to pull — check the journey or at least one inner journey.");
+            return;
+        }
         if (dataSource === "archive") { await runArchive(); return; }
 
         // Pre-flight: a single-window (split 0) run can't span more than a day (AIC limit).
