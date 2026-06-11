@@ -92,9 +92,11 @@ export function parseTreeNames(body: unknown): string[] {
  * tree for picking), plus the checked inner journeys.
  *
  * No parents selected → [] (no filter at all); inner picks only ride along
- * with parents. NOTE: a non-empty selection can still produce [] (every
- * parent excluded, nothing checked) — callers must treat that as "nothing to
- * pull" and block the run, NOT fall through to an unfiltered pull.
+ * with parents. An inner-checked name re-enters even if excluded as a parent
+ * (the same tree can be another parent's inner journey). NOTE: a non-empty
+ * selection can still produce [] (every parent excluded, nothing checked) —
+ * callers must treat that as "nothing to pull" and block the run, NOT fall
+ * through to an unfiltered pull.
  */
 export function runTreeNames(selected: string[], excludedParents: string[], innerChecked: string[]): string[] {
   if (selected.length === 0) return [];

@@ -100,4 +100,8 @@ describe("runTreeNames", () => {
   it("dedupes a name that is both a selected parent and inner-checked", () => {
     expect(runTreeNames(["A", "B"], [], ["B"])).toEqual(["A", "B"]);
   });
+
+  it("re-includes a name that is excluded as a parent but inner-checked", () => {
+    expect(runTreeNames(["M"], ["M"], ["M"])).toEqual(["M"]);
+  });
 });
