@@ -50,7 +50,7 @@ echo   --no-open          start the server without opening the browser
 echo   --build            wipe .next and rebuild (keeps node_modules)
 echo   --reinstall        wipe node_modules + .next before bootstrapping
 echo   --bundled-node     force download of Node 20.18.0 (skip system Node)
-echo   --skip-update      skip the git fetch update check
+echo   --skip-update      don't auto-update (skip the git pull)
 echo   --force-restart    if another instance is running, kill it without prompting
 echo   -h, --help         show this help and exit
 echo.
@@ -208,7 +208,10 @@ set "NODE_DIR="
 for %%i in ("%NODE_EXE%") do set "NODE_DIR=%%~dpi"
 set "PATH=%NODE_DIR%;%PATH%"
 
-REM ── Check for updates (offer to pull) ─────────────────────────────
+REM ── Auto-update (git pull) ────────────────────────────────────────
+REM Updates are pulled automatically so start.cmd always runs the latest
+REM published code. A pull that can't fast-forward warns and continues
+REM with the current checkout. Opt out with --skip-update.
 if "%SKIP_UPDATE%"=="0" (
   pushd "%REPO_ROOT%"
   git rev-parse --is-inside-work-tree >nul 2>&1
@@ -219,22 +222,13 @@ if "%SKIP_UPDATE%"=="0" (
       set "AHEAD=0"
       for /f %%a in ('git rev-list --count HEAD..@{u} 2^>nul') do set "AHEAD=%%a"
       if !AHEAD! GTR 0 (
-        echo %LOG% !AHEAD! update^(s^) available
-        set /p "REPLY=%LOG% Pull and rebuild now? [Y/n] "
-        if /i "!REPLY!"=="n"    set "DO_PULL=0"
-        if /i "!REPLY!"=="no"   set "DO_PULL=0"
-        if not defined DO_PULL  set "DO_PULL=1"
-        if "!DO_PULL!"=="1" (
-          echo %LOG% pulling latest...
-          git pull --ff-only --quiet
-          if !errorlevel! EQU 0 (
-            echo %LOG% pulled - marking build dir for rebuild
-            if exist "%APP_DIR%\.next" rmdir /s /q "%APP_DIR%\.next" 2>nul
-          ) else (
-            echo %LOG% ERROR: git pull failed - resolve manually then re-run
-            popd
-            exit /b 5
-          )
+        echo %LOG% !AHEAD! update^(s^) available - pulling...
+        git pull --ff-only --quiet
+        if !errorlevel! EQU 0 (
+          echo %LOG% pulled - marking build dir for rebuild
+          if exist "%APP_DIR%\.next" rmdir /s /q "%APP_DIR%\.next" 2>nul
+        ) else (
+          echo %LOG% WARNING: git pull failed ^(diverged or conflicting checkout^) - continuing with current code
         )
       ) else (
         echo %LOG% up to date
