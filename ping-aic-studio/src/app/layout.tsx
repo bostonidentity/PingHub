@@ -7,6 +7,7 @@ import { DialogProvider } from "@/components/ConfirmDialog";
 import { GlobalJobBanner } from "@/components/GlobalJobBanner";
 import { MonitorWarningBanner } from "@/components/MonitorWarningBanner";
 import { UpdateBanner } from "@/components/UpdateBanner";
+import { readInstalledInfo } from "@/lib/system-update";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -50,7 +51,7 @@ export default function RootLayout({
                 <span>
                   &copy; {new Date().getFullYear()} <span className="font-semibold text-slate-700">Boston Identity</span>
                 </span>
-                <span className="text-slate-400">Ping AIC Studio</span>
+                <span className="text-slate-400">Ping AIC Studio v{readInstalledInfo().version}</span>
               </div>
             </footer>
           </DialogProvider>

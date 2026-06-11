@@ -1,6 +1,6 @@
 {
   "name": "pinghub",
-  "version": "0.3.9",
+  "version": "0.4.0",
   "private": true,
   "license": "Apache-2.0",
   "description": "A web UI for managing Ping Advanced Identity Cloud (AIC) tenant configurations — pull, push, and promote configs across environments.",
@@ -51,7 +51,9 @@
     "prettier": "^3.8.3",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "react-markdown": "^10.1.0",
     "recharts": "^3.8.1",
+    "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {

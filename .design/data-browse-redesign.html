@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Data · Browse — redesign mockup</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#f4f5f8; --surface:#ffffff; --ink:#0f172a; --muted:#64748b;
+    --line:#e6e8ee; --primary:#4f46e5; --primary-ink:#4338ca; --accent:#0ea5e9;
+  }
+  *{font-family:'Hanken Grotesk',sans-serif}
+  .mono{font-family:'JetBrains Mono',monospace;font-variant-numeric:tabular-nums}
+  body{background:var(--bg);color:var(--ink)}
+  .stage{background:
+      radial-gradient(900px 420px at 85% -8%, rgba(79,70,229,.06), transparent 60%),
+      radial-gradient(700px 360px at 5% 0%, rgba(14,165,233,.05), transparent 55%),
+      linear-gradient(180deg,#f6f7fa,#eef1f6);position:relative;}
+  .stage::before{content:"";position:absolute;inset:0;pointer-events:none;
+    background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+    background-size:44px 44px;mask-image:linear-gradient(180deg,rgba(0,0,0,.5),transparent 420px);opacity:.5;}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:0 1px 0 rgba(15,23,42,.02),0 8px 24px -16px rgba(15,23,42,.18)}
+  .seg{background:#eceef4;border-radius:12px;padding:4px}
+  .seg button{border-radius:9px;transition:.18s;color:var(--muted)}
+  .seg .on{background:#fff;box-shadow:0 1px 2px rgba(15,23,42,.12);color:var(--primary-ink);font-weight:600}
+  .rise{opacity:0;transform:translateY(8px);animation:rise .55s forwards}
+  @keyframes rise{to{opacity:1;transform:none}}
+  .typerow{border-radius:10px;transition:.13s}
+  .typerow:hover{background:#f3f4fa}
+  .typerow.on{background:#eef0ff;color:var(--primary-ink)}
+  .typerow.on .ct{background:#dfe2ff;color:var(--primary-ink)}
+  .ct{font-size:11px;background:#eef1f6;color:#64748b;border-radius:999px;padding:1px 8px}
+  .rec{transition:.12s;border-left:2px solid transparent}
+  .rec:hover{background:#f7f9fc}
+  .rec.on{background:#eff6ff;border-left-color:var(--accent)}
+  .avatar{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;font-weight:700;font-size:11px;color:#fff}
+  .field{display:grid;grid-template-columns:130px 1fr;gap:12px;padding:9px 0;border-bottom:1px dashed var(--line);align-items:start}
+  .key{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+  .toolinput{border:1px solid var(--line);border-radius:9px;background:#fff}
+  .toolinput:focus-within{box-shadow:0 0 0 3px rgba(14,165,233,.15);border-color:var(--accent)}
+  .pill-toggle{font-size:11px;border:1px solid var(--line);border-radius:999px;padding:3px 9px;cursor:pointer;background:#fff;color:var(--muted)}
+  .pill-toggle.on{background:#e0f2fe;border-color:#7dd3fc;color:#0369a1;font-weight:600}
+  .spot{box-shadow:0 1px 0 rgba(255,255,255,.6) inset,0 10px 30px -18px rgba(15,23,42,.4)}
+  .scroll::-webkit-scrollbar{width:9px}
+  .scroll::-webkit-scrollbar-thumb{background:#d6dae3;border-radius:9px;border:2px solid #fff}
+  .raw{font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.7}
+  .k{color:#7c3aed}.s{color:#0369a1}.n{color:#b45309}.b{color:#047857}
+</style>
+</head>
+<body>
+<header class="bg-[#0b1220] text-slate-300 sticky top-0 z-30">
+  <div class="max-w-[1320px] mx-auto px-6 h-14 flex items-center gap-6 text-sm">
+    <span class="text-white font-bold tracking-tight">Ping AIC Studio</span>
+    <nav class="hidden md:flex items-center gap-1">
+      <span class="px-3 py-1.5 rounded-lg hover:bg-white/5">Dashboard</span>
+      <span class="px-3 py-1.5 rounded-lg hover:bg-white/5">Browse</span>
+      <span class="px-3 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-200 ring-1 ring-inset ring-indigo-400/20">Data</span>
+      <span class="px-3 py-1.5 rounded-lg hover:bg-white/5">Logs</span>
+      <span class="px-3 py-1.5 rounded-lg hover:bg-white/5">Monitor</span>
+    </nav>
+    <div class="ml-auto flex items-center gap-2 text-xs px-2.5 py-1 rounded-lg bg-white/5 ring-1 ring-white/10">
+      <span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span><span class="text-slate-400">working env</span><span class="text-white font-medium">Prod</span>
+    </div>
+  </div>
+</header>
+
+<main class="stage min-h-screen">
+<div class="max-w-[1320px] mx-auto px-6 py-8 relative">
+
+  <!-- title -->
+  <div class="rise" style="animation-delay:.02s">
+    <div class="flex items-baseline gap-3">
+      <h1 class="text-[26px] font-extrabold tracking-tight">Data</h1>
+      <span class="mono text-[11px] text-slate-400">pull · browse · archive</span>
+    </div>
+    <p class="text-slate-500 mt-1 text-[15px]">Browse the managed objects you've pulled. Pick a type, scan records, inspect any record's fields.</p>
+  </div>
+
+  <!-- unified tab row -->
+  <div class="flex flex-wrap items-center gap-3 mt-5 rise" style="animation-delay:.06s">
+    <div class="seg inline-flex text-sm">
+      <button class="px-4 py-1.5 on">Browse</button>
+      <button class="px-4 py-1.5">Pull</button>
+    </div>
+    <div class="ml-auto flex items-center gap-2">
+      <span class="mono text-[11px] text-slate-400">env</span>
+      <select class="mono text-[13px] border rounded-xl px-3 py-1.5 bg-white" style="border-color:var(--line)"><option>PROD</option><option>UAT</option></select>
+      <span class="mono text-[11px] text-slate-400">pulled 14m ago</span>
+    </div>
+  </div>
+
+  <!-- global command search -->
+  <div class="card spot mt-4 px-4 py-3 rise" style="animation-delay:.1s">
+    <div class="flex items-center gap-3">
+      <svg class="w-5 h-5 text-slate-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+      <input id="gq" oninput="globalSearch()" placeholder="Search every record across all managed objects…" class="flex-1 bg-transparent outline-none text-[15px] placeholder:text-slate-400">
+      <div class="flex items-center gap-1.5">
+        <span class="pill-toggle" onclick="this.classList.toggle('on')">.*  regex</span>
+        <span class="pill-toggle" onclick="this.classList.toggle('on')">Aa</span>
+      </div>
+      <kbd class="hidden sm:block mono text-[10px] text-slate-400 border rounded px-1.5 py-0.5" style="border-color:var(--line)">⌘K</kbd>
+    </div>
+    <div id="gres" class="hidden mt-3 border-t pt-2" style="border-color:var(--line)"></div>
+  </div>
+
+  <!-- three-pane explorer -->
+  <div class="card mt-4 overflow-hidden rise" style="animation-delay:.14s">
+    <div class="grid grid-cols-12" style="height:600px">
+
+      <!-- rail: types -->
+      <aside class="col-span-3 border-r flex flex-col min-h-0" style="border-color:var(--line)">
+        <div class="px-3 py-2.5 border-b" style="border-color:var(--line)">
+          <div class="toolinput flex items-center gap-2 px-2.5 py-1.5">
+            <svg class="w-3.5 h-3.5 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+            <input id="typeFilter" oninput="renderTypes()" placeholder="Filter types…" class="bg-transparent outline-none text-[12px] w-full mono">
+          </div>
+        </div>
+        <div id="types" class="flex-1 overflow-y-auto scroll p-2 space-y-0.5"></div>
+        <div class="px-3 py-2 border-t mono text-[10px] text-slate-400" style="border-color:var(--line)">9 types · 48,210 records</div>
+      </aside>
+
+      <!-- records -->
+      <section class="col-span-4 border-r flex flex-col min-h-0" style="border-color:var(--line)">
+        <div class="px-3 py-2.5 border-b space-y-2" style="border-color:var(--line)">
+          <div class="flex items-center gap-1.5">
+            <select class="mono text-[11px] border rounded-lg px-1.5 py-1 bg-white" style="border-color:var(--line)"><option>any attribute</option><option>userName</option><option>mail</option></select>
+            <select class="text-[11px] border rounded-lg px-1.5 py-1 bg-white" style="border-color:var(--line)"><option>includes</option><option>equals</option></select>
+            <div class="toolinput flex items-center gap-1.5 px-2 py-1 flex-1">
+              <input placeholder="Search records…" class="bg-transparent outline-none text-[12px] w-full">
+            </div>
+          </div>
+          <div class="flex items-center justify-between text-[11px]">
+            <span class="text-slate-400 flex items-center gap-1">Display: <select class="mono border rounded px-1 py-0.5 bg-white" style="border-color:var(--line)"><option>userName</option><option>mail</option></select></span>
+            <span class="flex items-center gap-1.5 text-sky-600 font-semibold"><a class="hover:underline cursor-pointer">JSON</a><span class="text-slate-300">·</span><a class="hover:underline cursor-pointer">CSV</a></span>
+          </div>
+        </div>
+        <div class="px-3 py-1.5 mono text-[10px] text-slate-400 border-b bg-slate-50/60" style="border-color:var(--line)"><span id="recTypeLabel">alpha_user</span> · <span id="recCount">12,403</span> records</div>
+        <div id="records" class="flex-1 overflow-y-auto scroll divide-y" style="--tw-divide-opacity:.6"></div>
+        <div class="flex items-center justify-between px-3 py-2 border-t text-[11px] text-slate-500" style="border-color:var(--line)">
+          <span class="mono">Page 1 / 621</span>
+          <div class="flex gap-1">
+            <button class="px-2 py-0.5 border rounded mono disabled:opacity-30" style="border-color:var(--line)" disabled>←</button>
+            <button class="px-2 py-0.5 border rounded mono hover:bg-slate-50" style="border-color:var(--line)">→</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- detail -->
+      <section class="col-span-5 flex flex-col min-h-0">
+        <div id="detailHead" class="px-5 py-4 border-b" style="border-color:var(--line)"></div>
+        <div class="px-5 pt-3 flex items-center gap-2">
+          <div class="seg inline-flex text-[12px]" id="detailTabs">
+            <button class="px-3 py-1 on" onclick="setTab(this,'fields')">Fields</button>
+            <button class="px-3 py-1" onclick="setTab(this,'json')">JSON</button>
+          </div>
+          <button class="ml-auto text-[11px] flex items-center gap-1 text-slate-500 hover:text-slate-800 border rounded-lg px-2.5 py-1" style="border-color:var(--line)">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>copy
+          </button>
+        </div>
+        <div id="detailBody" class="flex-1 overflow-y-auto scroll px-5 py-3"></div>
+      </section>
+    </div>
+  </div>
+
+  <p class="mono text-[11px] text-slate-400 mt-6 text-center">mockup · click types, records, the Fields/JSON tabs, and try the global search</p>
+</div>
+</main>
+
+<script>
+  const TYPES = [
+    {n:'alpha_user',c:12403,clr:'#6366f1'},{n:'alpha_role',c:842,clr:'#0ea5e9'},
+    {n:'alpha_organization',c:311,clr:'#10b981'},{n:'alpha_group',c:1290,clr:'#f59e0b'},
+    {n:'alpha_application',c:204,clr:'#ec4899'},{n:'alpha_assignment',c:5821,clr:'#8b5cf6'},
+    {n:'alpha_oauth2client',c:73,clr:'#14b8a6'},{n:'team',c:96,clr:'#ef4444'},
+    {n:'svcacct',c:188,clr:'#64748b'},
+  ].map(({n,c,clr})=>({n,c,clr}));
+
+  const PEOPLE=[['alice.nguyen','Alice Nguyen','alice.nguyen@acme.io','Engineering','active'],
+    ['bob.martin','Bob Martin','bob.martin@acme.io','Sales','active'],
+    ['carol.diaz','Carol Diaz','carol.diaz@acme.io','Finance','disabled'],
+    ['dan.osei','Dan Osei','dan.osei@acme.io','Engineering','active'],
+    ['eve.romano','Eve Romano','eve.romano@acme.io','Legal','active'],
+    ['frank.li','Frank Li','frank.li@acme.io','IT','active'],
+    ['grace.kim','Grace Kim','grace.kim@acme.io','Engineering','active'],
+    ['heidi.bauer','Heidi Bauer','heidi.bauer@acme.io','Marketing','disabled']];
+
+  let activeType='alpha_user', activeRec=0, tab='fields';
+  const initials=s=>s.split(/[.\s_]/).slice(0,2).map(x=>x[0]?.toUpperCase()||'').join('');
+
+  function renderTypes(){
+    const f=(document.getElementById('typeFilter').value||'').toLowerCase();
+    document.getElementById('types').innerHTML=TYPES.filter(t=>t.n.includes(f)).map(t=>`
+      <button onclick="pickType('${t.n}')" class="typerow ${t.n===activeType?'on':''} w-full flex items-center gap-2.5 px-2.5 py-2 text-left">
+        <span class="w-2 h-2 rounded-sm" style="background:${t.clr}"></span>
+        <span class="mono text-[12px] truncate">${t.n}</span>
+        <span class="ct ml-auto mono">${t.c.toLocaleString()}</span>
+      </button>`).join('');
+  }
+  function pickType(n){ activeType=n; activeRec=0;
+    const t=TYPES.find(x=>x.n===n);
+    document.getElementById('recTypeLabel').textContent=n;
+    document.getElementById('recCount').textContent=t.c.toLocaleString();
+    renderTypes(); renderRecords(); renderDetail();
+  }
+  function renderRecords(){
+    document.getElementById('records').innerHTML=PEOPLE.map((p,i)=>`
+      <button onclick="pickRec(${i})" class="rec ${i===activeRec?'on':''} w-full flex items-center gap-3 px-3 py-2 text-left">
+        <span class="avatar" style="background:${TYPES.find(t=>t.n===activeType).clr}">${initials(p[1])}</span>
+        <span class="min-w-0">
+          <span class="block text-[13px] font-medium truncate">${p[1]}</span>
+          <span class="block mono text-[10px] text-slate-400 truncate">${p[0]} · ${p[2]}</span>
+        </span>
+        <span class="ml-auto w-1.5 h-1.5 rounded-full ${p[4]==='active'?'bg-emerald-400':'bg-slate-300'}"></span>
+      </button>`).join('');
+  }
+  function pickRec(i){ activeRec=i; renderRecords(); renderDetail(); }
+
+  function recObj(){ const p=PEOPLE[activeRec]; return {
+    _id:p[0], userName:p[0], givenName:p[1].split(' ')[0], sn:p[1].split(' ')[1],
+    mail:p[2], department:p[3], accountStatus:p[4], memberOfOrgIds:['org-12','org-08'],
+    metadata:{created:'2025-11-02T08:14:00Z', lastModified:'2026-05-30T17:41:09Z'} };
+  }
+  function renderDetail(){
+    const p=PEOPLE[activeRec], o=recObj();
+    document.getElementById('detailHead').innerHTML=`
+      <div class="flex items-center gap-3">
+        <span class="avatar" style="width:40px;height:40px;border-radius:11px;font-size:14px;background:${TYPES.find(t=>t.n===activeType).clr}">${initials(p[1])}</span>
+        <div class="min-w-0">
+          <div class="text-[16px] font-bold truncate">${p[1]}</div>
+          <div class="mono text-[11px] text-slate-400 truncate">${activeType} · ${p[0]}</div>
+        </div>
+        <span class="ml-auto text-[11px] font-semibold px-2 py-0.5 rounded-full ${p[4]==='active'?'bg-emerald-100 text-emerald-700':'bg-slate-100 text-slate-500'}">${p[4]}</span>
+      </div>`;
+    const body=document.getElementById('detailBody');
+    if(tab==='fields'){
+      const rows=[['userName',o.userName],['givenName',o.givenName],['sn',o.sn],['mail',o.mail],
+        ['department',o.department],['accountStatus',o.accountStatus],['memberOfOrgIds',o.memberOfOrgIds.join(', ')],
+        ['created',o.metadata.created],['lastModified',o.metadata.lastModified]];
+      body.innerHTML=rows.map(([k,v])=>`<div class="field"><span class="key">${k}</span><span class="mono text-[12.5px] break-all">${v}</span></div>`).join('');
+    }else{
+      body.innerHTML=`<pre class="raw whitespace-pre-wrap">${colorJson(o)}</pre>`;
+    }
+  }
+  function colorJson(o){
+    return JSON.stringify(o,null,2)
+      .replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+      m=>{let c='n'; if(/^"/.test(m)) c=/:$/.test(m)?'k':'s'; else if(/true|false/.test(m))c='b'; else if(/null/.test(m))c='b';
+        return `<span class="${c}">${m}</span>`;});
+  }
+  function setTab(btn,t){ tab=t; document.querySelectorAll('#detailTabs button').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); renderDetail(); }
+
+  function globalSearch(){
+    const q=document.getElementById('gq').value.trim(); const box=document.getElementById('gres');
+    if(!q){ box.classList.add('hidden'); return; }
+    box.classList.remove('hidden');
+    const hits=PEOPLE.filter(p=>(p[1]+p[0]+p[2]).toLowerCase().includes(q.toLowerCase())).slice(0,4);
+    const groups = hits.length? `
+      <div class="mono text-[10px] text-slate-400 px-1 pb-1">alpha_user · ${hits.length}</div>
+      ${hits.map(p=>`<div class="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-sky-50 cursor-pointer">
+        <span class="mono text-[12px] font-medium">${p[0]}</span>
+        <span class="mono text-[11px] text-slate-400 truncate">${p[2]} · ${p[3]}</span></div>`).join('')}`
+      : `<div class="text-[12px] text-slate-400 italic px-1 py-1">No matches across any type.</div>`;
+    box.innerHTML=groups;
+  }
+
+  renderTypes(); renderRecords(); renderDetail();
+</script>
+</body>
+</html>

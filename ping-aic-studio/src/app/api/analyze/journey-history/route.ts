@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getLogApiCredentials, getEnvFileContent, getEnvironments } from "@/lib/fr-config";
 import { parseEnvFile } from "@/lib/env-parser";
 import { analyzeJourneyHistory, type RawAuthEvent } from "@/lib/reports/journey-history";
+import { buildJourneyQueryFilter, filterEventsByJourneys, parseTreeNames, MAX_SERVER_FILTER_JOURNEYS } from "@/lib/reports/journey-filter";
+import { fetchLogPage } from "@/lib/logs/log-fetch";
 import { logDataDir } from "@/lib/logs/log-archive-paths";
 import { readRange } from "@/lib/logs/log-archive-store";
 import { readManifest, rangeCoverage } from "@/lib/logs/manifest";
@@ -12,7 +14,7 @@ import { readManifest, rangeCoverage } from "@/lib/logs/manifest";
  *   - "archive": read `am-authentication` from the local log archive — offline,
  *     instant, never truncated. Requires a prior pull (Phase A2).
  *
- * Body: { env, from, to, treeName?, maxEvents?, source? }
+ * Body: { env, from, to, treeNames?: string[], maxEvents?, source? }
  * Streams NDJSON: progress* then a final `done` (or `error`).
  */
 
@@ -26,10 +28,10 @@ export async function POST(req: NextRequest) {
         env,
         from,
         to,
-        treeName,
         maxEvents = DEFAULT_MAX_EVENTS,
-    } = body as { env: string; from: string; to: string; treeName?: string; maxEvents?: number; source?: string };
+    } = body as { env: string; from: string; to: string; maxEvents?: number; source?: string };
     const source = body.source === "archive" ? "archive" : "live";
+    const treeNames = parseTreeNames(body);
 
     if (!env || !from || !to) {
         return NextResponse.json({ error: "env, from, and to are required." }, { status: 400 });
@@ -55,8 +57,12 @@ export async function POST(req: NextRequest) {
     // AIC's /monitoring/logs queryFilter support is finicky — `eq` on
     // /payload/eventName and nested-array paths return empty silently in
     // practice. We narrow with `co` (contains) and re-filter client-side.
-    const broadFilter =
+    const baseFilter =
         '(/payload/eventName co "AM-TREE-LOGIN-") or (/payload/eventName co "AM-NODE-LOGIN-COMPLETED")';
+    // Live + small selection → server-side filter; archive (and large selections)
+    // → analysis-time set filter below.
+    const serverFiltered = source === "live" && treeNames.length > 0 && treeNames.length <= MAX_SERVER_FILTER_JOURNEYS;
+    const queryFilter = buildJourneyQueryFilter(baseFilter, serverFiltered ? treeNames : []);
 
     const allEvents: RawAuthEvent[] = [];
     let cookie: string | undefined;
@@ -71,30 +77,13 @@ export async function POST(req: NextRequest) {
         "AM-TREE-LOGIN-COMPLETED",
         "AM-NODE-LOGIN-COMPLETED",
     ]);
-    const treeFilterLc = treeName?.trim().toLowerCase();
     const eventNameCounts = new Map<string, number>();
-
-    // Substring match across both treeName fields the analyzer pulls from.
-    function matchesTreeName(payload: unknown): boolean {
-        if (!treeFilterLc) return true;
-        if (typeof payload !== "object" || payload === null) return false;
-        const p = payload as Record<string, unknown>;
-        const direct = typeof p.treeName === "string" ? p.treeName.toLowerCase() : "";
-        if (direct.includes(treeFilterLc)) return true;
-        const entries = p.entries;
-        if (Array.isArray(entries) && entries.length > 0) {
-            const info = (entries[0] as Record<string, unknown>)?.info;
-            const t = info && typeof info === "object" && typeof (info as Record<string, unknown>).treeName === "string"
-                ? ((info as Record<string, unknown>).treeName as string).toLowerCase() : "";
-            if (t.includes(treeFilterLc)) return true;
-        }
-        return false;
-    }
 
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
             const send = (msg: unknown) => controller.enqueue(encoder.encode(JSON.stringify(msg) + "\n"));
+            const startedAt = Date.now();
             try {
                 if (source === "archive") {
                     // Read the window straight from local NDJSON. No paging, no cap
@@ -122,11 +111,12 @@ export async function POST(req: NextRequest) {
                             source: JOURNEY_SOURCE,
                             beginTime: from,
                             endTime: to,
-                            _queryFilter: broadFilter,
+                            _queryFilter: queryFilter,
                             ...(cookie ? { _pagedResultsCookie: cookie } : {}),
                         });
                         const url = `${tenantBaseUrl}/monitoring/logs?${params}`;
-                        const res = await fetch(url, { headers: authHeaders });
+                        // fetchLogPage retries throughput 429s with backoff (same as the log pull).
+                        const res = await fetchLogPage(url, authHeaders);
                         if (!res.ok) {
                             const text = await res.text();
                             send({ type: "error", error: `HTTP ${res.status}: ${text}` });
@@ -161,24 +151,11 @@ export async function POST(req: NextRequest) {
                     }
                 }
 
-                // Apply treeName filter at the transactionId level so the analyzer
-                // still sees companion events for any txn that touches the tree.
-                let analyzed = allEvents;
-                if (treeFilterLc) {
-                    const keepTxns = new Set<string>();
-                    for (const e of allEvents) {
-                        if (!matchesTreeName(e.payload)) continue;
-                        if (typeof e.payload === "object" && e.payload !== null) {
-                            const t = (e.payload as Record<string, unknown>).transactionId;
-                            if (typeof t === "string") keepTxns.add(t);
-                        }
-                    }
-                    analyzed = allEvents.filter((e) => {
-                        if (typeof e.payload !== "object" || e.payload === null) return false;
-                        const t = (e.payload as Record<string, unknown>).transactionId;
-                        return typeof t === "string" && keepTxns.has(t);
-                    });
-                }
+                // Archive (and >cap live selections) couldn't be filtered server-side
+                // → apply the exact-set journey filter at analysis time.
+                const analyzed = treeNames.length > 0 && !serverFiltered
+                    ? filterEventsByJourneys(allEvents, treeNames)
+                    : allEvents;
 
                 const report = analyzeJourneyHistory(analyzed);
                 if (truncated || (source === "live" && pages >= MAX_PAGES)) report.truncated = true;
@@ -197,6 +174,9 @@ export async function POST(req: NextRequest) {
                     eventsFetched: analyzed.length,
                     rawFetched,
                     topEventNames,
+                    durationMs: Math.max(0, Date.now() - startedAt),
+                    generatedAt: new Date().toISOString(),
+                    ...(treeNames.length ? { selectedJourneys: treeNames } : {}),
                 });
                 controller.close();
             } catch (err) {

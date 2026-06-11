@@ -1,8 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JourneyHistoryReport, JourneyAttempt } from "@/lib/reports/journey-history";
+import type { JourneyHistoryMeta } from "@/lib/reports/journey-report-history";
+import { AUTO_RECOVERY_MAX_EPISODES } from "@/lib/reports/journey-report-types";
+import { buildInspectWindow, INSPECT_WINDOW_HOURS, singleWindowTooWide, retentionWarning } from "@/lib/reports/journey-inspect";
 import { useJourneyReportJobs } from "@/hooks/useJourneyReportJobs";
+import { JourneyMultiSelect } from "./JourneyMultiSelect";
+import { JourneyDepPicker } from "./JourneyDepPicker";
+import { NodeOutcomeTree } from "./NodeOutcomeTree";
+import { MAX_SERVER_FILTER_JOURNEYS, runTreeNames as computeRunTreeNames } from "@/lib/reports/journey-filter";
 
 /** Default window: last 24 hours, rounded to the second. */
 function defaultWindow(): { from: string; to: string } {
@@ -19,6 +26,14 @@ function defaultWindow(): { from: string; to: string } {
 /** Convert a datetime-local string (local time) to an ISO UTC string. */
 function localToIso(localStr: string): string {
     return new Date(localStr).toISOString();
+}
+
+/** Convert an ISO UTC string to a datetime-local string (local time) for the form. */
+function isoToLocal(iso: string): string {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function Stat({ label, value, sub, tone = "slate" }: { label: string; value: number | string; sub?: string; tone?: "slate" | "emerald" | "rose" | "amber" }) {
@@ -46,6 +61,22 @@ type ScanReport = JourneyHistoryReport & {
     topEventNames?: { name: string; count: number }[];
     source?: "live" | "archive";
     coverage?: "full" | "partial" | "none";
+    /** Multi-window run: success/fail rates only, no per-attempt rows. */
+    rollupOnly?: boolean;
+    windows?: number;
+    windowHours?: number;
+    /** Wall-clock time to generate the report. */
+    durationMs?: number;
+    /** ISO time the report finished generating. */
+    generatedAt?: string;
+    /** Journeys the report was scoped to (empty/absent = all). */
+    selectedJourneys?: string[];
+    /** Job id whose raw was retained — present means failures can be inspected offline. */
+    rawJobId?: string;
+    /** This report came from re-analyzing retained raw (offline), not a fresh pull. */
+    inspectedFromRaw?: boolean;
+    /** The per-attempt list is a capped sample (summary counts are still full). */
+    attemptsTruncated?: boolean;
 };
 
 const num = (n: number) => n.toLocaleString();
@@ -53,6 +84,55 @@ const num = (n: number) => n.toLocaleString();
 function fmtWindowTs(iso: string): string {
     const d = new Date(iso);
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+}
+
+/** Human-readable elapsed time: "820 ms", "12s", "3m 5s", "1h 2m". */
+function fmtDuration(ms: number): string {
+    if (ms < 1000) return `${Math.round(ms)} ms`;
+    const s = Math.round(ms / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60), rs = s % 60;
+    if (m < 60) return `${m}m ${rs}s`;
+    const h = Math.floor(m / 60), rm = m % 60;
+    return `${h}h ${rm}m`;
+}
+
+/** Compact event timestamp: "06/05 14:03:21". */
+function fmtEventTs(iso: string): string {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleString(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+/** Live feed of the most-recent matched events while a report is running. */
+function RecentEventsFeed({ events }: { events: { ts: string; eventName: string; tree?: string }[] }) {
+    return (
+        <details open className="rounded-md border border-slate-200 bg-white text-sm">
+            <summary className="cursor-pointer select-none px-3 py-1.5 font-medium text-slate-700 hover:bg-slate-50">
+                Live events ({events.length})
+            </summary>
+            <div className="max-h-48 overflow-auto">
+                <table className="w-full text-xs">
+                    <thead className="bg-slate-50 text-slate-600 sticky top-0">
+                        <tr>
+                            <th className="text-left px-3 py-1.5 font-medium">Time</th>
+                            <th className="text-left px-3 py-1.5 font-medium">Event</th>
+                            <th className="text-left px-3 py-1.5 font-medium">Journey</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {[...events].reverse().map((e, i) => (
+                            <tr key={`${e.ts}-${i}`} className="border-t border-slate-100">
+                                <td className="px-3 py-1 whitespace-nowrap text-slate-600">{fmtEventTs(e.ts)}</td>
+                                <td className="px-3 py-1 font-mono">{e.eventName}</td>
+                                <td className="px-3 py-1 font-mono text-slate-700">{e.tree ?? "—"}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    );
 }
 
 /** Always-available breakdown of what AIC returned for this run. */
@@ -63,12 +143,17 @@ function ScanDetails({ report, defaultOpen }: { report: ScanReport; defaultOpen:
     const isArchive = report.source === "archive";
     const items: { label: string; value: string }[] = [
         ...(report.window ? [{ label: "Window", value: `${fmtWindowTs(report.window.from)} → ${fmtWindowTs(report.window.to)}` }] : []),
+        ...(report.selectedJourneys && report.selectedJourneys.length
+            ? [{ label: "Journeys", value: `${report.selectedJourneys.join(", ")} (${report.selectedJourneys.length})` }]
+            : []),
         ...(isArchive ? [{ label: "Source", value: "Local archive" }] : [{ label: "Pages fetched", value: num(report.pagesFetched ?? 0) }]),
         ...(typeof raw === "number" ? [{ label: isArchive ? "Records read from archive" : "Raw events from AIC", value: num(raw) }] : []),
         { label: "Journey events kept", value: num(matched) },
         ...(typeof dropped === "number" ? [{ label: "Dropped (non-journey)", value: num(dropped) }] : []),
         { label: "Attempts reconstructed", value: num(report.summary.attempts) },
         { label: "Distinct transactions", value: num(report.summary.transactions) },
+        ...(report.generatedAt ? [{ label: "Generated at", value: fmtWindowTs(report.generatedAt) }] : []),
+        ...(typeof report.durationMs === "number" ? [{ label: "Generated in", value: fmtDuration(report.durationMs) }] : []),
         { label: "Status", value: report.truncated ? "TRUNCATED — raise Max events or narrow window" : "Complete" },
     ];
     return (
@@ -105,22 +190,79 @@ function ScanDetails({ report, defaultOpen }: { report: ScanReport; defaultOpen:
 type AttemptFilter = "all" | "fail" | "incomplete";
 type ScopeFilter = "outer" | "inner" | "all";
 
+const SETTINGS_KEY = "pinghub.journeyReport.settings.v1";
+
+// Defaults for the run-tuning settings — the single source of truth shared by the
+// state initializers (when nothing is saved) and the "Reset settings" button.
+// 1h split + 6 parallel windows + 2s delay is the measured-fast configuration for
+// bursty days; Retain raw makes re-analysis free; Rates only off keeps node events.
+const RUN_SETTING_DEFAULTS = {
+    summaryOnly: false,
+    retainRaw: true,
+    windowHours: 1,
+    windowConcurrency: 6,
+    requestDelaySec: 2,
+    maxEvents: 20000,
+} as const;
+
+interface SavedSettings {
+    env?: string; from?: string; to?: string; selectedJourneys?: string[];
+    scope?: ScopeFilter; maxEvents?: number; summaryOnly?: boolean;
+    windowHours?: number; windowConcurrency?: number; requestDelaySec?: number;
+    dataSource?: "live" | "archive"; retainRaw?: boolean;
+}
+
+/** Last-used form settings from localStorage (survives app restart). */
+function loadSavedSettings(): SavedSettings | null {
+    if (typeof window === "undefined") return null;
+    try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null"); } catch { return null; }
+}
+
 export function JourneyHistoryPanel({ environments }: { environments: { name: string }[] }) {
     const initialWindow = useMemo(defaultWindow, []);
-    const [env, setEnv] = useState(environments[0]?.name ?? "");
-    const [from, setFrom] = useState(initialWindow.from);
-    const [to, setTo] = useState(initialWindow.to);
-    const [treeName, setTreeName] = useState("");
-    const [scope, setScope] = useState<ScopeFilter>("outer");
-    const [maxEvents, setMaxEvents] = useState(20000);
-    const [dataSource, setDataSource] = useState<"live" | "archive">("live");
+    const saved = useMemo(loadSavedSettings, []);
+    const [env, setEnv] = useState(
+        saved?.env && environments.some((e) => e.name === saved.env) ? saved.env : (environments[0]?.name ?? ""),
+    );
+    const [from, setFrom] = useState(saved?.from ?? initialWindow.from);
+    const [to, setTo] = useState(saved?.to ?? initialWindow.to);
+    const [selectedJourneys, setSelectedJourneys] = useState<string[]>(saved?.selectedJourneys ?? []);
+    // Inner journeys (from the dep picker) pulled along with the selected parents.
+    const [innerChecked, setInnerChecked] = useState<string[]>([]);
+    // Selected parents whose OWN events are excluded from the pull (kept selected
+    // only so their inner-journey tree stays visible for picking). Ephemeral,
+    // like innerChecked — deliberately not in SavedSettings.
+    const [excludedParents, setExcludedParents] = useState<string[]>([]);
+    const [journeyOptions, setJourneyOptions] = useState<string[]>([]);
+    const [journeySource, setJourneySource] = useState<"config" | "none">("none");
+    const [scope, setScope] = useState<ScopeFilter>(saved?.scope ?? "outer");
+    const [maxEvents, setMaxEvents] = useState(saved?.maxEvents ?? RUN_SETTING_DEFAULTS.maxEvents);
+    // Rates only (success/fail rates, no per-node events).
+    const [summaryOnly, setSummaryOnly] = useState(saved?.summaryOnly ?? RUN_SETTING_DEFAULTS.summaryOnly);
+    // AIC rejects queries spanning >1 day; long ranges are pulled in ≤24h windows.
+    const [windowHours, setWindowHours] = useState(saved?.windowHours ?? RUN_SETTING_DEFAULTS.windowHours);
+    // Concurrent windows per chunked run (AIC throttles bursts above ~6).
+    const [windowConcurrency, setWindowConcurrency] = useState(saved?.windowConcurrency ?? RUN_SETTING_DEFAULTS.windowConcurrency);
+    // Minimum delay between page requests, in seconds — proactively avoids 429s.
+    const [requestDelaySec, setRequestDelaySec] = useState(saved?.requestDelaySec ?? RUN_SETTING_DEFAULTS.requestDelaySec);
+    const [dataSource, setDataSource] = useState<"live" | "archive">(saved?.dataSource ?? "live");
+    // Keep this run's raw events on disk so failures can be inspected offline.
+    const [retainRaw, setRetainRaw] = useState(saved?.retainRaw ?? RUN_SETTING_DEFAULTS.retainRaw);
     const [loading, setLoading] = useState(false); // archive (synchronous) only
     const [error, setError] = useState<string | null>(null);
     const [report, setReport] = useState<ScanReport | null>(null);
     const [attemptFilter, setAttemptFilter] = useState<AttemptFilter>("all");
+    // Per-journey rollup row expanded to its failure-node breakdown + failed attempts.
+    const [expandedJourney, setExpandedJourney] = useState<string | null>(null);
     const [scanProgress, setScanProgress] = useState<{ page: number; rawFetched: number; matched: number } | null>(null);
     // Track which completed job's report we've already loaded into `report`.
     const [loadedReportJobId, setLoadedReportJobId] = useState<string | null>(null);
+    const [history, setHistory] = useState<JourneyHistoryMeta[]>([]);
+    // Skip the env-change selection-reset on the very first render (restored settings).
+    const didInitEnv = useRef(false);
+    // Only auto-load the report for a job the user started/resumed this session
+    // (so a pre-existing completed job isn't loaded on page open).
+    const pendingJobIdRef = useRef<string | null>(null);
 
     // Live reports run as resumable background jobs (retry, suspend/resume).
     const { jobs, start, suspend, resume, abort, fetchReport } = useJourneyReportJobs({ pollMs: 2000, includeFinished: true, env });
@@ -128,20 +270,114 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     const jobActive = !!job && ["queued", "running", "aborting", "suspending"].includes(job.status);
     const jobPaused = !!job && ["suspended", "interrupted"].includes(job.status);
 
-    // When the live job finishes, pull its report into view (once).
+    // Journeys actually pulled by a run: selected parents minus excluded ones,
+    // plus any checked inner journeys.
+    const runTreeNames = useMemo(
+        () => computeRunTreeNames(selectedJourneys, excludedParents, innerChecked),
+        [selectedJourneys, excludedParents, innerChecked],
+    );
+
+    // An exclusion must never outlive its parent's selection (mirrors the dep
+    // picker's pruning of inner picks whose parent was deselected).
     useEffect(() => {
-        if (!job || job.status !== "completed" || !job.reportReady || loadedReportJobId === job.id) return;
+        setExcludedParents((prev) => {
+            const pruned = prev.filter((p) => selectedJourneys.includes(p));
+            return pruned.length === prev.length ? prev : pruned;
+        });
+    }, [selectedJourneys]);
+
+    // Per-env report history (live + archive), persisted server-side.
+    const refreshHistory = useCallback(async () => {
+        if (!env) { setHistory([]); return; }
+        try {
+            const res = await fetch(`/api/analyze/journey-history/history?env=${encodeURIComponent(env)}`);
+            const d = res.ok ? await res.json() : { entries: [] };
+            setHistory(Array.isArray(d.entries) ? d.entries : []);
+        } catch { setHistory([]); }
+    }, [env]);
+    useEffect(() => { refreshHistory(); }, [refreshHistory]);
+
+    const saveToHistory = useCallback(async (rep: ScanReport) => {
+        if (!env) return;
+        try {
+            await fetch("/api/analyze/journey-history/history", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ env, report: rep }),
+            });
+            refreshHistory();
+        } catch { /* history save is non-fatal */ }
+    }, [env, refreshHistory]);
+
+    const loadHistory = useCallback(async (id: string) => {
+        if (!env) return;
+        try {
+            const res = await fetch(`/api/analyze/journey-history/history/${id}?env=${encodeURIComponent(env)}`);
+            if (!res.ok) return;
+            setReport(await res.json() as ScanReport);
+            setError(null);
+        } catch { /* non-fatal */ }
+    }, [env]);
+
+    // Persist the form so it survives an app restart.
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        try {
+            localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+                env, from, to, selectedJourneys, scope, maxEvents, summaryOnly, windowHours, windowConcurrency, requestDelaySec, dataSource, retainRaw,
+            } satisfies SavedSettings));
+        } catch { /* ignore quota/availability errors */ }
+    }, [env, from, to, selectedJourneys, scope, maxEvents, summaryOnly, windowHours, windowConcurrency, requestDelaySec, dataSource, retainRaw]);
+
+    // Revert the run-tuning settings to the defaults (selection/range/env untouched).
+    // The persistence effect above then saves the reverted values automatically.
+    const resetRunSettings = () => {
+        setSummaryOnly(RUN_SETTING_DEFAULTS.summaryOnly);
+        setRetainRaw(RUN_SETTING_DEFAULTS.retainRaw);
+        setWindowHours(RUN_SETTING_DEFAULTS.windowHours);
+        setWindowConcurrency(RUN_SETTING_DEFAULTS.windowConcurrency);
+        setRequestDelaySec(RUN_SETTING_DEFAULTS.requestDelaySec);
+        setMaxEvents(RUN_SETTING_DEFAULTS.maxEvents);
+    };
+
+    // When a job the user started/resumed this session finishes, pull its report
+    // into view (once) and save to history. Keyed on primitives (not the polled
+    // `job` object) so it fires once on completion, not on every 2s poll.
+    const jobId = job?.id;
+    const jobStatus = job?.status;
+    const jobReady = job?.reportReady ?? false;
+    useEffect(() => {
+        if (!jobId || jobStatus !== "completed" || !jobReady) return;
+        if (jobId !== pendingJobIdRef.current || loadedReportJobId === jobId) return;
         let cancelled = false;
-        fetchReport(job.id).then((rep) => {
+        fetchReport(jobId).then((rep) => {
             if (cancelled || !rep) return;
             setReport(rep as ScanReport);
-            setLoadedReportJobId(job.id);
+            setLoadedReportJobId(jobId);
             setError(null);
+            void saveToHistory(rep as ScanReport);
         });
         return () => { cancelled = true; };
-    }, [job, loadedReportJobId, fetchReport]);
+    }, [jobId, jobStatus, jobReady, loadedReportJobId, fetchReport, saveToHistory]);
 
     const displayError = error ?? (job?.status === "failed" ? job.fatalError ?? "Report failed." : null);
+
+    // Load the env's journeys for the picker; reset selection when the env changes
+    // (but keep a restored selection on the first render).
+    useEffect(() => {
+        if (!env) { setJourneyOptions([]); setJourneySource("none"); return; }
+        let cancelled = false;
+        if (didInitEnv.current) { setSelectedJourneys([]); setInnerChecked([]); setExcludedParents([]); }
+        didInitEnv.current = true;
+        fetch(`/api/analyze/journeys?env=${encodeURIComponent(env)}`)
+            .then((r) => (r.ok ? r.json() : { journeys: [], source: "none" }))
+            .then((d: { journeys: string[]; source: "config" | "none" }) => {
+                if (cancelled) return;
+                setJourneyOptions(d.journeys);
+                setJourneySource(d.source);
+            })
+            .catch(() => { if (!cancelled) { setJourneyOptions([]); setJourneySource("none"); } });
+        return () => { cancelled = true; };
+    }, [env]);
 
     async function run() {
         if (!env || !from || !to) {
@@ -149,7 +385,17 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
             return;
         }
         setError(null);
+        // Pre-flight: parents selected but every box unchecked → an empty filter
+        // would pull/analyze EVERY journey, the opposite of the user's intent.
+        if (selectedJourneys.length > 0 && runTreeNames.length === 0) {
+            setError("Nothing selected to pull — check the journey or at least one inner journey.");
+            return;
+        }
         if (dataSource === "archive") { await runArchive(); return; }
+
+        // Pre-flight: a single-window (split 0) run can't span more than a day (AIC limit).
+        const tooWide = singleWindowTooWide(localToIso(from), localToIso(to), windowHours);
+        if (tooWide) { setError(tooWide); return; }
 
         // Live → start (or surface) a resumable background job.
         setReport(null);
@@ -157,13 +403,74 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
         const res = await start(env, {
             from: localToIso(from),
             to: localToIso(to),
-            treeName: treeName.trim() || undefined,
+            treeNames: runTreeNames,
             maxEvents,
+            summaryOnly,
+            windowHours,
+            windowConcurrency,
+            requestDelayMs: Math.round(requestDelaySec * 1000),
+            retainRaw,
         });
+        // Arm auto-load for this job (only reports the user runs are shown automatically).
+        if (res.body?.jobId) pendingJobIdRef.current = res.body.jobId;
         // 409 = a job is already active for this env; polling will display it.
         if (!res.ok && res.status !== 409) {
             setError(res.body.error ?? `Failed to start report (${res.status}).`);
         }
+    }
+
+    /**
+     * Drill into one journey's failures: re-run a focused, full-detail report —
+     * just this journey, Rates-only OFF (so node events are fetched), single-window,
+     * over the most-recent ≤24h of the current report's range (AIC's per-attempt
+     * limit). Pre-fills the form so the window is visible and editable for a re-run.
+     */
+    async function inspect(treeName: string) {
+        // Preferred: re-analyze this report's retained raw offline — instant, no AIC pull.
+        if (report?.rawJobId) {
+            try {
+                const res = await fetch(`/api/analyze/journey-history/jobs/${encodeURIComponent(report.rawJobId)}/inspect`, {
+                    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ treeName }),
+                });
+                if (res.ok) {
+                    setReport(await res.json() as ScanReport);
+                    setError(null);
+                    setExpandedJourney(treeName);
+                    return;
+                }
+                // 404 = raw aged out of retention → fall through to a fresh re-pull.
+            } catch { /* network error → fall through to re-pull */ }
+        }
+        // Fallback: re-pull a focused, full-detail report (single journey, rates-off,
+        // single-window, most-recent ≤24h of the range). Pre-fill the form so it's editable.
+        if (!env || !report?.window || jobActive) return;
+        const w = buildInspectWindow(report.window.from, report.window.to);
+        setSelectedJourneys([treeName]);
+        setExcludedParents([]); // a stale exclusion of treeName would silently change the prefilled re-run
+        setSummaryOnly(false);
+        setWindowHours(0);
+        setFrom(isoToLocal(w.from));
+        setTo(isoToLocal(w.to));
+        setExpandedJourney(null);
+        setError(null);
+        setReport(null);
+        setLoadedReportJobId(null);
+        const res = await start(env, {
+            from: w.from, to: w.to, treeNames: [treeName], maxEvents,
+            summaryOnly: false, windowHours: 0, windowConcurrency,
+            requestDelayMs: Math.round(requestDelaySec * 1000), retainRaw: true,
+        });
+        if (res.body?.jobId) pendingJobIdRef.current = res.body.jobId;
+        if (!res.ok && res.status !== 409) {
+            setError(res.body.error ?? `Failed to start report (${res.status}).`);
+        }
+    }
+
+    /** Failure detail for one journey: node breakdown + that journey's failed attempts (detail reports only). */
+    function journeyDetail(treeName: string) {
+        const topFailureNodes = report?.perJourney.find((j) => j.treeName === treeName)?.topFailureNodes ?? [];
+        const failedAttempts = (report?.attempts ?? []).filter((a) => a.treeName === treeName && a.outcome === "fail");
+        return { topFailureNodes, failedAttempts };
     }
 
     /** Archive source: local NDJSON, instant, no 429 — keep the synchronous stream. */
@@ -179,7 +486,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                     env,
                     from: localToIso(from),
                     to: localToIso(to),
-                    treeName: treeName.trim() || undefined,
+                    treeNames: runTreeNames,
                     maxEvents,
                     source: "archive",
                 }),
@@ -217,6 +524,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                         const { type: _t, ...rep } = msg;
                         void _t;
                         setReport(rep);
+                        void saveToHistory(rep as ScanReport);
                         finished = true;
                     }
                 }
@@ -263,6 +571,8 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
 
     const scopedPerJourney = useMemo(() => {
         if (!report) return [];
+        // Rollup-only (multi-window): no per-attempt rows to rescope; show the merged rollup.
+        if (report.rollupOnly) return report.perJourney;
         if (scope === "all") return report.perJourney;
         // Recompute scoped rollup so percentages reflect the toggle.
         const map = new Map<string, { treeName: string; attempts: number; success: number; fail: number; incomplete: number }>();
@@ -284,8 +594,29 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
             .sort((a, b) => b.attempts - a.attempts);
     }, [report, scope]);
 
+    // Rows for the table: the rollup, plus an explicit 0-attempt row for any
+    // selected journey that had no events in the window (so it isn't silently absent).
+    const perJourneyRows = useMemo(() => {
+        const rows = scopedPerJourney.map((r) => ({
+            treeName: r.treeName, attempts: r.attempts, success: r.success, fail: r.fail, incomplete: r.incomplete, failRate: r.failRate,
+        }));
+        const selected = report?.selectedJourneys ?? [];
+        if (selected.length === 0) return rows;
+        const present = new Set(rows.map((r) => r.treeName));
+        const empties = selected.filter((n) => !present.has(n))
+            .map((treeName) => ({ treeName, attempts: 0, success: 0, fail: 0, incomplete: 0, failRate: 0 }));
+        return [...rows, ...empties];
+    }, [scopedPerJourney, report]);
+
+    const hasEmptySelected = perJourneyRows.some((r) => r.attempts === 0);
+
     const scopedSummary = useMemo(() => {
         if (!report) return null;
+        // Rollup-only: drive the cards straight off the merged summary.
+        if (report.rollupOnly) {
+            const s = report.summary;
+            return { attempts: s.attempts, success: s.success, fail: s.fail, incomplete: s.incomplete };
+        }
         const a = filteredAttempts;
         return {
             attempts: a.length,
@@ -295,10 +626,24 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
         };
     }, [report, filteredAttempts]);
 
+    // Pre-emptive hint: single-window (split 0) run can't span more than a day.
+    const rangeWarning = useMemo(() => {
+        if (dataSource !== "live" || !from || !to) return null;
+        try { return singleWindowTooWide(localToIso(from), localToIso(to), windowHours); }
+        catch { return null; }
+    }, [dataSource, from, to, windowHours]);
+
+    // Non-blocking heads-up: From precedes AIC's ~30-day journey-log retention.
+    const retentionWarn = useMemo(() => {
+        if (dataSource !== "live" || !from) return null;
+        try { return retentionWarning(localToIso(from), Date.now()); }
+        catch { return null; }
+    }, [dataSource, from]);
+
     return (
         <div className="space-y-4">
             <div className="rounded-md border border-slate-200 bg-slate-50 p-4 space-y-3">
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                     <label className="text-sm">
                         <span className="block text-slate-600 mb-1">Environment</span>
                         <select
@@ -319,12 +664,6 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                     <label className="text-sm">
                         <span className="block text-slate-600 mb-1">To</span>
                         <input type="datetime-local" value={to} onChange={(e) => setTo(e.target.value)}
-                            className="w-full rounded border border-slate-300 px-2 py-1.5 bg-white" />
-                    </label>
-                    <label className="text-sm">
-                        <span className="block text-slate-600 mb-1">Journey filter (optional)</span>
-                        <input type="text" value={treeName} onChange={(e) => setTreeName(e.target.value)}
-                            placeholder="exact treeName"
                             className="w-full rounded border border-slate-300 px-2 py-1.5 bg-white" />
                     </label>
                 </div>
@@ -352,21 +691,72 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                     <label className="text-sm">
                         <span className="block text-slate-600 mb-1">Max events</span>
                         <input type="number" min={100} max={100000} step={1000} value={maxEvents}
-                            onChange={(e) => setMaxEvents(Number(e.target.value) || 20000)}
+                            onChange={(e) => setMaxEvents(Number(e.target.value) || RUN_SETTING_DEFAULTS.maxEvents)}
                             className="w-32 rounded border border-slate-300 px-2 py-1.5 bg-white" />
                     </label>
+                    {dataSource === "live" && (
+                        <label className="text-sm flex items-center gap-1.5 pb-1.5"
+                            title="Pull only journey start/end events for success/fail rates. Drops per-node events, so it's ~10x faster — but no top-failure-node breakdown.">
+                            <input type="checkbox" checked={summaryOnly}
+                                onChange={(e) => setSummaryOnly(e.target.checked)} />
+                            <span className="text-slate-600">Rates only (faster)</span>
+                        </label>
+                    )}
+                    {dataSource === "live" && (
+                        <label className="text-sm flex items-center gap-1.5 pb-1.5"
+                            title="Keep this run's pulled events on disk so failures can be inspected offline (re-analyzed without re-pulling). Uses more disk; the last 10 retained runs per environment are kept. With 'Rates only' on, failure-node detail still won't be captured.">
+                            <input type="checkbox" checked={retainRaw}
+                                onChange={(e) => setRetainRaw(e.target.checked)} />
+                            <span className="text-slate-600">Retain raw for inspection</span>
+                        </label>
+                    )}
+                    {dataSource === "live" && (
+                        <label className="text-sm"
+                            title="AIC rejects queries spanning more than a day, so long ranges are pulled in chunks of this many hours (max 24) and the rollups are merged. 0 = single window (full per-attempt report; only valid for ranges ≤ 1 day). Multi-window runs report success/fail rates only.">
+                            <span className="block text-slate-600 mb-1">Window split (hours)</span>
+                            <input type="number" min={0} max={24} step={1} value={windowHours}
+                                onChange={(e) => setWindowHours(Math.max(0, Math.min(24, Math.floor(Number(e.target.value) || 0))))}
+                                className="w-24 rounded border border-slate-300 px-2 py-1.5 bg-white" />
+                        </label>
+                    )}
+                    {dataSource === "live" && windowHours > 0 && (
+                        <label className="text-sm"
+                            title="How many windows to pull in parallel. AIC throttles bursts above ~6 concurrent queries, so this is capped at 6 (default 6). 1 = sequential.">
+                            <span className="block text-slate-600 mb-1">Parallel windows</span>
+                            <input type="number" min={1} max={6} step={1} value={windowConcurrency}
+                                onChange={(e) => setWindowConcurrency(Math.max(1, Math.min(6, Math.floor(Number(e.target.value) || 1))))}
+                                className="w-24 rounded border border-slate-300 px-2 py-1.5 bg-white" />
+                        </label>
+                    )}
+                    {dataSource === "live" && (
+                        <label className="text-sm"
+                            title="Minimum delay between page requests (seconds). Default 2. Proactively avoids 429s; raise it if you still get rate-limited, lower it (toward 0) for speed.">
+                            <span className="block text-slate-600 mb-1">Request delay (s)</span>
+                            <input type="number" min={0} max={60} step={1} value={requestDelaySec}
+                                onChange={(e) => setRequestDelaySec(Math.max(0, Math.min(60, Math.floor(Number(e.target.value) || 0))))}
+                                className="w-24 rounded border border-slate-300 px-2 py-1.5 bg-white" />
+                        </label>
+                    )}
+                    <button
+                        type="button"
+                        onClick={resetRunSettings}
+                        title="Revert Rates only, Retain raw, Window split, Parallel windows, Request delay, and Max events to their defaults. Environment, range, and journey selection are untouched."
+                        className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                    >
+                        Reset settings
+                    </button>
                     <button
                         type="button"
                         onClick={run}
-                        disabled={dataSource === "archive" ? loading : jobActive}
-                        title={jobActive ? "A report is already running for this environment" : undefined}
+                        disabled={dataSource === "archive" ? loading : (jobActive || !!rangeWarning)}
+                        title={rangeWarning ?? (jobActive ? "A report is already running for this environment" : undefined)}
                         className="rounded bg-sky-600 px-4 py-1.5 text-white text-sm font-medium hover:bg-sky-700 disabled:opacity-50"
                     >
                         {dataSource === "archive"
                             ? (loading ? "Running..." : "Run report")
                             : (jobActive ? "Running…" : "Run report")}
                     </button>
-                    {report ? (
+                    {report && !report.rollupOnly ? (
                         <button
                             type="button"
                             onClick={exportAttemptsCsv}
@@ -385,8 +775,37 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                     ) : null}
                 </div>
 
+                {rangeWarning ? (
+                    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{rangeWarning}</div>
+                ) : null}
+                {retentionWarn ? (
+                    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{retentionWarn}</div>
+                ) : null}
+
+                <div>
+                    <JourneyMultiSelect
+                        available={journeyOptions}
+                        selected={selectedJourneys}
+                        onChange={setSelectedJourneys}
+                        freeText={journeySource === "none"}
+                    />
+                </div>
+                {journeySource === "config" && selectedJourneys.length > 0 ? (
+                    <JourneyDepPicker
+                        env={env} parents={selectedJourneys} checked={innerChecked} onChange={setInnerChecked}
+                        excludedParents={excludedParents} onExcludedChange={setExcludedParents}
+                    />
+                ) : null}
+                {runTreeNames.length > MAX_SERVER_FILTER_JOURNEYS ? (
+                    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                        {runTreeNames.length} journeys selected — above {MAX_SERVER_FILTER_JOURNEYS}, the run pulls all
+                        journeys and filters locally, which is much slower. Consider narrowing the selection.
+                    </div>
+                ) : null}
+
                 {/* Live background-job status — runs server-side, survives navigation, resumable. */}
                 {dataSource === "live" && job && job.status !== "completed" ? (
+                  <div className="space-y-2">
                     <div className="flex flex-wrap items-center gap-2 rounded border border-slate-200 bg-white px-3 py-2 text-sm">
                         <span className={`px-1.5 py-0.5 rounded text-[11px] font-semibold ${jobPaused ? "bg-amber-100 text-amber-800"
                             : job.status === "failed" ? "bg-rose-100 text-rose-700" : "bg-sky-100 text-sky-700"}`}>
@@ -395,7 +814,12 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                         {jobActive ? (
                             <span className="flex items-center gap-2 text-slate-600">
                                 <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-300 border-t-sky-600" />
-                                page {job.progress.page} · {job.progress.rawFetched.toLocaleString()} raw · {job.progress.matched.toLocaleString()} journey events
+                                {job.progress.windowsTotal && job.progress.windowsTotal > 1
+                                    ? <>windows {job.progress.windowsDone ?? 0}/{job.progress.windowsTotal} done
+                                        {job.progress.windowsInFlight ? ` · ${job.progress.windowsInFlight} paging` : ""}
+                                        {job.progress.livePages ? ` · ${job.progress.livePages.toLocaleString()} pages fetched` : ""}
+                                        {` · ${job.progress.matched.toLocaleString()} journey events`}</>
+                                    : <>page {job.progress.page} · {job.progress.rawFetched.toLocaleString()} raw · {job.progress.matched.toLocaleString()} journey events</>}
                             </span>
                         ) : jobPaused ? (
                             <span className="text-slate-600">
@@ -409,7 +833,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                                     className="rounded border border-indigo-300 bg-indigo-50 px-2 py-0.5 text-xs text-indigo-800 hover:bg-indigo-100">Suspend</button>
                             ) : null}
                             {jobPaused ? (
-                                <button type="button" onClick={() => resume(job.id)}
+                                <button type="button" onClick={() => { pendingJobIdRef.current = job.id; resume(job.id); }}
                                     className="rounded border border-amber-400 bg-amber-50 px-2 py-0.5 text-xs text-amber-800 hover:bg-amber-100">Resume</button>
                             ) : null}
                             {(jobActive || jobPaused) ? (
@@ -418,10 +842,84 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                             ) : null}
                         </div>
                     </div>
+                    {jobActive && job.progress.throttling ? (
+                        <div className="flex items-center gap-2 rounded border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-800">
+                            <span className="inline-block h-3 w-3 shrink-0 animate-pulse rounded-full bg-amber-400" />
+                            <span>
+                                {job.progress.recovering ? (
+                                    <>
+                                        Rate limited by AIC — paging paused; auto-retrying
+                                        {job.progress.recoveryWaitMs ? ` in ~${Math.ceil(job.progress.recoveryWaitMs / 1000)}s` : ""}
+                                        {` (attempt ${job.progress.recoveryAttempt ?? 1}/${AUTO_RECOVERY_MAX_EPISODES})`}
+                                        , at reduced concurrency&hellip;
+                                    </>
+                                ) : (
+                                    <>
+                                        Rate limited by AIC {job.progress.throttles}× — auto-retrying with backoff
+                                        {job.progress.lastThrottleAttempt
+                                            ? ` (attempt ${job.progress.lastThrottleAttempt}${job.progress.lastThrottleWaitMs ? `, waited ~${Math.ceil(job.progress.lastThrottleWaitMs / 1000)}s` : ""})`
+                                            : ""}. Auto-tuning pacing &amp; parallel windows&hellip;
+                                    </>
+                                )}
+                            </span>
+                        </div>
+                    ) : null}
+                    {jobPaused && job.fatalError ? (
+                        <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{job.fatalError}</div>
+                    ) : null}
+                    {job.progress.recentEvents && job.progress.recentEvents.length > 0 ? (
+                        <RecentEventsFeed events={job.progress.recentEvents} />
+                    ) : null}
+                  </div>
                 ) : null}
 
                 {displayError ? <div className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded px-3 py-2">{displayError}</div> : null}
             </div>
+
+            {history.length > 0 ? (
+                <details className="rounded-md border border-slate-200 bg-white text-sm">
+                    <summary className="cursor-pointer select-none px-4 py-2 font-medium text-slate-700 hover:bg-slate-50">
+                        Report history ({history.length})
+                    </summary>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                            <thead className="bg-slate-50 text-slate-600">
+                                <tr>
+                                    <th className="text-left px-3 py-2 font-medium">Generated</th>
+                                    <th className="text-left px-3 py-2 font-medium">Source</th>
+                                    <th className="text-left px-3 py-2 font-medium">Window</th>
+                                    <th className="text-left px-3 py-2 font-medium">Journeys</th>
+                                    <th className="text-right px-3 py-2 font-medium">Attempts</th>
+                                    <th className="text-right px-3 py-2 font-medium">Fail rate</th>
+                                    <th className="text-right px-3 py-2 font-medium">Took</th>
+                                    <th className="px-3 py-2"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {history.map((h) => {
+                                    const denom = h.attempts - h.incomplete;
+                                    const fr = denom > 0 ? (h.fail / denom) * 100 : 0;
+                                    return (
+                                        <tr key={h.id} className="border-t border-slate-100 hover:bg-slate-50">
+                                            <td className="px-3 py-1.5 whitespace-nowrap text-slate-600">{fmtEventTs(h.generatedAt)}</td>
+                                            <td className="px-3 py-1.5">{h.source}{h.rollupOnly ? " · rates" : ""}</td>
+                                            <td className="px-3 py-1.5 whitespace-nowrap">{h.window ? `${fmtEventTs(h.window.from)} → ${fmtEventTs(h.window.to)}` : "—"}</td>
+                                            <td className="px-3 py-1.5">{h.selectedJourneys && h.selectedJourneys.length ? `${h.selectedJourneys.length} selected` : "all"}</td>
+                                            <td className="px-3 py-1.5 text-right">{h.attempts.toLocaleString()}</td>
+                                            <td className="px-3 py-1.5 text-right">{h.attempts ? `${fr.toFixed(1)}%` : "—"}</td>
+                                            <td className="px-3 py-1.5 text-right whitespace-nowrap">{typeof h.durationMs === "number" ? fmtDuration(h.durationMs) : "—"}</td>
+                                            <td className="px-3 py-1.5 text-right">
+                                                <button type="button" onClick={() => loadHistory(h.id)}
+                                                    className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50">Load</button>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                </details>
+            ) : null}
 
             {report && scopedSummary ? (
                 <>
@@ -433,6 +931,13 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                         </div>
                     ) : report.source === "archive" ? (
                         <div className="text-xs text-slate-500">Served from the local archive.</div>
+                    ) : null}
+                    {report.generatedAt || typeof report.durationMs === "number" ? (
+                        <div className="text-xs text-slate-500">
+                            {report.generatedAt ? `Generated ${fmtWindowTs(report.generatedAt)}` : "Generated"}
+                            {typeof report.durationMs === "number" ? ` · in ${fmtDuration(report.durationMs)}` : ""}
+                            {report.windows && report.windows > 1 ? ` · ${report.windows} windows` : ""}
+                        </div>
                     ) : null}
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                         <Stat label="Attempts" value={scopedSummary.attempts} />
@@ -447,6 +952,32 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                                 ? "TRUNCATED — raise Max events or narrow window"
                                 : `${report.pagesFetched ?? 0} pages${typeof report.rawFetched === "number" ? ` · raw ${report.rawFetched}` : ""}`} />
                     </div>
+                    {report.truncated ? (() => {
+                        const multiWindow = !!(report.windows && report.windows > 1);
+                        const suggested = Math.max(1, Math.floor((report.windowHours ?? 24) / 2));
+                        return (
+                            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 flex flex-wrap items-center gap-2">
+                                <span>
+                                    A window hit the event cap and may undercount —{" "}
+                                    {multiWindow
+                                        ? <>each {report.windowHours ?? 24}h window held too many events. Use a smaller <span className="font-medium">Window split</span> so each window stays under the cap, or raise <span className="font-medium">Max events</span>.</>
+                                        : <>raise <span className="font-medium">Max events</span> or shorten the range.</>}
+                                </span>
+                                {multiWindow ? (
+                                    <button type="button" onClick={() => { setWindowHours(suggested); setDataSource("live"); }}
+                                        className="rounded border border-amber-400 bg-white px-2 py-0.5 text-amber-800 hover:bg-amber-100">
+                                        Set Window split to {suggested}h
+                                    </button>
+                                ) : null}
+                            </div>
+                        );
+                    })() : null}
+                    {report.inspectedFromRaw ? (
+                        <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800">
+                            Re-analyzed from this run&apos;s stored events — no new AIC pull. Expand a journey for its failure-node breakdown and failed attempts.
+                            {report.attemptsTruncated ? " The per-attempt list is a capped sample; success/fail counts are complete." : ""}
+                        </div>
+                    ) : null}
                     <ScanDetails report={report} defaultOpen={report.summary.attempts === 0} />
                     {report.summary.attempts === 0 ? (
                         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
@@ -462,7 +993,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                     <div className="rounded-md border border-slate-200 bg-white">
                         <div className="px-4 py-2 border-b border-slate-200 flex items-center justify-between">
                             <h3 className="text-sm font-semibold text-slate-700">Per-journey rollup</h3>
-                            <div className="text-xs text-slate-500">{scopedPerJourney.length} journeys</div>
+                            <div className="text-xs text-slate-500">{perJourneyRows.length} journeys</div>
                         </div>
                         <div className="overflow-x-auto">
                             <table className="w-full text-sm">
@@ -477,24 +1008,133 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {scopedPerJourney.map((p) => (
-                                        <tr key={p.treeName} className="border-t border-slate-100">
-                                            <td className="px-3 py-2 font-mono text-xs">{p.treeName}</td>
+                                    {perJourneyRows.map((p) => {
+                                        const expandable = p.attempts > 0;
+                                        const isOpen = expandedJourney === p.treeName;
+                                        const detail = isOpen ? journeyDetail(p.treeName) : null;
+                                        return (
+                                        <Fragment key={p.treeName}>
+                                        <tr
+                                            className={`border-t border-slate-100 ${p.attempts === 0 ? "text-slate-400" : "cursor-pointer hover:bg-slate-50"}`}
+                                            onClick={expandable ? () => setExpandedJourney(isOpen ? null : p.treeName) : undefined}>
+                                            <td className="px-3 py-2 font-mono text-xs">
+                                                <span className="mr-1 inline-block w-3 text-slate-400">{expandable ? (isOpen ? "▾" : "▸") : ""}</span>
+                                                {p.treeName}
+                                            </td>
                                             <td className="px-3 py-2 text-right">{p.attempts}</td>
-                                            <td className="px-3 py-2 text-right text-emerald-700">{p.success}</td>
-                                            <td className="px-3 py-2 text-right text-rose-700">{p.fail}</td>
-                                            <td className="px-3 py-2 text-right text-amber-700">{p.incomplete}</td>
-                                            <td className="px-3 py-2 text-right">{(p.failRate * 100).toFixed(1)}%</td>
+                                            <td className={`px-3 py-2 text-right ${p.attempts === 0 ? "" : "text-emerald-700"}`}>{p.success}</td>
+                                            <td className={`px-3 py-2 text-right ${p.attempts === 0 ? "" : "text-rose-700"}`}>{p.fail}</td>
+                                            <td className={`px-3 py-2 text-right ${p.attempts === 0 ? "" : "text-amber-700"}`}>{p.incomplete}</td>
+                                            <td className="px-3 py-2 text-right">{p.attempts === 0 ? "—" : `${(p.failRate * 100).toFixed(1)}%`}</td>
                                         </tr>
-                                    ))}
-                                    {scopedPerJourney.length === 0 ? (
+                                        {isOpen && detail ? (
+                                            <tr className="bg-slate-50">
+                                                <td colSpan={6} className="px-4 py-3">
+                                                    <div className="space-y-3 text-xs">
+                                                        {detail.topFailureNodes.length > 0 ? (
+                                                            <div>
+                                                                <div className="font-semibold text-slate-700 mb-1">Top failure nodes</div>
+                                                                <ul className="space-y-0.5">
+                                                                    {detail.topFailureNodes.map((n) => (
+                                                                        <li key={n.node} className="flex items-center gap-2">
+                                                                            <span className="font-mono text-slate-700">{n.node}</span>
+                                                                            <span className="text-rose-700">{n.count.toLocaleString()}</span>
+                                                                            <span className="text-slate-400">({p.fail ? Math.round((n.count / p.fail) * 100) : 0}% of fails)</span>
+                                                                        </li>
+                                                                    ))}
+                                                                </ul>
+                                                            </div>
+                                                        ) : null}
+                                                        {detail.failedAttempts.length > 0 ? (
+                                                            <div>
+                                                                <div className="font-semibold text-slate-700 mb-1">Failed attempts ({detail.failedAttempts.length.toLocaleString()})</div>
+                                                                <div className="overflow-x-auto rounded border border-slate-200 bg-white">
+                                                                    <table className="w-full">
+                                                                        <thead className="bg-slate-50 text-slate-500">
+                                                                            <tr>
+                                                                                <th className="text-left px-2 py-1 font-medium">Started</th>
+                                                                                <th className="text-left px-2 py-1 font-medium">Failure node</th>
+                                                                                <th className="text-left px-2 py-1 font-medium">User</th>
+                                                                                <th className="text-left px-2 py-1 font-medium">Realm</th>
+                                                                                <th className="text-left px-2 py-1 font-medium">Transaction</th>
+                                                                            </tr>
+                                                                        </thead>
+                                                                        <tbody>
+                                                                            {detail.failedAttempts.slice(0, 50).map((a, i) => (
+                                                                                <tr key={`${a.transactionId}-${i}`} className="border-t border-slate-100">
+                                                                                    <td className="px-2 py-1 whitespace-nowrap text-slate-600">{a.startedAt.replace("T", " ").replace(/\.\d+Z$/, "Z")}</td>
+                                                                                    <td className="px-2 py-1">{a.failureNode ? `${a.failureNode}${a.failureNodeOutcome ? ` (${a.failureNodeOutcome})` : ""}` : "—"}</td>
+                                                                                    <td className="px-2 py-1">{a.userId ?? "—"}</td>
+                                                                                    <td className="px-2 py-1">{a.realm ?? "—"}</td>
+                                                                                    <td className="px-2 py-1 font-mono text-slate-500">
+                                                                                        <button type="button" title="Copy full transaction ID"
+                                                                                            onClick={(e) => { e.stopPropagation(); void navigator.clipboard?.writeText(a.transactionId); }}
+                                                                                            className="hover:text-sky-700">{a.transactionId.slice(0, 16)}… ⧉</button>
+                                                                                    </td>
+                                                                                </tr>
+                                                                            ))}
+                                                                        </tbody>
+                                                                    </table>
+                                                                </div>
+                                                                {detail.failedAttempts.length > 50 ? (
+                                                                    <div className="mt-1 text-slate-500">Showing first 50 of {detail.failedAttempts.length.toLocaleString()} — use the Attempts table (filter: fail) for all.</div>
+                                                                ) : null}
+                                                            </div>
+                                                        ) : (
+                                                            <div className="text-slate-500">
+                                                                No per-attempt / node detail in this report{report.rollupOnly ? " (multi-window rates-only rollup)" : ""}.
+                                                            </div>
+                                                        )}
+                                                        {(report.rawJobId || dataSource === "live") && p.fail > 0 ? (
+                                                            <button type="button" disabled={!report.rawJobId && jobActive}
+                                                                onClick={(e) => { e.stopPropagation(); void inspect(p.treeName); }}
+                                                                title={report.rawJobId ? "Re-analyze this run's stored events — no AIC pull" : (jobActive ? "A report is already running for this environment" : undefined)}
+                                                                className="rounded border border-sky-300 bg-sky-50 px-2 py-1 text-sky-800 hover:bg-sky-100 disabled:opacity-50">
+                                                                {report.rawJobId
+                                                                    ? "Inspect failures — from stored data"
+                                                                    : `Inspect failures — re-run last ${INSPECT_WINDOW_HOURS}h, full detail`}
+                                                            </button>
+                                                        ) : null}
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        ) : null}
+                                        </Fragment>
+                                        );
+                                    })}
+                                    {perJourneyRows.length === 0 ? (
                                         <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-500">No attempts in window.</td></tr>
                                     ) : null}
                                 </tbody>
                             </table>
                         </div>
+                        {hasEmptySelected ? (
+                            <div className="px-4 py-2 text-xs text-slate-500 border-t border-slate-200 bg-slate-50">
+                                Greyed rows are selected journeys with no matching events in this window (0 attempts).
+                            </div>
+                        ) : null}
                     </div>
 
+                    {report.nodeStructure && report.nodeStructure.nodes.length > 0 ? (
+                        <NodeOutcomeTree structure={report.nodeStructure} />
+                    ) : (
+                        <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
+                            <span className="font-semibold text-slate-700">Node outcomes</span> — no node-level data in this report.
+                            Per-node outcome stats need <span className="font-mono">AM-NODE-LOGIN-COMPLETED</span> events, which a{" "}
+                            <span className="font-medium">Rates only</span> run skips. Re-run with <span className="font-medium">Rates only</span>{" "}
+                            off — use a range ≤ 1 day with <span className="font-medium">Window split 0</span> for full per-node detail.
+                        </div>
+                    )}
+
+                    {report.rollupOnly ? (
+                        <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
+                            Multi-window report{report.windows ? ` (${report.windows} × ${report.windowHours ?? "?"}h windows)` : ""}:
+                            success/fail rates only. Per-attempt detail and node-level failure breakdown are omitted to keep
+                            a long range under AIC&apos;s 1-day query limit. To see why a journey failed, expand its row above and
+                            click <span className="font-medium">Inspect failures</span> (re-runs the last {INSPECT_WINDOW_HOURS}h with full detail),
+                            or use a range ≤ 1 day with Window split 0.
+                        </div>
+                    ) : (
                     <div className="rounded-md border border-slate-200 bg-white">
                         <div className="px-4 py-2 border-b border-slate-200 flex items-center justify-between">
                             <h3 className="text-sm font-semibold text-slate-700">Attempts</h3>
@@ -557,6 +1197,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                             ) : null}
                         </div>
                     </div>
+                    )}
                 </>
             ) : null}
         </div>

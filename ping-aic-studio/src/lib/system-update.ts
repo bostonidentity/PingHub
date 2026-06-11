@@ -47,6 +47,17 @@ export interface LatestRelease {
     htmlUrl: string;
     asset: ReleaseAsset | null;
     sha256Asset: ReleaseAsset | null;
+    /** Release notes (GitHub release body, truncated), or null when empty. */
+    notes: string | null;
+}
+
+// Release notes are shown in the update popups; cap what we ship to the client.
+const NOTES_MAX_CHARS = 4000;
+
+function truncateNotes(body: unknown): string | null {
+    if (typeof body !== "string" || body.trim() === "") return null;
+    const s = body.trim();
+    return s.length > NOTES_MAX_CHARS ? `${s.slice(0, NOTES_MAX_CHARS)}…` : s;
 }
 
 export interface VersionStatus {
@@ -113,6 +124,7 @@ export async function fetchLatestRelease(force = false): Promise<LatestRelease |
             tag_name: string;
             published_at: string;
             html_url: string;
+            body?: string;
             assets: { name: string; browser_download_url: string; size: number }[];
         };
         const release: LatestRelease = {
@@ -121,6 +133,7 @@ export async function fetchLatestRelease(force = false): Promise<LatestRelease |
             htmlUrl: body.html_url,
             asset: null,
             sha256Asset: null,
+            notes: truncateNotes(body.body),
         };
         cache = { fetchedAt: Date.now(), release };
         return release;
@@ -158,7 +171,12 @@ export function pickAssetForInstall(installed: InstalledInfo, raw: { name: strin
 export async function getVersionStatus(force = false): Promise<VersionStatus> {
     const installed = readInstalledInfo();
     if (installed.source === "dev") {
-        return { installed, latest: null, canUpdate: false, newerAvailable: false, reason: "running from source (no packaged install detected)" };
+        // Source installs update via git (the start script's pull prompt), so a
+        // newer release never makes newerAvailable true here — but the latest
+        // release still rides along so the what's-new popup can show its notes
+        // inline after a pull (the popup matches latest.version to installed).
+        const latest = await fetchLatestRelease(force);
+        return { installed, latest, canUpdate: false, newerAvailable: false, reason: "running from source (no packaged install detected)" };
     }
     // Fetch and pick asset.
     try {
@@ -170,7 +188,7 @@ export async function getVersionStatus(force = false): Promise<VersionStatus> {
             return { installed, latest: null, canUpdate: false, newerAvailable: false, reason: `GitHub returned ${res.status}` };
         }
         const body = await res.json() as {
-            tag_name: string; published_at: string; html_url: string;
+            tag_name: string; published_at: string; html_url: string; body?: string;
             assets: { name: string; browser_download_url: string; size: number }[];
         };
         const picked = pickAssetForInstall(installed, body.assets);
@@ -180,6 +198,7 @@ export async function getVersionStatus(force = false): Promise<VersionStatus> {
             htmlUrl: body.html_url,
             asset: picked.asset,
             sha256Asset: picked.sha256,
+            notes: truncateNotes(body.body),
         };
         const newerAvailable = compareSemver(latest.version, installed.version) > 0;
         return {

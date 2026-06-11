@@ -11,7 +11,7 @@
 #
 # Pinghub-script flags:
 #   --bundled-node     force download of bundled Node even if system Node is fine
-#   --skip-update      don't check git for updates
+#   --skip-update      don't auto-update (skip the git pull)
 #   --build            wipe .next and rebuild (keeps node_modules)
 #   --reinstall        wipe node_modules + .next before bootstrapping
 #
@@ -65,7 +65,7 @@ OPTIONS
   --build            wipe .next and rebuild (keeps node_modules)
   --reinstall        wipe node_modules + .next before bootstrapping
   --bundled-node     force download of Node 20.18.0 (skip system Node)
-  --skip-update      skip the git fetch update check
+  --skip-update      don't auto-update (skip the git pull)
   --force-restart    if another instance is running, kill it without prompting
   -h, --help         show this help and exit
 
@@ -336,7 +336,11 @@ if [ ! -x "$NPM_EXE" ]; then
 fi
 export PATH="$(dirname "$NODE_EXE"):${PATH}"
 
-# ── 3. Check for updates (offer to pull) ────────────────────────────
+# ── 3. Auto-update (git pull) ────────────────────────────────────────
+# Updates are pulled automatically so `./start` always runs the latest
+# published code. A pull that can't fast-forward (local commits diverged,
+# conflicts) warns and continues with the current checkout — starting the
+# app is never blocked by git state. Opt out with --skip-update.
 if [ "$SKIP_UPDATE" -eq 0 ]; then
   cd "$REPO_ROOT"
   if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -347,24 +351,14 @@ if [ "$SKIP_UPDATE" -eq 0 ]; then
       if [ -n "$upstream" ]; then
         ahead=$(git rev-list --count "HEAD..${upstream}" 2>/dev/null || echo "0")
         if [ "$ahead" -gt 0 ]; then
-          step "⚡ ${ahead} update(s) available on ${branch} (${upstream})"
-          do_pull=0
-          if [ -t 0 ] && [ -r /dev/tty ]; then
-            printf "%s Pull and rebuild now? [Y/n] " "$LOG_PREFIX"
-            read -r reply </dev/tty || reply=""
-            case "$reply" in ""|y|Y|yes|YES) do_pull=1 ;; esac
+          step "⚡ ${ahead} update(s) available on ${branch} (${upstream}) — pulling..."
+          if git pull --ff-only --quiet; then
+            step "✓ pulled — marking build dir for rebuild"
+            # Best-effort wipe; build-phase retry handles any lock.
+            rm -rf "${APP_DIR}/.next" 2>/dev/null || true
           else
-            step "   (non-interactive shell — skipping; re-run with a TTY or run 'git pull')"
-          fi
-          if [ "$do_pull" -eq 1 ]; then
-            step "pulling latest..."
-            if git pull --ff-only --quiet; then
-              step "✓ pulled — marking build dir for rebuild"
-              # Best-effort wipe; build-phase retry handles any lock.
-              rm -rf "${APP_DIR}/.next" 2>/dev/null || true
-            else
-              fail "git pull failed — resolve manually then re-run ./start"
-            fi
+            step "⚠ git pull failed (diverged or conflicting checkout) — continuing with current code"
+            step "  resolve manually with 'git pull' when convenient"
           fi
         else
           step "✓ up to date"

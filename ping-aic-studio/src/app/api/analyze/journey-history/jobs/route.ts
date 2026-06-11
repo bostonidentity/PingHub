@@ -4,6 +4,7 @@ import { parseEnvFile } from "@/lib/env-parser";
 import { journeyReportRoot } from "@/lib/reports/journey-report-paths";
 import { getJourneyReportRegistry, JourneyJobConflictError } from "@/lib/reports/journey-report-registry";
 import { runJourneyReport } from "@/lib/reports/journey-report-runner";
+import { parseTreeNames } from "@/lib/reports/journey-filter";
 import { setController, deleteController } from "../route-controllers";
 
 export const dynamic = "force-dynamic";
@@ -21,7 +22,7 @@ export async function GET(req: NextRequest) {
 
 /**
  * POST — start a background live journey-history report.
- * Body: { env, from, to, treeName?, maxEvents? }. Returns 202 with the jobId;
+ * Body: { env, from, to, treeNames?, maxEvents? }. Returns 202 with the jobId;
  * the client polls GET /jobs for progress and GET /jobs/{id}/report when done.
  */
 export async function POST(req: NextRequest) {
@@ -29,8 +30,26 @@ export async function POST(req: NextRequest) {
   const env = typeof body.env === "string" ? body.env : "";
   const from = typeof body.from === "string" ? body.from : "";
   const to = typeof body.to === "string" ? body.to : "";
-  const treeName = typeof body.treeName === "string" && body.treeName.trim() ? body.treeName.trim() : undefined;
+  const treeNames = parseTreeNames(body);
   const maxEvents = Math.min(Math.max(1, Math.floor(Number(body.maxEvents) || DEFAULT_MAX_EVENTS)), HARD_MAX_EVENTS);
+  const summaryOnly = body.summaryOnly === true;
+  // AIC rejects queries spanning >1 day, so windows are sized in hours, capped at
+  // 24. Explicit 0 = off (single window); omitted defaults to 24h so a long range
+  // is chunked safely by default.
+  const rawWindowHours = Number(body.windowHours);
+  const windowHours = Number.isFinite(rawWindowHours)
+    ? Math.min(Math.max(0, Math.floor(rawWindowHours)), 24)
+    : 24;
+  // Concurrent windows in a chunked run. AIC throttles bursts >~6, so clamp [1, 6].
+  const rawConcurrency = Number(body.windowConcurrency);
+  const windowConcurrency = Number.isFinite(rawConcurrency)
+    ? Math.min(Math.max(1, Math.floor(rawConcurrency)), 6)
+    : 4;
+  // Min inter-page delay (ms). Default 5000; clamp [0, 60000].
+  const rawDelay = Number(body.requestDelayMs);
+  const requestDelayMs = Number.isFinite(rawDelay) ? Math.min(Math.max(0, Math.floor(rawDelay)), 60000) : 5000;
+  // Opt-in: keep this run's raw events on disk for offline failure inspection.
+  const retainRaw = body.retainRaw === true;
 
   if (!env || !from || !to) {
     return NextResponse.json({ error: "env, from, and to are required." }, { status: 400 });
@@ -51,7 +70,7 @@ export async function POST(req: NextRequest) {
   const registry = getJourneyReportRegistry();
   let job;
   try {
-    job = registry.startJob(env, { from, to, treeName, maxEvents });
+    job = registry.startJob(env, { from, to, treeNames, maxEvents, summaryOnly, windowHours, windowConcurrency, requestDelayMs, retainRaw });
   } catch (e) {
     if (e instanceof JourneyJobConflictError || (e as Error).name === "JourneyJobConflictError") {
       const existingId = (e as JourneyJobConflictError).existingJobId;

@@ -85,3 +85,58 @@ export function resolveJourneyDeps(
     missingScriptUuids: [...allScriptUuids].filter((uuid) => !scriptNames.has(uuid)),
   };
 }
+
+export interface JourneyDepNode {
+  /** Journey name. */
+  name: string;
+  children: JourneyDepNode[];
+  /** Referenced by an InnerTreeEvaluatorNode but not found in config. */
+  missing?: true;
+  /** Already expanded elsewhere in this tree; children omitted (cycle guard). */
+  repeated?: true;
+}
+
+/**
+ * Resolve a journey's inner-journey closure from pulled config as a tree:
+ * children are the trees referenced by the journey's InnerTreeEvaluatorNodes,
+ * recursively. A journey reached a second time anywhere in the tree is marked
+ * `repeated` and not re-expanded.
+ */
+export function resolveJourneyDepTree(configDir: string, journeyName: string): JourneyDepNode {
+  const expanded = new Set<string>();
+  const build = (name: string): JourneyDepNode => {
+    // Journey names come from config dirs / node `tree` refs; anything with path
+    // syntax is hostile or corrupt — treat as not-found rather than join it.
+    if (/[/\\]|\.\.|\0/.test(name)) return { name, children: [], missing: true };
+    if (expanded.has(name)) return { name, children: [], repeated: true };
+    const realmRoots = getRealmRoots(configDir, path.join("journeys", name, "nodes"));
+    if (realmRoots.length === 0) return { name, children: [], missing: true };
+    expanded.add(name);
+    const childNames = new Set<string>();
+    for (const realmRoot of realmRoots) {
+      const nodesDir = path.join(realmRoot, "journeys", name, "nodes");
+      for (const nf of fs.readdirSync(nodesDir)) {
+        const fp = path.join(nodesDir, nf);
+        if (fs.statSync(fp).isDirectory()) continue;
+        try {
+          const nd = JSON.parse(fs.readFileSync(fp, "utf-8")) as { tree?: string; _type?: { _id?: string } };
+          if (nd._type?._id === "InnerTreeEvaluatorNode" && nd.tree) childNames.add(nd.tree);
+        } catch { /* skip unparseable node file */ }
+      }
+    }
+    return { name, children: [...childNames].sort((a, b) => a.localeCompare(b)).map(build) };
+  };
+  return build(journeyName);
+}
+
+/** De-duped, sorted closure names from a dep tree. Excludes the root journey
+ *  and `missing` entries — directly usable as additional report treeNames. */
+export function flattenDepTree(root: JourneyDepNode): string[] {
+  const out = new Set<string>();
+  const walk = (n: JourneyDepNode) => {
+    if (!n.missing && n.name !== root.name) out.add(n.name);
+    for (const c of n.children) walk(c);
+  };
+  for (const c of root.children) walk(c);
+  return [...out].sort((a, b) => a.localeCompare(b));
+}
