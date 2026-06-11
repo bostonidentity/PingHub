@@ -192,13 +192,24 @@ type ScopeFilter = "outer" | "inner" | "all";
 
 const SETTINGS_KEY = "pinghub.journeyReport.settings.v1";
 
+// Defaults for the run-tuning settings — the single source of truth shared by the
+// state initializers (when nothing is saved) and the "Reset settings" button.
+// 1h split + 6 parallel windows + 2s delay is the measured-fast configuration for
+// bursty days; Retain raw makes re-analysis free; Rates only off keeps node events.
+const RUN_SETTING_DEFAULTS = {
+    summaryOnly: false,
+    retainRaw: true,
+    windowHours: 1,
+    windowConcurrency: 6,
+    requestDelaySec: 2,
+    maxEvents: 20000,
+} as const;
+
 interface SavedSettings {
     env?: string; from?: string; to?: string; selectedJourneys?: string[];
-    scope?: ScopeFilter; maxEvents?: number;
+    scope?: ScopeFilter; maxEvents?: number; summaryOnly?: boolean;
     windowHours?: number; windowConcurrency?: number; requestDelaySec?: number;
     dataSource?: "live" | "archive"; retainRaw?: boolean;
-    // `summaryOnly` (Rates only) is intentionally NOT persisted — it always defaults
-    // to checked, so a one-off rates-off run (e.g. the Inspect drill-down) can't stick.
 }
 
 /** Last-used form settings from localStorage (survives app restart). */
@@ -225,19 +236,18 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
     const [journeyOptions, setJourneyOptions] = useState<string[]>([]);
     const [journeySource, setJourneySource] = useState<"config" | "none">("none");
     const [scope, setScope] = useState<ScopeFilter>(saved?.scope ?? "outer");
-    const [maxEvents, setMaxEvents] = useState(saved?.maxEvents ?? 20000);
-    // Rates only (success/fail rates, no per-node events) — defaults checked every load,
-    // not remembered, so the Inspect drill-down's temporary rates-off can't become sticky.
-    const [summaryOnly, setSummaryOnly] = useState(true);
+    const [maxEvents, setMaxEvents] = useState(saved?.maxEvents ?? RUN_SETTING_DEFAULTS.maxEvents);
+    // Rates only (success/fail rates, no per-node events).
+    const [summaryOnly, setSummaryOnly] = useState(saved?.summaryOnly ?? RUN_SETTING_DEFAULTS.summaryOnly);
     // AIC rejects queries spanning >1 day; long ranges are pulled in ≤24h windows.
-    const [windowHours, setWindowHours] = useState(saved?.windowHours ?? 24);
+    const [windowHours, setWindowHours] = useState(saved?.windowHours ?? RUN_SETTING_DEFAULTS.windowHours);
     // Concurrent windows per chunked run (AIC throttles bursts above ~6).
-    const [windowConcurrency, setWindowConcurrency] = useState(saved?.windowConcurrency ?? 4);
-    // Minimum delay between page requests, in seconds (default 5) — proactively avoids 429s.
-    const [requestDelaySec, setRequestDelaySec] = useState(saved?.requestDelaySec ?? 5);
+    const [windowConcurrency, setWindowConcurrency] = useState(saved?.windowConcurrency ?? RUN_SETTING_DEFAULTS.windowConcurrency);
+    // Minimum delay between page requests, in seconds — proactively avoids 429s.
+    const [requestDelaySec, setRequestDelaySec] = useState(saved?.requestDelaySec ?? RUN_SETTING_DEFAULTS.requestDelaySec);
     const [dataSource, setDataSource] = useState<"live" | "archive">(saved?.dataSource ?? "live");
-    // Opt-in: keep this run's raw events on disk so failures can be inspected offline.
-    const [retainRaw, setRetainRaw] = useState(saved?.retainRaw ?? false);
+    // Keep this run's raw events on disk so failures can be inspected offline.
+    const [retainRaw, setRetainRaw] = useState(saved?.retainRaw ?? RUN_SETTING_DEFAULTS.retainRaw);
     const [loading, setLoading] = useState(false); // archive (synchronous) only
     const [error, setError] = useState<string | null>(null);
     const [report, setReport] = useState<ScanReport | null>(null);
@@ -313,10 +323,21 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
         if (typeof window === "undefined") return;
         try {
             localStorage.setItem(SETTINGS_KEY, JSON.stringify({
-                env, from, to, selectedJourneys, scope, maxEvents, windowHours, windowConcurrency, requestDelaySec, dataSource, retainRaw,
+                env, from, to, selectedJourneys, scope, maxEvents, summaryOnly, windowHours, windowConcurrency, requestDelaySec, dataSource, retainRaw,
             } satisfies SavedSettings));
         } catch { /* ignore quota/availability errors */ }
-    }, [env, from, to, selectedJourneys, scope, maxEvents, windowHours, windowConcurrency, requestDelaySec, dataSource, retainRaw]);
+    }, [env, from, to, selectedJourneys, scope, maxEvents, summaryOnly, windowHours, windowConcurrency, requestDelaySec, dataSource, retainRaw]);
+
+    // Revert the run-tuning settings to the defaults (selection/range/env untouched).
+    // The persistence effect above then saves the reverted values automatically.
+    const resetRunSettings = () => {
+        setSummaryOnly(RUN_SETTING_DEFAULTS.summaryOnly);
+        setRetainRaw(RUN_SETTING_DEFAULTS.retainRaw);
+        setWindowHours(RUN_SETTING_DEFAULTS.windowHours);
+        setWindowConcurrency(RUN_SETTING_DEFAULTS.windowConcurrency);
+        setRequestDelaySec(RUN_SETTING_DEFAULTS.requestDelaySec);
+        setMaxEvents(RUN_SETTING_DEFAULTS.maxEvents);
+    };
 
     // When a job the user started/resumed this session finishes, pull its report
     // into view (once) and save to history. Keyed on primitives (not the polled
@@ -670,7 +691,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                     <label className="text-sm">
                         <span className="block text-slate-600 mb-1">Max events</span>
                         <input type="number" min={100} max={100000} step={1000} value={maxEvents}
-                            onChange={(e) => setMaxEvents(Number(e.target.value) || 20000)}
+                            onChange={(e) => setMaxEvents(Number(e.target.value) || RUN_SETTING_DEFAULTS.maxEvents)}
                             className="w-32 rounded border border-slate-300 px-2 py-1.5 bg-white" />
                     </label>
                     {dataSource === "live" && (
@@ -700,7 +721,7 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                     )}
                     {dataSource === "live" && windowHours > 0 && (
                         <label className="text-sm"
-                            title="How many windows to pull in parallel. AIC throttles bursts above ~6 concurrent queries, so this is capped at 6 (default 4). 1 = sequential.">
+                            title="How many windows to pull in parallel. AIC throttles bursts above ~6 concurrent queries, so this is capped at 6 (default 6). 1 = sequential.">
                             <span className="block text-slate-600 mb-1">Parallel windows</span>
                             <input type="number" min={1} max={6} step={1} value={windowConcurrency}
                                 onChange={(e) => setWindowConcurrency(Math.max(1, Math.min(6, Math.floor(Number(e.target.value) || 1))))}
@@ -709,13 +730,21 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                     )}
                     {dataSource === "live" && (
                         <label className="text-sm"
-                            title="Minimum delay between page requests (seconds). Default 5. Proactively avoids 429s; raise it if you still get rate-limited, lower it (toward 0) for speed.">
+                            title="Minimum delay between page requests (seconds). Default 2. Proactively avoids 429s; raise it if you still get rate-limited, lower it (toward 0) for speed.">
                             <span className="block text-slate-600 mb-1">Request delay (s)</span>
                             <input type="number" min={0} max={60} step={1} value={requestDelaySec}
                                 onChange={(e) => setRequestDelaySec(Math.max(0, Math.min(60, Math.floor(Number(e.target.value) || 0))))}
                                 className="w-24 rounded border border-slate-300 px-2 py-1.5 bg-white" />
                         </label>
                     )}
+                    <button
+                        type="button"
+                        onClick={resetRunSettings}
+                        title="Revert Rates only, Retain raw, Window split, Parallel windows, Request delay, and Max events to their defaults. Environment, range, and journey selection are untouched."
+                        className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                    >
+                        Reset settings
+                    </button>
                     <button
                         type="button"
                         onClick={run}
