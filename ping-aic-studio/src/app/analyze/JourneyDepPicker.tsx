@@ -100,11 +100,15 @@ function DepRow({ node, root, path, depth, checked, open, onToggle, onToggleBran
  * a journey filter otherwise hides inner journeys' events, because inner trees
  * log under their own treeName (docs/journey-report-node-outcomes.md §3.5).
  */
-export function JourneyDepPicker({ env, parents, checked, onChange }: {
+export function JourneyDepPicker({ env, parents, checked, onChange, excludedParents, onExcludedChange }: {
     env: string;
     parents: string[];
     checked: string[];
     onChange: (next: string[]) => void;
+    /** Selected parents whose own events are excluded from the pull. */
+    excludedParents: string[];
+    /** Replace the excluded-parents list (same replace-wholesale contract as onChange). */
+    onExcludedChange: (next: string[]) => void;
 }) {
     // parent journey → its dep tree (absent while loading/failed). State is
     // keyed by env so a tenant switch starts from an empty map without a
@@ -159,6 +163,11 @@ export function JourneyDepPicker({ env, parents, checked, onChange }: {
         onChange(checkedSet.has(name) ? checked.filter((c) => c !== name) : [...checked, name]);
     };
 
+    const excludedSet = useMemo(() => new Set(excludedParents), [excludedParents]);
+    const toggleParent = (name: string) => {
+        onExcludedChange(excludedSet.has(name) ? excludedParents.filter((p) => p !== name) : [...excludedParents, name]);
+    };
+
     // Expanded branch rows, keyed by path from the section's parent journey —
     // path-keyed so a reused inner journey collapses independently per branch.
     // Collapsed by default (first level is always visible). Ephemeral.
@@ -207,6 +216,21 @@ export function JourneyDepPicker({ env, parents, checked, onChange }: {
                                 </button>
                             ) : null}
                         </div>
+                        <div className="flex items-center gap-2">
+                            <span className="w-3" />
+                            <label className="flex items-center gap-2 text-xs text-slate-700">
+                                <input
+                                    type="checkbox"
+                                    className="accent-sky-600"
+                                    checked={!excludedSet.has(parent)}
+                                    onChange={() => toggleParent(parent)}
+                                />
+                                <span>
+                                    {parent}
+                                    <span className="text-slate-500"> (include this journey&apos;s own events)</span>
+                                </span>
+                            </label>
+                        </div>
                         {tree.children.map((c) => (
                             <DepRow
                                 key={`${parent}>${c.name}`} node={c} root={parent} path={`${parent}>${c.name}`} depth={0}
@@ -218,6 +242,7 @@ export function JourneyDepPicker({ env, parents, checked, onChange }: {
             })}
             <p className="text-[11px] text-slate-500">
                 Checked inner journeys are pulled with the report so their nodes can nest under the parent&apos;s evaluator rows.
+                An unchecked parent is used for structure and picking only — its own events are not pulled.
             </p>
         </div>
     );

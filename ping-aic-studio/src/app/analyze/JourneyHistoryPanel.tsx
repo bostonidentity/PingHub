@@ -761,7 +761,10 @@ export function JourneyHistoryPanel({ environments }: { environments: { name: st
                     />
                 </div>
                 {journeySource === "config" && selectedJourneys.length > 0 ? (
-                    <JourneyDepPicker env={env} parents={selectedJourneys} checked={innerChecked} onChange={setInnerChecked} />
+                    <JourneyDepPicker
+                        env={env} parents={selectedJourneys} checked={innerChecked} onChange={setInnerChecked}
+                        excludedParents={excludedParents} onExcludedChange={setExcludedParents}
+                    />
                 ) : null}
                 {runTreeNames.length > MAX_SERVER_FILTER_JOURNEYS ? (
                     <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
