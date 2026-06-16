@@ -55,28 +55,37 @@ function StepChip({ step, environments }: { step: Step; environments: Environmen
   } as const;
   const meta = typeMap[step.type];
   let detail = "";
-  let envName = "";
+  let envNames: string[] = [];
   if (step.type === "sync") {
     detail = step.scopes.length ? `${step.scopes.length} scope${step.scopes.length !== 1 ? "s" : ""}` : "all scopes";
-    envName = step.environment;
+    envNames = step.environments;
   } else if (step.type === "pull-data") {
     detail = step.managedObjects.length ? step.managedObjects.join(", ") : "no objects";
-    envName = step.environment;
+    envNames = step.environments;
   } else {
     detail = "commit & push";
   }
-  const env = environments.find((e) => e.name === envName);
+  const envObjs = envNames.map((n) => environments.find((e) => e.name === n)).filter(Boolean) as Environment[];
+  const MAX_SHOWN = 2;
+  const shown = envObjs.slice(0, MAX_SHOWN);
+  const overflow = envObjs.length - MAX_SHOWN;
   return (
     <span className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-lg border border-slate-200 bg-white">
       <span className={`w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0 ${meta.cls}`}>
         <meta.Icon className="w-3 h-3" />
       </span>
       <span className="font-medium text-slate-700">{meta.label}</span>
-      {env && (
+      {shown.length > 0 && (
         <>
           <span className="text-slate-300">·</span>
-          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${ENV_DOT[env.color] ?? "bg-slate-400"}`} />
-          <span className="text-slate-500">{env.label}</span>
+          {shown.map((env, idx) => (
+            <span key={env.name} className="inline-flex items-center gap-1">
+              <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${ENV_DOT[env.color] ?? "bg-slate-400"}`} />
+              <span className="text-slate-500">{env.label}</span>
+              {idx < shown.length - 1 && <span className="text-slate-300">,</span>}
+            </span>
+          ))}
+          {overflow > 0 && <span className="text-slate-400">+{overflow}</span>}
         </>
       )}
       <span className="text-slate-400">{detail}</span>

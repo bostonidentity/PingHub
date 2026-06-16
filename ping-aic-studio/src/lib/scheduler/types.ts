@@ -1,8 +1,8 @@
 // src/lib/scheduler/types.ts
 import type { ConfigScope } from "@/lib/fr-config";
 
-export interface SyncStep { type: "sync"; environment: string; scopes: ConfigScope[]; }
-export interface PullDataStep { type: "pull-data"; environment: string; managedObjects: string[]; }
+export interface SyncStep { type: "sync"; environments: string[]; scopes: ConfigScope[]; }
+export interface PullDataStep { type: "pull-data"; environments: string[]; managedObjects: string[]; }
 export interface GitPushStep { type: "git-push"; message?: string; force?: boolean; }
 export type Step = SyncStep | PullDataStep | GitPushStep;
 

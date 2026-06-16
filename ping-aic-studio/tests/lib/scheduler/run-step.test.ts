@@ -13,12 +13,26 @@ describe("runStep", () => {
 
   it("dispatches a sync step to runSync with scheduled trigger", async () => {
     const { runStep } = await import("@/lib/scheduler/run-step");
-    const r = await runStep({ type: "sync", environment: "dev", scopes: ["journeys"] }, "sched-1", () => {});
+    const r = await runStep({ type: "sync", environments: ["dev"], scopes: ["journeys"] }, "sched-1", () => {});
     expect(runSync).toHaveBeenCalledWith(
       expect.objectContaining({ environment: "dev", scopes: ["journeys"], trigger: "scheduled", scheduleId: "sched-1" }),
       expect.any(Function),
     );
     expect(r.status).toBe("success");
+  });
+
+  it("calls runSync once per environment for a multi-env sync step", async () => {
+    const { runStep } = await import("@/lib/scheduler/run-step");
+    await runStep({ type: "sync", environments: ["dev", "stg"], scopes: ["journeys"] }, "sched-1", () => {});
+    expect(runSync).toHaveBeenCalledTimes(2);
+    expect(runSync).toHaveBeenCalledWith(
+      expect.objectContaining({ environment: "dev", scopes: ["journeys"], trigger: "scheduled", scheduleId: "sched-1" }),
+      expect.any(Function),
+    );
+    expect(runSync).toHaveBeenCalledWith(
+      expect.objectContaining({ environment: "stg", scopes: ["journeys"], trigger: "scheduled", scheduleId: "sched-1" }),
+      expect.any(Function),
+    );
   });
 
   it("dispatches a git-push step to runGitPush", async () => {

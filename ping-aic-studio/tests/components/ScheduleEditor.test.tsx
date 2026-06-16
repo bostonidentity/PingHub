@@ -31,15 +31,15 @@ describe("ScheduleEditor", () => {
     fireEvent.change(screen.getByLabelText(/name/i), { target: { value: "sync sched" } });
     // Default first step is git-push; switch it to sync.
     fireEvent.change(screen.getByLabelText("step-0-type"), { target: { value: "sync" } });
-    // Environment select appears with the provided env option.
-    fireEvent.change(screen.getByLabelText("step-0-environment"), { target: { value: "dev" } });
+    // Click the environment chip button by label.
+    fireEvent.click(screen.getByRole("button", { name: "Development" }));
     // Pick a scope (Journeys is a CLI scope present in CONFIG_SCOPES).
     fireEvent.click(screen.getByRole("button", { name: "Journeys" }));
 
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const body = lastPostedBody(fetchMock);
-    expect((body.steps as unknown[])[0]).toEqual({ type: "sync", environment: "dev", scopes: ["journeys"] });
+    expect((body.steps as unknown[])[0]).toEqual({ type: "sync", environments: ["dev"], scopes: ["journeys"] });
   });
 
   it("lets a pull-data step pick an environment and managed objects", async () => {
@@ -51,12 +51,13 @@ describe("ScheduleEditor", () => {
 
     fireEvent.change(screen.getByLabelText(/name/i), { target: { value: "data sched" } });
     fireEvent.change(screen.getByLabelText("step-0-type"), { target: { value: "pull-data" } });
-    fireEvent.change(screen.getByLabelText("step-0-environment"), { target: { value: "dev" } });
+    // Click environment chip first so managed objects appear.
+    fireEvent.click(screen.getByRole("button", { name: "Development" }));
     fireEvent.click(screen.getByRole("button", { name: "alpha_user" }));
 
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const body = lastPostedBody(fetchMock);
-    expect((body.steps as unknown[])[0]).toEqual({ type: "pull-data", environment: "dev", managedObjects: ["alpha_user"] });
+    expect((body.steps as unknown[])[0]).toEqual({ type: "pull-data", environments: ["dev"], managedObjects: ["alpha_user"] });
   });
 });

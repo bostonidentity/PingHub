@@ -107,6 +107,17 @@ export function ScheduleEditor({
     });
   };
 
+  const toggleEnv = (i: number, step: SyncStep | PullDataStep, env: string) => {
+    const has = step.environments.includes(env);
+    const environments = has ? step.environments.filter((e) => e !== env) : [...step.environments, env];
+    if (step.type === "pull-data") {
+      const union = new Set(environments.flatMap((e) => typesByEnv[e] ?? []));
+      updateStep(i, { ...step, environments, managedObjects: step.managedObjects.filter((m) => union.has(m)) });
+    } else {
+      updateStep(i, { ...step, environments });
+    }
+  };
+
   const save = async () => {
     setSaving(true);
     setErr(null);
@@ -313,9 +324,9 @@ export function ScheduleEditor({
                           const type = e.target.value as Step["type"];
                           const next: Step =
                             type === "sync"
-                              ? { type, environment: "", scopes: [] }
+                              ? { type, environments: [], scopes: [] }
                               : type === "pull-data"
-                              ? { type, environment: "", managedObjects: [] }
+                              ? { type, environments: [], managedObjects: [] }
                               : { type: "git-push" };
                           updateStep(i, next);
                         }}
@@ -336,20 +347,33 @@ export function ScheduleEditor({
 
                     {/* Sync step */}
                     {s.type === "sync" && (
-                      <div className="mt-3 grid grid-cols-[160px_1fr] gap-3">
+                      <div className="mt-3 space-y-3">
                         <div>
-                          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Environment</span>
-                          <select
-                            aria-label={`step-${i}-environment`}
-                            className={`${inputCls} mt-1`}
-                            value={s.environment}
-                            onChange={(e) => updateStep(i, { ...s, environment: e.target.value })}
-                          >
-                            <option value="">Select…</option>
-                            {environments.map((env) => (
-                              <option key={env.name} value={env.name}>{env.label}</option>
-                            ))}
-                          </select>
+                          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Environments</span>
+                          {environments.length === 0 ? (
+                            <p className="mt-1 text-xs text-slate-400">No environments configured.</p>
+                          ) : (
+                            <div className="mt-1 flex flex-wrap gap-1.5">
+                              {environments.map((env) => {
+                                const active = s.environments.includes(env.name);
+                                return (
+                                  <button
+                                    key={env.name}
+                                    type="button"
+                                    aria-pressed={active}
+                                    onClick={() => toggleEnv(i, s, env.name)}
+                                    className={chipCls(active)}
+                                  >
+                                    {active && <Check className="w-[10px] h-[10px]" />}
+                                    {env.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {environments.length > 0 && s.environments.length === 0 && (
+                            <p className="mt-1 text-xs text-slate-400">Select at least one environment.</p>
+                          )}
                         </div>
                         <div>
                           <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
@@ -381,51 +405,65 @@ export function ScheduleEditor({
 
                     {/* Pull-data step */}
                     {s.type === "pull-data" && (
-                      <div className="mt-3 grid grid-cols-[160px_1fr] gap-3">
+                      <div className="mt-3 space-y-3">
                         <div>
-                          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Environment</span>
-                          <select
-                            aria-label={`step-${i}-environment`}
-                            className={`${inputCls} mt-1`}
-                            value={s.environment}
-                            onChange={(e) =>
-                              updateStep(i, { ...s, environment: e.target.value, managedObjects: [] })
-                            }
-                          >
-                            <option value="">Select…</option>
-                            {environments.map((env) => (
-                              <option key={env.name} value={env.name}>{env.label}</option>
-                            ))}
-                          </select>
+                          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Environments</span>
+                          {environments.length === 0 ? (
+                            <p className="mt-1 text-xs text-slate-400">No environments configured.</p>
+                          ) : (
+                            <div className="mt-1 flex flex-wrap gap-1.5">
+                              {environments.map((env) => {
+                                const active = s.environments.includes(env.name);
+                                return (
+                                  <button
+                                    key={env.name}
+                                    type="button"
+                                    aria-pressed={active}
+                                    onClick={() => toggleEnv(i, s, env.name)}
+                                    className={chipCls(active)}
+                                  >
+                                    {active && <Check className="w-[10px] h-[10px]" />}
+                                    {env.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {environments.length > 0 && s.environments.length === 0 && (
+                            <p className="mt-1 text-xs text-slate-400">Select at least one environment.</p>
+                          )}
                         </div>
                         <div>
                           <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
                             Managed objects{" "}
                             <span className="text-slate-400 font-normal">({s.managedObjects.length} selected)</span>
                           </span>
-                          {!s.environment ? (
+                          {s.environments.length === 0 ? (
                             <p className="mt-1 text-xs text-slate-400">Select an environment first.</p>
-                          ) : (typesByEnv[s.environment] ?? []).length === 0 ? (
-                            <p className="mt-1 text-xs text-slate-400">No managed objects found.</p>
-                          ) : (
-                            <div className="mt-1 flex flex-wrap gap-1.5">
-                              {(typesByEnv[s.environment] ?? []).map((mo) => {
-                                const active = s.managedObjects.includes(mo);
-                                return (
-                                  <button
-                                    key={mo}
-                                    type="button"
-                                    aria-pressed={active}
-                                    onClick={() => toggleManagedObject(i, s, mo)}
-                                    className={chipCls(active)}
-                                  >
-                                    {active && <Check className="w-[10px] h-[10px]" />}
-                                    {mo}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
+                          ) : (() => {
+                            const union = [...new Set(s.environments.flatMap((e) => typesByEnv[e] ?? []))].sort();
+                            return union.length === 0 ? (
+                              <p className="mt-1 text-xs text-slate-400">No managed objects found.</p>
+                            ) : (
+                              <div className="mt-1 flex flex-wrap gap-1.5">
+                                {union.map((mo) => {
+                                  const active = s.managedObjects.includes(mo);
+                                  return (
+                                    <button
+                                      key={mo}
+                                      type="button"
+                                      aria-pressed={active}
+                                      onClick={() => toggleManagedObject(i, s, mo)}
+                                      className={chipCls(active)}
+                                    >
+                                      {active && <Check className="w-[10px] h-[10px]" />}
+                                      {mo}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
                     )}
