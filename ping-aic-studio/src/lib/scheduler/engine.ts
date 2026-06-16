@@ -16,15 +16,18 @@ export async function runSchedule(id: string, now: Date = new Date()): Promise<S
   inFlight.add(id);
   try {
     let anyFailed = false;
+    let anySucceeded = false;
     let stopped = false;
     for (const step of schedule.steps) {
       const result = await runStep(step, id, NOOP_SINK);
       if (result.status === "failed") {
         anyFailed = true;
         if (schedule.onError === "stop") { stopped = true; break; }
+      } else {
+        anySucceeded = true;
       }
     }
-    const status: ScheduleRunRef["status"] = !anyFailed ? "success" : stopped ? "failed" : "partial";
+    const status: ScheduleRunRef["status"] = !anyFailed ? "success" : (stopped || !anySucceeded) ? "failed" : "partial";
     const lastRun: ScheduleRunRef = { at: now.toISOString(), status };
     const nextRunAt = computeNextRun(schedule.trigger, now);
     recordRun(id, lastRun, nextRunAt);

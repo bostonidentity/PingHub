@@ -13,5 +13,9 @@ export async function runStep(step: Step, scheduleId: string, emit: OpEventSink)
       return runDataPull({ environment: step.environment, managedObjects: step.managedObjects, envVars: readEnvVars(step.environment), trigger: "scheduled", scheduleId }, emit);
     case "git-push":
       return runGitPush({ message: step.message, force: step.force, trigger: "scheduled", scheduleId }, emit);
+    default: {
+      const _exhaustive: never = step;
+      throw new Error(`Unknown step type: ${(_exhaustive as { type?: string }).type}`);
+    }
   }
 }

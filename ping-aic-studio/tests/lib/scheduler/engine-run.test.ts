@@ -18,7 +18,7 @@ const baseSchedule = {
 };
 
 describe("runSchedule", () => {
-  beforeEach(() => { recordRun.mockClear(); runStep.mockClear(); getSchedule.mockReset(); });
+  beforeEach(() => { recordRun.mockClear(); runStep.mockReset(); getSchedule.mockReset(); });
 
   it("runs all steps and records success", async () => {
     getSchedule.mockReturnValue({ ...baseSchedule });
@@ -40,8 +40,28 @@ describe("runSchedule", () => {
     expect(recordRun).toHaveBeenCalledWith("s1", expect.objectContaining({ status: "failed" }), expect.any(String));
   });
 
+  it("records failed when all steps fail under onError=continue", async () => {
+    getSchedule.mockReturnValue({ ...baseSchedule, onError: "continue", steps: [{ type: "git-push" }, { type: "git-push" }] });
+    runStep.mockResolvedValue({ status: "failed", summary: "bad", durationMs: 1 });
+    const { runSchedule } = await import("@/lib/scheduler/engine");
+    await runSchedule("s1", new Date("2026-06-16T02:00:05Z"));
+    expect(runStep).toHaveBeenCalledTimes(2);
+    expect(recordRun).toHaveBeenCalledWith("s1", expect.objectContaining({ status: "failed" }), expect.any(String));
+  });
+
+  it("records partial when some steps fail under onError=continue", async () => {
+    getSchedule.mockReturnValue({ ...baseSchedule, onError: "continue", steps: [{ type: "git-push" }, { type: "git-push" }] });
+    runStep
+      .mockResolvedValueOnce({ status: "failed", summary: "bad", durationMs: 1 })
+      .mockResolvedValueOnce({ status: "success", summary: "ok", durationMs: 1 });
+    const { runSchedule } = await import("@/lib/scheduler/engine");
+    await runSchedule("s1", new Date("2026-06-16T02:00:05Z"));
+    expect(runStep).toHaveBeenCalledTimes(2);
+    expect(recordRun).toHaveBeenCalledWith("s1", expect.objectContaining({ status: "partial" }), expect.any(String));
+  });
+
   it("skips a re-entrant run while one is in flight (overlap lock)", async () => {
-    getSchedule.mockReturnValue({ ...baseSchedule });
+    getSchedule.mockReturnValue({ ...baseSchedule, steps: [{ type: "git-push" }] });
     let resolveStep: (v: unknown) => void = () => {};
     runStep.mockImplementation(() => new Promise((res) => { resolveStep = res; }));
     const { runSchedule } = await import("@/lib/scheduler/engine");
