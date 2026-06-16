@@ -1,11 +1,19 @@
 import { getSchedule, listSchedules, recordRun } from "@/lib/scheduler/store";
 import { runStep } from "@/lib/scheduler/run-step";
 import { computeNextRun } from "@/lib/scheduler/cron";
-import { NOOP_SINK } from "@/lib/operations/types";
-import type { ScheduleRunRef } from "@/lib/scheduler/types";
+import { startLog, appendLog, endLog } from "@/lib/scheduler/log-buffer";
+import type { OpEventSink } from "@/lib/operations/types";
+import type { ScheduleRunRef, Step } from "@/lib/scheduler/types";
 
 /** In-memory set of schedule IDs with a run currently in flight. */
 const inFlight = new Set<string>();
+
+/** Human-readable header for a step in the live log. */
+function stepLabel(step: Step): string {
+  if (step.type === "sync") return `Sync [${step.environments.join(", ") || "—"}]`;
+  if (step.type === "pull-data") return `Pull data [${step.environments.join(", ") || "—"}]`;
+  return "Commit & push";
+}
 
 /** Run one schedule now. Returns the resulting run status (or "skipped-overlap"). */
 export async function runSchedule(id: string, now: Date = new Date()): Promise<ScheduleRunRef["status"]> {
@@ -14,14 +22,17 @@ export async function runSchedule(id: string, now: Date = new Date()): Promise<S
   if (!schedule) return "failed";
 
   inFlight.add(id);
+  startLog(id);
+  const sink: OpEventSink = (evt) => appendLog(id, evt);
   try {
     let anyFailed = false;
     let anySucceeded = false;
     let stopped = false;
     let totalMs = 0;
     let okCount = 0;
-    for (const step of schedule.steps) {
-      const result = await runStep(step, id, NOOP_SINK);
+    for (const [i, step] of schedule.steps.entries()) {
+      appendLog(id, { type: "stdout", data: `▶ Step ${i + 1}/${schedule.steps.length}: ${stepLabel(step)}` });
+      const result = await runStep(step, id, sink);
       totalMs += result.durationMs ?? 0;
       if (result.status === "failed") {
         anyFailed = true;
@@ -35,6 +46,7 @@ export async function runSchedule(id: string, now: Date = new Date()): Promise<S
     const summary = `${okCount}/${schedule.steps.length} steps ok`;
     const lastRun: ScheduleRunRef = { at: now.toISOString(), status, durationMs: totalMs, summary };
     const nextRunAt = computeNextRun(schedule.trigger, now);
+    endLog(id, status === "success" ? 0 : 1);
     recordRun(id, lastRun, nextRunAt);
     return status;
   } finally {

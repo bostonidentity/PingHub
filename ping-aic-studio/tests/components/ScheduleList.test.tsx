@@ -43,6 +43,20 @@ describe("ScheduleList", () => {
     expect(await screen.findByText(/Running…/)).toBeInTheDocument();
   });
 
+  it("shows the moving progress bar when a schedule is running", async () => {
+    mockFetch([{ ...baseSchedule, running: true }]);
+    const { container } = render(<ScheduleList />);
+    await screen.findByText("Nightly backup");
+    expect(container.querySelector(".animate-progress-slide")).toBeTruthy();
+  });
+
+  it("does not show the moving progress bar when not running", async () => {
+    mockFetch([{ ...baseSchedule, running: false }]);
+    const { container } = render(<ScheduleList />);
+    await screen.findByText("Nightly backup");
+    expect(container.querySelector(".animate-progress-slide")).toBeNull();
+  });
+
   it("shows recent runs when disclosure is expanded", async () => {
     const scheduleWithRuns = {
       ...baseSchedule,

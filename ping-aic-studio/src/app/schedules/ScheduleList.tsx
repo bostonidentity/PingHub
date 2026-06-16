@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   CalendarClock, CircleCheck, Timer, Clock, Sun, CalendarDays, Terminal,
   RefreshCw, Database, GitCommitHorizontal, Play, Pencil, Trash2,
@@ -8,6 +8,8 @@ import {
 import type { Schedule, Step, ScheduleRunRef } from "@/lib/scheduler/types";
 import type { Environment } from "@/lib/fr-config";
 import { ScheduleEditor } from "./ScheduleEditor";
+import { LogViewer } from "@/components/LogViewer";
+import type { LogEntry } from "@/hooks/useStreamingLogs";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -165,6 +167,8 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
   const [running, setRunning] = useState<Record<string, boolean>>({});
   const [runsToday, setRunsToday] = useState(0);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [logOpen, setLogOpen] = useState<Record<string, boolean>>({});
+  const [logState, setLogState] = useState<Record<string, { events: LogEntry[]; cursor: number; running: boolean; exitCode: number | null }>>({});
 
   const reload = useCallback(async () => {
     try {
@@ -198,6 +202,64 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
     })();
   }, [schedules]);
 
+  // Auto-open the live log when a schedule transitions into running.
+  useEffect(() => {
+    const runningIds = schedules.filter((s) => s.running).map((s) => s.id);
+    if (runningIds.length === 0) return;
+    setLogOpen((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const id of runningIds) {
+        if (!next[id]) { next[id] = true; changed = true; }
+      }
+      return changed ? next : prev;
+    });
+  }, [schedules]);
+
+  // Keep latest schedules/logState in refs so the log-poll interval doesn't
+  // need to restart on every render.
+  const schedulesRef = useRef(schedules);
+  const logOpenRef = useRef(logOpen);
+  const logStateRef = useRef(logState);
+  schedulesRef.current = schedules;
+  logOpenRef.current = logOpen;
+  logStateRef.current = logState;
+
+  // Polling for live logs. Network calls happen ONLY inside the interval
+  // callback, so tests that mock setInterval make no log requests.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      void (async () => {
+        for (const s of schedulesRef.current) {
+          if (!(s.running || logOpenRef.current[s.id])) continue;
+          const cursor = logStateRef.current[s.id]?.cursor ?? 0;
+          try {
+            const res = await fetch(`/api/schedules/${s.id}/log?since=${cursor}`);
+            if (!res.ok) continue;
+            const data = (await res.json()) as { events: LogEntry[]; cursor: number; running: boolean; exitCode: number | null };
+            setLogState((prev) => {
+              const existing = prev[s.id];
+              const newEvents = (data.events ?? []) as LogEntry[];
+              if (existing && newEvents.length === 0 && existing.cursor === data.cursor && existing.running === data.running && existing.exitCode === data.exitCode) {
+                return prev;
+              }
+              return {
+                ...prev,
+                [s.id]: {
+                  events: [...(existing?.events ?? []), ...newEvents],
+                  cursor: data.cursor ?? cursor,
+                  running: data.running,
+                  exitCode: data.exitCode,
+                },
+              };
+            });
+          } catch { /* silent */ }
+        }
+      })();
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   const runNow = async (id: string) => {
     setRunning((p) => ({ ...p, [id]: true }));
     await fetch(`/api/schedules/${id}/run`, { method: "POST" });
@@ -214,6 +276,9 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
   };
   const toggleExpanded = (id: string) => {
     setExpanded((p) => ({ ...p, [id]: !p[id] }));
+  };
+  const toggleLog = (id: string) => {
+    setLogOpen((p) => ({ ...p, [id]: !p[id] }));
   };
 
   const enabled = schedules.filter((s) => s.enabled);
@@ -279,6 +344,8 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
             const { Icon: TrigIcon, text: trigText } = triggerInfo(s);
             const isCurrentlyRunning = running[s.id] || s.running;
             const isExpanded = expanded[s.id] ?? false;
+            const isLogOpen = logOpen[s.id] ?? false;
+            const log = logState[s.id];
             const runCount = s.recentRuns?.length ?? 0;
             return (
               <div key={s.id} className={`card overflow-hidden ${!s.enabled ? "opacity-70" : ""}`} style={{ borderLeft: `3px solid ${accentColor(s)}` }}>
@@ -301,6 +368,11 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
                         <span className="pill-neutral">{s.steps.length}-step pipeline</span>
                       )}
                     </div>
+                    {isCurrentlyRunning && (
+                      <div className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-indigo-100">
+                        <div className="h-full w-1/5 rounded-full bg-indigo-500 animate-progress-slide" />
+                      </div>
+                    )}
                     <div className="flex items-center gap-3 mt-1.5 text-[13px] text-slate-500 flex-wrap">
                       <span className="inline-flex items-center gap-1.5">
                         <TrigIcon className="w-[14px] h-[14px]" />{trigText}
@@ -364,6 +436,31 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
                       </button>
                     </div>
                   </div>
+                </div>
+                {/* Live log disclosure */}
+                <div className="border-t border-slate-100">
+                  <button
+                    onClick={() => toggleLog(s.id)}
+                    className="flex items-center gap-1.5 w-full px-4 py-2 text-xs text-slate-500 hover:text-slate-700 hover:bg-slate-50/60 transition-colors text-left"
+                  >
+                    {isLogOpen
+                      ? <ChevronDown className="w-[13px] h-[13px]" />
+                      : <ChevronRight className="w-[13px] h-[13px]" />
+                    }
+                    Live log
+                    {log?.running && (
+                      <Loader2 className="w-[11px] h-[11px] animate-spin text-indigo-500" />
+                    )}
+                  </button>
+                  {isLogOpen && (
+                    <div className="px-4 pb-3">
+                      <LogViewer
+                        logs={log?.events ?? []}
+                        running={log?.running ?? false}
+                        exitCode={log?.exitCode ?? null}
+                      />
+                    </div>
+                  )}
                 </div>
                 {/* Recent runs disclosure */}
                 <div className="border-t border-slate-100">
