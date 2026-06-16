@@ -1,6 +1,6 @@
 "use client";
 import { useMemo, useState } from "react";
-import { X, Check, Plus, Trash2, RefreshCw, Database, GitCommitHorizontal } from "lucide-react";
+import { X, Check, Plus, Trash2, RefreshCw, Database, GitCommitHorizontal, AlertTriangle } from "lucide-react";
 import type { ScheduleInput, Step, SyncStep, PullDataStep, Trigger, Preset } from "@/lib/scheduler/types";
 import type { Environment, ConfigScope } from "@/lib/fr-config";
 import { CONFIG_SCOPES } from "@/lib/fr-config-types";
@@ -23,6 +23,18 @@ function Switch({ checked, onChange, label }: { checked: boolean; onChange: () =
       </button>
       {label && <span className="text-sm text-slate-700">{label}</span>}
     </label>
+  );
+}
+
+// ── Select all / Clear control for a chip group ───────────────────────────────
+
+function SelectAllControls({ what, onAll, onClear }: { what: string; onAll: () => void; onClear: () => void }) {
+  return (
+    <span className="ml-2 font-normal normal-case text-[11px] tracking-normal">
+      <button type="button" aria-label={`Select all ${what}`} onClick={onAll} className="text-indigo-600 hover:underline">Select all</button>
+      <span className="text-slate-300 mx-1">·</span>
+      <button type="button" aria-label={`Clear ${what}`} onClick={onClear} className="text-slate-500 hover:underline">Clear</button>
+    </span>
   );
 }
 
@@ -63,6 +75,7 @@ export function ScheduleEditor({
   const [steps, setSteps] = useState<Step[]>(initial?.steps ?? [{ type: "git-push" }]);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
 
   const triggerKind = getTriggerKind(trigger);
 
@@ -107,9 +120,9 @@ export function ScheduleEditor({
     });
   };
 
-  const toggleEnv = (i: number, step: SyncStep | PullDataStep, env: string) => {
-    const has = step.environments.includes(env);
-    const environments = has ? step.environments.filter((e) => e !== env) : [...step.environments, env];
+  // Set the full environment list for a step, pruning pull-data managed objects
+  // to those still available in the new selection's union.
+  const setEnvironments = (i: number, step: SyncStep | PullDataStep, environments: string[]) => {
     if (step.type === "pull-data") {
       const union = new Set(environments.flatMap((e) => typesByEnv[e] ?? []));
       updateStep(i, { ...step, environments, managedObjects: step.managedObjects.filter((m) => union.has(m)) });
@@ -118,7 +131,38 @@ export function ScheduleEditor({
     }
   };
 
+  const toggleEnv = (i: number, step: SyncStep | PullDataStep, env: string) => {
+    const has = step.environments.includes(env);
+    setEnvironments(i, step, has ? step.environments.filter((e) => e !== env) : [...step.environments, env]);
+  };
+
+  const unionObjects = (envs: string[]) => [...new Set(envs.flatMap((e) => typesByEnv[e] ?? []))].sort();
+
+  // Validate required fields; returns a list of human-readable problems (empty = ok).
+  const validate = (): string[] => {
+    const out: string[] = [];
+    if (!name.trim()) out.push("Give the schedule a name.");
+    if (steps.length === 0) out.push("Add at least one step.");
+    steps.forEach((s, i) => {
+      const n = i + 1;
+      if (s.type === "sync" && s.environments.length === 0) {
+        out.push(`Step ${n} (Sync): select at least one environment.`);
+      } else if (s.type === "pull-data") {
+        if (s.environments.length === 0) out.push(`Step ${n} (Pull data): select at least one environment.`);
+        if (s.managedObjects.length === 0) out.push(`Step ${n} (Pull data): select at least one managed object.`);
+      }
+    });
+    if (trigger.kind === "cron" && !trigger.cron?.trim()) out.push("Enter a cron expression.");
+    if (trigger.kind === "preset" && trigger.preset?.every === "week" && trigger.preset.days.length === 0) {
+      out.push("Select at least one day of the week.");
+    }
+    return out;
+  };
+
   const save = async () => {
+    const problems = validate();
+    if (problems.length) { setWarnings(problems); return; }
+    setWarnings([]);
     setSaving(true);
     setErr(null);
     const payload: ScheduleInput = { name, enabled, trigger, onError, catchUpIfMissed, steps };
@@ -349,7 +393,16 @@ export function ScheduleEditor({
                     {s.type === "sync" && (
                       <div className="mt-3 space-y-3">
                         <div>
-                          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Environments</span>
+                          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
+                            Environments
+                            {environments.length > 0 && (
+                              <SelectAllControls
+                                what="environments"
+                                onAll={() => setEnvironments(i, s, environments.map((e) => e.name))}
+                                onClear={() => setEnvironments(i, s, [])}
+                              />
+                            )}
+                          </span>
                           {environments.length === 0 ? (
                             <p className="mt-1 text-xs text-slate-400">No environments configured.</p>
                           ) : (
@@ -381,6 +434,11 @@ export function ScheduleEditor({
                             <span className="text-slate-400 font-normal">
                               ({s.scopes.length ? `${s.scopes.length} selected` : "all"})
                             </span>
+                            <SelectAllControls
+                              what="scopes"
+                              onAll={() => updateStep(i, { ...s, scopes: scopeList.map((x) => x.value) })}
+                              onClear={() => updateStep(i, { ...s, scopes: [] })}
+                            />
                           </span>
                           <div className="mt-1 flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
                             {scopeList.map((sc) => {
@@ -407,7 +465,16 @@ export function ScheduleEditor({
                     {s.type === "pull-data" && (
                       <div className="mt-3 space-y-3">
                         <div>
-                          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Environments</span>
+                          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
+                            Environments
+                            {environments.length > 0 && (
+                              <SelectAllControls
+                                what="environments"
+                                onAll={() => setEnvironments(i, s, environments.map((e) => e.name))}
+                                onClear={() => setEnvironments(i, s, [])}
+                              />
+                            )}
+                          </span>
                           {environments.length === 0 ? (
                             <p className="mt-1 text-xs text-slate-400">No environments configured.</p>
                           ) : (
@@ -437,6 +504,13 @@ export function ScheduleEditor({
                           <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
                             Managed objects{" "}
                             <span className="text-slate-400 font-normal">({s.managedObjects.length} selected)</span>
+                            {s.environments.length > 0 && unionObjects(s.environments).length > 0 && (
+                              <SelectAllControls
+                                what="managed objects"
+                                onAll={() => updateStep(i, { ...s, managedObjects: unionObjects(s.environments) })}
+                                onClear={() => updateStep(i, { ...s, managedObjects: [] })}
+                              />
+                            )}
                           </span>
                           {s.environments.length === 0 ? (
                             <p className="mt-1 text-xs text-slate-400">Select an environment first.</p>
@@ -519,6 +593,17 @@ export function ScheduleEditor({
               />
             </div>
           </div>
+
+          {warnings.length > 0 && (
+            <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              <div className="font-medium mb-1 flex items-center gap-1.5">
+                <AlertTriangle className="w-4 h-4" /> Please complete the following before saving:
+              </div>
+              <ul className="list-disc list-inside space-y-0.5">
+                {warnings.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+            </div>
+          )}
 
           {err && <div className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{err}</div>}
         </div>

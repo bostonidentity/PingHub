@@ -60,4 +60,43 @@ describe("ScheduleEditor", () => {
     const body = lastPostedBody(fetchMock);
     expect((body.steps as unknown[])[0]).toEqual({ type: "pull-data", environments: ["dev"], managedObjects: ["alpha_user"] });
   });
+
+  it("warns and does not save when the name is empty", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: "s9" }), { status: 201 }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    render(<ScheduleEditor onClose={() => {}} onSaved={() => {}} />);
+    // Leave name empty; default step is git-push (otherwise valid).
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await screen.findByText(/give the schedule a name/i)).toBeInTheDocument();
+  });
+
+  it("warns when a sync step has no environment selected", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: "s9" }), { status: 201 }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const environments = [{ name: "dev", label: "Development", color: "blue" as const }];
+    render(<ScheduleEditor environments={environments} typesByEnv={{}} onClose={() => {}} onSaved={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: "x" } });
+    fireEvent.change(screen.getByLabelText("step-0-type"), { target: { value: "sync" } });
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await screen.findByText(/step 1 \(sync\): select at least one environment/i)).toBeInTheDocument();
+  });
+
+  it("'Select all environments' selects every environment", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: "s9" }), { status: 201 }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const environments = [
+      { name: "dev", label: "Development", color: "blue" as const },
+      { name: "stg", label: "Staging", color: "yellow" as const },
+    ];
+    render(<ScheduleEditor environments={environments} typesByEnv={{}} onClose={() => {}} onSaved={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: "x" } });
+    fireEvent.change(screen.getByLabelText("step-0-type"), { target: { value: "sync" } });
+    fireEvent.click(screen.getByRole("button", { name: "Select all environments" }));
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const body = lastPostedBody(fetchMock);
+    expect((body.steps as Array<{ environments: string[] }>)[0].environments).toEqual(["dev", "stg"]);
+  });
 });
