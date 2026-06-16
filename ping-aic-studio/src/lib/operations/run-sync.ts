@@ -39,7 +39,6 @@ export async function runSync(opts: RunSyncOpts, emit: OpEventSink): Promise<OpR
 
   if (preCommitError) {
     emit({ type: "git", action: "pre-pull-commit-error", message: `Git commit failed — pull aborted: ${preCommitError}`, ts: Date.now() });
-    emit({ type: "exit", code: 1, ts: Date.now() });
     const summary = `Pull aborted: ${preCommitError}`;
     let runId: string | undefined;
     try {
