@@ -1,8 +1,27 @@
 # Scheduler Feature — Design Spec
 
 **Date:** 2026-06-16
-**Status:** Approved (pending spec review)
+**Status:** Implemented on `feature/scheduler` (870 tests passing, build green)
 **Branch:** `feature/scheduler`
+
+## Known follow-ups (deferred from the final code review)
+
+These were flagged as "Important" but non-blocking in the final review and are
+intentionally deferred to a follow-on PR:
+
+1. **Data-pull suspended-state handling** (`src/lib/operations/run-data-pull.ts`):
+   when `runPull` auto-suspends (e.g. heap pressure overnight), the run is recorded
+   as `failed` and the next tick will `startJob` again, which can collide with the
+   still-suspended job. Should distinguish `suspended` from `failed` and guard the
+   next attempt (catch `JobConflictError`, or resume).
+2. **Create-time step validation + richer editor** (`src/app/api/schedules/route.ts`,
+   `src/app/schedules/ScheduleEditor.tsx`): `sync`/`pull-data` steps can currently be
+   saved with an empty `environment`/`managedObjects` and will fail every tick until
+   noticed. The editor is MVP — it lacks the environment/scope/managed-object pickers
+   (to be composed from the existing Sync form) and a save-time validation/warning.
+3. **`recordRun` last-writer-wins** (`src/lib/scheduler/store.ts`): a manual run-now
+   concurrent with a tick can have one `recordRun` overwrite the other's `lastRun`.
+   Cosmetic today; revisit if run history must be exact.
 
 ## 1. Summary
 
