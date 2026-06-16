@@ -45,12 +45,26 @@ export async function tick(now: Date = new Date()): Promise<void> {
   }
 }
 
+/** Roll past-due schedules with catchUpIfMissed=false forward to their next fire,
+ *  recording a skipped marker, so the boot tick doesn't run stale schedules. */
+export function rollForwardSkipped(now: Date = new Date()): void {
+  let schedules;
+  try { schedules = listSchedules(); } catch { return; }
+  for (const s of schedules) {
+    if (!s.enabled || s.catchUpIfMissed) continue;
+    if (new Date(s.nextRunAt).getTime() > now.getTime()) continue;
+    try { recordRun(s.id, { at: now.toISOString(), status: "skipped-overlap" }, computeNextRun(s.trigger, now)); }
+    catch { /* ignore */ }
+  }
+}
+
 let timer: ReturnType<typeof setInterval> | null = null;
 const TICK_MS = 60_000;
 
 /** Start the tick loop. Idempotent. On boot, runs an immediate catch-up tick. */
 export function startScheduler(): void {
   if (timer) return;
+  rollForwardSkipped();
   void tick().catch(() => {});
   timer = setInterval(() => { void tick().catch(() => {}); }, TICK_MS);
   if (typeof timer.unref === "function") timer.unref();
