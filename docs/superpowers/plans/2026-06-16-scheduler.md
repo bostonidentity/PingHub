@@ -873,7 +873,8 @@ Expected: FAIL — "Cannot find module '@/lib/scheduler/cron'".
 
 ```ts
 // src/lib/scheduler/cron.ts
-import { CronExpressionParser } from "cron-parser";
+// NOTE: cron-parser v4 (4.9.0) exports `parseExpression`, NOT `CronExpressionParser`.
+import { parseExpression } from "cron-parser";
 import type { Preset, Trigger } from "@/lib/scheduler/types";
 
 export function presetToCron(p: Preset): string {
@@ -897,7 +898,7 @@ export function triggerToCron(t: Trigger): string {
 /** Next fire time strictly after `from`, as an ISO string. Throws on a bad cron. */
 export function computeNextRun(t: Trigger, from: Date): string {
   const expr = triggerToCron(t);
-  const interval = CronExpressionParser.parse(expr, { currentDate: from, tz: t.timezone });
+  const interval = parseExpression(expr, { currentDate: from, tz: t.timezone });
   return interval.next().toDate().toISOString();
 }
 
@@ -911,7 +912,7 @@ export function validateTrigger(t: Trigger): string | null {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run tests/lib/scheduler/cron.test.ts`
-Expected: PASS. If `computeNextRun` returns a value off by the timezone, confirm cron-parser's `tz` option name for the installed version (v4 uses `tz`).
+Expected: PASS. cron-parser 4.9.0 confirmed: `parseExpression(expr, { currentDate, tz })` returns an interval; `.next().toDate().toISOString()` yields the next fire. The `tz` option is honored.
 
 - [ ] **Step 5: Commit**
 
