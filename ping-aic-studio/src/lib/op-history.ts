@@ -91,6 +91,10 @@ export interface HistoryRecord {
   logMode?: string;
   logPreset?: string;
   logEntryCount?: number;
+  /** How the operation was initiated. Absent = manual (default). */
+  trigger?: "manual" | "scheduled";
+  /** ID of the schedule that fired this op (scheduled runs only). */
+  scheduleId?: string;
   // ── Promote enrichments ──
   items?: PromoteItem[];
   diffTotals?: PromoteDiffTotals;
@@ -119,6 +123,10 @@ export interface OpLogInput {
   logMode?: string;
   logPreset?: string;
   logEntryCount?: number;
+  /** How the operation was initiated. Absent = manual (default). */
+  trigger?: "manual" | "scheduled";
+  /** ID of the schedule that fired this op (scheduled runs only). */
+  scheduleId?: string;
   items?: PromoteItem[];
   diffTotals?: PromoteDiffTotals;
   phaseTimings?: Record<string, PhaseTiming>;
@@ -305,6 +313,8 @@ export function appendOpLog(input: OpLogInput): HistoryRecord {
     diffTotals: input.diffTotals,
     phaseTimings: input.phaseTimings,
     reportId: input.reportId,
+    trigger: input.trigger,
+    scheduleId: input.scheduleId,
     repoCommit: readRepoHead(),
   };
 
