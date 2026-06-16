@@ -41,6 +41,7 @@
     "better-sqlite3": "^12.10.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "cron-parser": "^4.9.0",
     "diff": "^9.0.0",
     "elkjs": "^0.11.1",
     "get-port": "^7.2.0",
