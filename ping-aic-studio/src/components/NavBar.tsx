@@ -21,7 +21,7 @@ const NAV_ITEMS = [
   { href: "/logs", label: "Logs" },
   { href: "/search", label: "Search" },
   { href: "/history", label: "History" },
-  { href: "/schedules", label: "Schedules" },
+  { href: "/schedules", label: "Scheduler" },
   { href: "/environments", label: "Environments" },
   { href: "/monitor", label: "Monitor" },
   { href: "/settings", label: "Repo" },

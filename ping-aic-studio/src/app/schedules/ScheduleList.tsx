@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
 import type { Schedule } from "@/lib/scheduler/types";
+import type { Environment } from "@/lib/fr-config";
 import { ScheduleEditor } from "./ScheduleEditor";
 
 function triggerSummary(s: Schedule): string {
@@ -12,7 +13,10 @@ function triggerSummary(s: Schedule): string {
   return `Weekly [${p.days.join(",")}] ${p.time}`;
 }
 
-export function ScheduleList() {
+export function ScheduleList({ environments = [], typesByEnv = {} }: {
+  environments?: Environment[];
+  typesByEnv?: Record<string, string[]>;
+} = {}) {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<null | "new">(null);
@@ -40,6 +44,8 @@ export function ScheduleList() {
       </div>
       {editing === "new" && (
         <ScheduleEditor
+          environments={environments}
+          typesByEnv={typesByEnv}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); void reload(); }}
         />
