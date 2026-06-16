@@ -34,7 +34,7 @@ describe("ScheduleEditor", () => {
     // Environment select appears with the provided env option.
     fireEvent.change(screen.getByLabelText("step-0-environment"), { target: { value: "dev" } });
     // Pick a scope (Journeys is a CLI scope present in CONFIG_SCOPES).
-    fireEvent.click(screen.getByLabelText("Journeys"));
+    fireEvent.click(screen.getByRole("button", { name: "Journeys" }));
 
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
@@ -52,7 +52,7 @@ describe("ScheduleEditor", () => {
     fireEvent.change(screen.getByLabelText(/name/i), { target: { value: "data sched" } });
     fireEvent.change(screen.getByLabelText("step-0-type"), { target: { value: "pull-data" } });
     fireEvent.change(screen.getByLabelText("step-0-environment"), { target: { value: "dev" } });
-    fireEvent.click(screen.getByLabelText("alpha_user"));
+    fireEvent.click(screen.getByRole("button", { name: "alpha_user" }));
 
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
