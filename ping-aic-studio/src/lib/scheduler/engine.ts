@@ -8,6 +8,15 @@ import type { ScheduleRunRef, Step } from "@/lib/scheduler/types";
 /** In-memory set of schedule IDs with a run currently in flight. */
 const inFlight = new Set<string>();
 
+/** Pause/resume/stop control for an in-flight run, keyed by schedule id. */
+interface RunControl { paused: boolean; stopRequested: boolean; wake: () => void; }
+const controls = new Map<string, RunControl>();
+
+export function pauseSchedule(id: string): void { const c = controls.get(id); if (c) c.paused = true; }
+export function resumeSchedule(id: string): void { const c = controls.get(id); if (c) { c.paused = false; c.wake(); } }
+export function stopSchedule(id: string): void { const c = controls.get(id); if (c) { c.stopRequested = true; c.paused = false; c.wake(); } }
+export function isPaused(id: string): boolean { return controls.get(id)?.paused ?? false; }
+
 /** Human-readable header for a step in the live log. */
 function stepLabel(step: Step): string {
   if (step.type === "sync") return `Sync [${step.environments.join(", ") || "—"}]`;
@@ -23,14 +32,28 @@ export async function runSchedule(id: string, now: Date = new Date()): Promise<S
 
   inFlight.add(id);
   startLog(id);
+  const control: RunControl = { paused: false, stopRequested: false, wake: () => {} };
+  controls.set(id, control);
   const sink: OpEventSink = (evt) => appendLog(id, evt);
   try {
     let anyFailed = false;
     let anySucceeded = false;
-    let stopped = false;
+    let stopped = false;       // halted early by an onError=stop failing step
+    let stopRequested = false; // halted early by an explicit stop request
     let totalMs = 0;
     let okCount = 0;
     for (const [i, step] of schedule.steps.entries()) {
+      if (control.stopRequested) { stopRequested = true; break; }
+      // Pause gate: wait at the step boundary until resumed or stopped.
+      let wasPaused = false;
+      while (control.paused && !control.stopRequested) {
+        wasPaused = true;
+        appendLog(id, { type: "stdout", data: "⏸ Paused — waiting to resume…" });
+        await new Promise<void>((res) => { control.wake = res; });
+      }
+      if (control.stopRequested) { stopRequested = true; break; }
+      if (wasPaused) appendLog(id, { type: "stdout", data: "▶ Resumed" });
+
       appendLog(id, { type: "stdout", data: `▶ Step ${i + 1}/${schedule.steps.length}: ${stepLabel(step)}` });
       const result = await runStep(step, id, sink);
       totalMs += result.durationMs ?? 0;
@@ -42,7 +65,10 @@ export async function runSchedule(id: string, now: Date = new Date()): Promise<S
         okCount++;
       }
     }
-    const status: ScheduleRunRef["status"] = !anyFailed ? "success" : (stopped || !anySucceeded) ? "failed" : "partial";
+    const status: ScheduleRunRef["status"] = stopRequested
+      ? "stopped"
+      : !anyFailed ? "success" : (stopped || !anySucceeded) ? "failed" : "partial";
+    if (stopRequested) appendLog(id, { type: "stdout", data: "■ Stopped" });
     const summary = `${okCount}/${schedule.steps.length} steps ok`;
     const lastRun: ScheduleRunRef = { at: now.toISOString(), status, durationMs: totalMs, summary };
     const nextRunAt = computeNextRun(schedule.trigger, now);
@@ -51,6 +77,7 @@ export async function runSchedule(id: string, now: Date = new Date()): Promise<S
     return status;
   } finally {
     inFlight.delete(id);
+    controls.delete(id);
   }
 }
 
@@ -61,7 +88,7 @@ export async function tick(now: Date = new Date()): Promise<void> {
   for (const s of schedules) {
     if (!s.enabled) continue;
     if (new Date(s.nextRunAt).getTime() > now.getTime()) continue;
-    try { await runSchedule(s.id, now); } catch { /* engine never crashes on one schedule */ }
+    try { void runSchedule(s.id, now).catch(() => {}); } catch { /* engine never crashes on one schedule */ }
   }
 }
 

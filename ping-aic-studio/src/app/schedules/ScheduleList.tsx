@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import {
   CalendarClock, CircleCheck, Timer, Clock, Sun, CalendarDays, Terminal,
   RefreshCw, Database, GitCommitHorizontal, Play, Pencil, Trash2,
-  ChevronRight, Plus, Loader2, Zap, ChevronDown,
+  ChevronRight, Plus, Loader2, Zap, ChevronDown, Pause, Square,
 } from "lucide-react";
 import type { Schedule, Step, ScheduleRunRef } from "@/lib/scheduler/types";
 import type { Environment } from "@/lib/fr-config";
@@ -57,6 +57,7 @@ function accentColor(s: Schedule): string {
   if (!s.lastRun) return "#818cf8";
   if (s.lastRun.status === "success") return "#34d399";
   if (s.lastRun.status === "failed") return "#fb7185";
+  if (s.lastRun.status === "stopped") return "#94a3b8";
   return "#fbbf24";
 }
 
@@ -64,6 +65,7 @@ function RunStatusPill({ status }: { status: ScheduleRunRef["status"] }) {
   if (status === "success") return <span className="pill-success">{status}</span>;
   if (status === "failed") return <span className="pill-danger">{status}</span>;
   if (status === "partial") return <span className="pill-warning">{status}</span>;
+  if (status === "stopped") return <span className="pill-neutral">stopped</span>;
   return <span className="pill-neutral">{status}</span>;
 }
 
@@ -202,20 +204,6 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
     })();
   }, [schedules]);
 
-  // Auto-open the live log when a schedule transitions into running.
-  useEffect(() => {
-    const runningIds = schedules.filter((s) => s.running).map((s) => s.id);
-    if (runningIds.length === 0) return;
-    setLogOpen((prev) => {
-      let changed = false;
-      const next = { ...prev };
-      for (const id of runningIds) {
-        if (!next[id]) { next[id] = true; changed = true; }
-      }
-      return changed ? next : prev;
-    });
-  }, [schedules]);
-
   // Keep latest schedules/logState in refs so the log-poll interval doesn't
   // need to restart on every render.
   const schedulesRef = useRef(schedules);
@@ -264,6 +252,18 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
     setRunning((p) => ({ ...p, [id]: true }));
     await fetch(`/api/schedules/${id}/run`, { method: "POST" });
     setRunning((p) => ({ ...p, [id]: false }));
+    void reload();
+  };
+  const pauseRun = async (id: string) => {
+    await fetch(`/api/schedules/${id}/pause`, { method: "POST" });
+    void reload();
+  };
+  const resumeRun = async (id: string) => {
+    await fetch(`/api/schedules/${id}/resume`, { method: "POST" });
+    void reload();
+  };
+  const stopRun = async (id: string) => {
+    await fetch(`/api/schedules/${id}/stop`, { method: "POST" });
     void reload();
   };
   const toggle = async (s: Schedule) => {
@@ -343,6 +343,7 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
           {schedules.map((s) => {
             const { Icon: TrigIcon, text: trigText } = triggerInfo(s);
             const isCurrentlyRunning = running[s.id] || s.running;
+            const isPaused = isCurrentlyRunning && !!s.paused;
             const isExpanded = expanded[s.id] ?? false;
             const isLogOpen = logOpen[s.id] ?? false;
             const log = logState[s.id];
@@ -358,10 +359,16 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
                         ? <span className="pill-info"><Zap className="w-[11px] h-[11px]" />Active</span>
                         : <span className="pill-neutral">Paused</span>
                       }
-                      {isCurrentlyRunning && (
+                      {isCurrentlyRunning && !isPaused && (
                         <span className="pill-info">
                           <Loader2 className="w-[11px] h-[11px] animate-spin" />
                           Running…
+                        </span>
+                      )}
+                      {isPaused && (
+                        <span className="pill-warning">
+                          <Pause className="w-[11px] h-[11px]" />
+                          Paused
                         </span>
                       )}
                       {s.steps.length > 1 && (
@@ -369,9 +376,15 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
                       )}
                     </div>
                     {isCurrentlyRunning && (
-                      <div className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-indigo-100">
-                        <div className="h-full w-1/5 rounded-full bg-indigo-500 animate-progress-slide" />
-                      </div>
+                      isPaused ? (
+                        <div className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-amber-100">
+                          <div className="h-full w-full rounded-full bg-amber-400" />
+                        </div>
+                      ) : (
+                        <div className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-indigo-100">
+                          <div className="h-full w-1/5 rounded-full bg-indigo-500 animate-progress-slide" />
+                        </div>
+                      )
                     )}
                     <div className="flex items-center gap-3 mt-1.5 text-[13px] text-slate-500 flex-wrap">
                       <span className="inline-flex items-center gap-1.5">
@@ -385,13 +398,7 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
                         <>
                           <span className="text-slate-300">·</span>
                           <span className="inline-flex items-center gap-1.5">
-                            last{" "}
-                            {s.lastRun.status === "success"
-                              ? <span className="pill-success">{s.lastRun.status}</span>
-                              : s.lastRun.status === "failed"
-                              ? <span className="pill-danger">{s.lastRun.status}</span>
-                              : <span className="pill-warning">{s.lastRun.status}</span>
-                            }
+                            last <RunStatusPill status={s.lastRun.status} />
                           </span>
                         </>
                       )}
@@ -412,14 +419,45 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
                       <button
                         onClick={() => runNow(s.id)}
                         title="Run now"
+                        aria-label="Run now"
                         className="btn-secondary !px-2.5 !py-1.5"
-                        disabled={running[s.id]}
+                        disabled={running[s.id] || isCurrentlyRunning}
                       >
                         {running[s.id]
                           ? <Loader2 className="w-[13px] h-[13px] animate-spin" />
                           : <Play className="w-[13px] h-[13px]" />
                         }
                       </button>
+                      {isCurrentlyRunning && !isPaused && (
+                        <button
+                          onClick={() => pauseRun(s.id)}
+                          title="Pause"
+                          aria-label="Pause"
+                          className="btn-secondary !px-2.5 !py-1.5"
+                        >
+                          <Pause className="w-[13px] h-[13px]" />
+                        </button>
+                      )}
+                      {isCurrentlyRunning && isPaused && (
+                        <button
+                          onClick={() => resumeRun(s.id)}
+                          title="Resume"
+                          aria-label="Resume"
+                          className="btn-secondary !px-2.5 !py-1.5"
+                        >
+                          <Play className="w-[13px] h-[13px]" />
+                        </button>
+                      )}
+                      {isCurrentlyRunning && (
+                        <button
+                          onClick={() => stopRun(s.id)}
+                          title="Stop"
+                          aria-label="Stop"
+                          className="btn-danger-outline !px-2.5 !py-1.5"
+                        >
+                          <Square className="w-[13px] h-[13px]" />
+                        </button>
+                      )}
                       <button
                         onClick={() => setEditing(s)}
                         title="Edit"

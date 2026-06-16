@@ -57,6 +57,44 @@ describe("ScheduleList", () => {
     expect(container.querySelector(".animate-progress-slide")).toBeNull();
   });
 
+  it("shows a Pause control when running and not paused", async () => {
+    mockFetch([{ ...baseSchedule, running: true, paused: false }]);
+    render(<ScheduleList />);
+    await screen.findByText("Nightly backup");
+    expect(screen.getByRole("button", { name: /pause/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /stop/i })).toBeInTheDocument();
+  });
+
+  it("shows Resume + a Paused indicator and a static (non-animated) bar when paused", async () => {
+    mockFetch([{ ...baseSchedule, running: true, paused: true }]);
+    const { container } = render(<ScheduleList />);
+    await screen.findByText("Nightly backup");
+    expect(screen.getByRole("button", { name: /resume/i })).toBeInTheDocument();
+    expect(screen.getByText(/Paused/)).toBeInTheDocument();
+    expect(container.querySelector(".animate-progress-slide")).toBeNull();
+  });
+
+  it("keeps the live log collapsed when a schedule becomes running (no auto-expand)", async () => {
+    mockFetch([{ ...baseSchedule, running: true }]);
+    render(<ScheduleList />);
+    await screen.findByText("Nightly backup");
+    // The LogViewer is only rendered when the disclosure is open. It stays closed.
+    expect(screen.queryByText(/exit code/i)).toBeNull();
+    // Disclosure shows the collapsed chevron (ChevronRight), not the expanded view.
+    expect(screen.getByText("Live log")).toBeInTheDocument();
+  });
+
+  it("renders a 'stopped' status pill in recent runs", async () => {
+    mockFetch([{ ...baseSchedule, recentRuns: [
+      { at: new Date().toISOString(), status: "stopped", durationMs: 500, summary: "1/2 steps ok" },
+    ] }]);
+    render(<ScheduleList />);
+    await screen.findByText("Nightly backup");
+    const disclosureBtn = screen.getByText(/Recent runs \(1\)/);
+    await act(async () => { fireEvent.click(disclosureBtn); });
+    expect(screen.getByText("stopped")).toBeInTheDocument();
+  });
+
   it("shows recent runs when disclosure is expanded", async () => {
     const scheduleWithRuns = {
       ...baseSchedule,

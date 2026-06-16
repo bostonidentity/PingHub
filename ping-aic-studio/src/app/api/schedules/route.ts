@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { listSchedules, createSchedule } from "@/lib/scheduler/store";
-import { runningIds } from "@/lib/scheduler/engine";
+import { runningIds, isPaused } from "@/lib/scheduler/engine";
 import { validateTrigger } from "@/lib/scheduler/cron";
 import type { ScheduleInput } from "@/lib/scheduler/types";
 
@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   const ids = new Set(runningIds());
-  return NextResponse.json(listSchedules().map((s) => ({ ...s, running: ids.has(s.id) })));
+  return NextResponse.json(listSchedules().map((s) => ({ ...s, running: ids.has(s.id), paused: isPaused(s.id) })));
 }
 
 export async function POST(req: Request) {
