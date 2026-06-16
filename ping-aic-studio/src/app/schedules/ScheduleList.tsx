@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
 import type { Schedule } from "@/lib/scheduler/types";
+import { ScheduleEditor } from "./ScheduleEditor";
 
 function triggerSummary(s: Schedule): string {
   const t = s.trigger;
@@ -14,6 +15,7 @@ function triggerSummary(s: Schedule): string {
 export function ScheduleList() {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<null | "new">(null);
 
   const reload = useCallback(async () => {
     try {
@@ -33,6 +35,15 @@ export function ScheduleList() {
 
   return (
     <div className="space-y-2">
+      <div className="flex justify-end">
+        <button onClick={() => setEditing("new")} className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white">New schedule</button>
+      </div>
+      {editing === "new" && (
+        <ScheduleEditor
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); void reload(); }}
+        />
+      )}
       {schedules.length === 0 && <p className="text-muted-foreground">No schedules yet.</p>}
       {schedules.map((s) => (
         <div key={s.id} className="flex items-center justify-between rounded border p-3">
