@@ -209,10 +209,7 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
 
       {schedules.length === 0 ? (
         <div className="border-2 border-dashed border-slate-200 rounded-xl p-12 text-center">
-          <p className="text-slate-500 mb-4">No schedules yet.</p>
-          <button onClick={() => setEditing("new")} className="btn-primary">
-            <Plus className="w-4 h-4" /> New schedule
-          </button>
+          <p className="text-slate-500">No schedules yet — create one with “New schedule” above.</p>
         </div>
       ) : (
         <div className="space-y-3">
