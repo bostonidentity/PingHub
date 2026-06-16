@@ -5,12 +5,29 @@ import { startLog, appendLog, endLog } from "@/lib/scheduler/log-buffer";
 import type { OpEventSink } from "@/lib/operations/types";
 import type { ScheduleRunRef, Step } from "@/lib/scheduler/types";
 
-/** In-memory set of schedule IDs with a run currently in flight. */
-const inFlight = new Set<string>();
-
 /** Pause/resume/stop control for an in-flight run, keyed by schedule id. */
 interface RunControl { paused: boolean; stopRequested: boolean; wake: () => void; }
-const controls = new Map<string, RunControl>();
+
+/**
+ * Process-wide scheduler state.
+ *
+ * In Next.js the scheduler (started from `instrumentation.ts`) and the API route
+ * handlers can evaluate this module as SEPARATE instances within the same Node
+ * process. Module-local singletons would therefore NOT be shared: a timer-fired
+ * run populates the scheduler instance's state, but the API reads the route
+ * instance's — so the run shows no "running" indicator, an empty live log, and
+ * pause/stop become no-ops. Anchoring on globalThis (one per process) shares the
+ * state across instances and also survives dev HMR module reloads.
+ */
+interface SchedulerState {
+  inFlight: Set<string>;
+  controls: Map<string, RunControl>;
+  timer: ReturnType<typeof setInterval> | null;
+}
+const g = globalThis as unknown as { __pinghubScheduler?: SchedulerState };
+const state: SchedulerState = (g.__pinghubScheduler ??= { inFlight: new Set(), controls: new Map(), timer: null });
+const inFlight = state.inFlight;
+const controls = state.controls;
 
 export function pauseSchedule(id: string): void { const c = controls.get(id); if (c) c.paused = true; }
 export function resumeSchedule(id: string): void { const c = controls.get(id); if (c) { c.paused = false; c.wake(); } }
@@ -105,20 +122,19 @@ export function rollForwardSkipped(now: Date = new Date()): void {
   }
 }
 
-let timer: ReturnType<typeof setInterval> | null = null;
 const TICK_MS = 60_000;
 
-/** Start the tick loop. Idempotent. On boot, runs an immediate catch-up tick. */
+/** Start the tick loop. Idempotent (process-wide). On boot, runs an immediate catch-up tick. */
 export function startScheduler(): void {
-  if (timer) return;
+  if (state.timer) return;
   rollForwardSkipped();
   void tick().catch(() => {});
-  timer = setInterval(() => { void tick().catch(() => {}); }, TICK_MS);
-  if (typeof timer.unref === "function") timer.unref();
+  state.timer = setInterval(() => { void tick().catch(() => {}); }, TICK_MS);
+  if (typeof state.timer.unref === "function") state.timer.unref();
 }
 
 export function stopScheduler(): void {
-  if (timer) { clearInterval(timer); timer = null; }
+  if (state.timer) { clearInterval(state.timer); state.timer = null; }
 }
 
 export function isRunning(id: string): boolean { return inFlight.has(id); }

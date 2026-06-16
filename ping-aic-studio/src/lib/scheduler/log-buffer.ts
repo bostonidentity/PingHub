@@ -1,7 +1,13 @@
 import type { OpEvent } from "@/lib/operations/types";
 
 interface Buf { events: OpEvent[]; running: boolean; exitCode: number | null; }
-const buffers = new Map<string, Buf>();
+
+// Anchored on globalThis so the scheduler instance (started from instrumentation)
+// and the API route handlers — which Next.js may load as separate module
+// instances in the same process — share one buffer. See engine.ts for the full
+// rationale. Without this, a timer-fired run's live log is invisible to the API.
+const g = globalThis as unknown as { __pinghubLogBuffers?: Map<string, Buf> };
+const buffers: Map<string, Buf> = (g.__pinghubLogBuffers ??= new Map());
 const MAX = 2000;
 
 /** Begin (or reset) the live log for a schedule run. */
