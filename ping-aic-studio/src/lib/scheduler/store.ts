@@ -56,7 +56,8 @@ export function recordRun(id: string, lastRun: ScheduleRunRef, nextRunAt: string
   const all = readAll();
   const idx = all.findIndex((s) => s.id === id);
   if (idx === -1) return;
-  all[idx] = { ...all[idx], lastRun, nextRunAt };
+  const recentRuns = [lastRun, ...(all[idx].recentRuns ?? [])].slice(0, 20);
+  all[idx] = { ...all[idx], lastRun, recentRuns, nextRunAt };
   writeAll(all);
 }
 

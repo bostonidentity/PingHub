@@ -60,6 +60,18 @@ describe("runSchedule", () => {
     expect(recordRun).toHaveBeenCalledWith("s1", expect.objectContaining({ status: "partial" }), expect.any(String));
   });
 
+  it("records lastRun with summary for a 2-step all-success run", async () => {
+    getSchedule.mockReturnValue({ ...baseSchedule });
+    runStep.mockResolvedValue({ status: "success", summary: "ok", durationMs: 500 });
+    const { runSchedule } = await import("@/lib/scheduler/engine");
+    await runSchedule("s1", new Date("2026-06-16T02:00:05Z"));
+    expect(recordRun).toHaveBeenCalledWith(
+      "s1",
+      expect.objectContaining({ summary: expect.stringContaining("steps ok") }),
+      expect.any(String),
+    );
+  });
+
   it("skips a re-entrant run while one is in flight (overlap lock)", async () => {
     getSchedule.mockReturnValue({ ...baseSchedule, steps: [{ type: "git-push" }] });
     let resolveStep: (v: unknown) => void = () => {};

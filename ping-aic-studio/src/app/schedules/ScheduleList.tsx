@@ -3,9 +3,9 @@ import { useEffect, useState, useCallback } from "react";
 import {
   CalendarClock, CircleCheck, Timer, Clock, Sun, CalendarDays, Terminal,
   RefreshCw, Database, GitCommitHorizontal, Play, Pencil, Trash2,
-  ChevronRight, Plus, Loader2, Zap,
+  ChevronRight, Plus, Loader2, Zap, ChevronDown,
 } from "lucide-react";
-import type { Schedule, Step } from "@/lib/scheduler/types";
+import type { Schedule, Step, ScheduleRunRef } from "@/lib/scheduler/types";
 import type { Environment } from "@/lib/fr-config";
 import { ScheduleEditor } from "./ScheduleEditor";
 
@@ -29,6 +29,17 @@ function timeUntil(iso: string): string {
   return `${h}h ${rem}m`;
 }
 
+function timeAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 60_000) return "just now";
+  const m = Math.floor(diff / 60_000);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
+}
+
 function triggerInfo(s: Schedule): { Icon: React.ComponentType<{ className?: string }>; text: string } {
   const t = s.trigger;
   if (t.kind === "cron") return { Icon: Terminal, text: `cron: ${t.cron}` };
@@ -45,6 +56,13 @@ function accentColor(s: Schedule): string {
   if (s.lastRun.status === "success") return "#34d399";
   if (s.lastRun.status === "failed") return "#fb7185";
   return "#fbbf24";
+}
+
+function RunStatusPill({ status }: { status: ScheduleRunRef["status"] }) {
+  if (status === "success") return <span className="pill-success">{status}</span>;
+  if (status === "failed") return <span className="pill-danger">{status}</span>;
+  if (status === "partial") return <span className="pill-warning">{status}</span>;
+  return <span className="pill-neutral">{status}</span>;
 }
 
 function StepChip({ step, environments }: { step: Step; environments: Environment[] }) {
@@ -111,6 +129,30 @@ function Switch({ checked, onChange }: { checked: boolean; onChange: () => void 
   );
 }
 
+// ── RecentRuns ────────────────────────────────────────────────────────────────
+
+function RecentRunsPanel({ runs }: { runs: ScheduleRunRef[] | undefined }) {
+  if (!runs || runs.length === 0) {
+    return <p className="text-xs text-slate-400 px-4 pb-3">No runs yet.</p>;
+  }
+  return (
+    <div className="px-4 pb-3 space-y-1">
+      {runs.map((run, idx) => (
+        <div key={idx} className="flex items-center gap-2 text-xs text-slate-600">
+          <span className="text-slate-400 w-16 flex-shrink-0">{timeAgo(run.at)}</span>
+          <RunStatusPill status={run.status} />
+          {run.durationMs !== undefined && (
+            <span className="text-slate-400">{Math.round(run.durationMs / 1000)}s</span>
+          )}
+          {run.summary && (
+            <span className="text-slate-500">{run.summary}</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── ScheduleList ──────────────────────────────────────────────────────────────
 
 export function ScheduleList({ environments = [], typesByEnv = {} }: {
@@ -122,6 +164,7 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
   const [editing, setEditing] = useState<null | "new" | Schedule>(null);
   const [running, setRunning] = useState<Record<string, boolean>>({});
   const [runsToday, setRunsToday] = useState(0);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const reload = useCallback(async () => {
     try {
@@ -131,7 +174,14 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   }, []);
 
+  // Initial load
   useEffect(() => { void reload(); }, [reload]);
+
+  // Polling for live running flags and recentRuns
+  useEffect(() => {
+    const id = setInterval(() => { void reload(); }, 3000);
+    return () => clearInterval(id);
+  }, [reload]);
 
   useEffect(() => {
     (async () => {
@@ -161,6 +211,9 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
   const remove = async (id: string) => {
     await fetch(`/api/schedules/${id}`, { method: "DELETE" });
     void reload();
+  };
+  const toggleExpanded = (id: string) => {
+    setExpanded((p) => ({ ...p, [id]: !p[id] }));
   };
 
   const enabled = schedules.filter((s) => s.enabled);
@@ -218,12 +271,15 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
 
       {schedules.length === 0 ? (
         <div className="border-2 border-dashed border-slate-200 rounded-xl p-12 text-center">
-          <p className="text-slate-500">No schedules yet — create one with “New schedule” above.</p>
+          <p className="text-slate-500">No schedules yet — create one with &quot;New schedule&quot; above.</p>
         </div>
       ) : (
         <div className="space-y-3">
           {schedules.map((s) => {
             const { Icon: TrigIcon, text: trigText } = triggerInfo(s);
+            const isCurrentlyRunning = running[s.id] || s.running;
+            const isExpanded = expanded[s.id] ?? false;
+            const runCount = s.recentRuns?.length ?? 0;
             return (
               <div key={s.id} className={`card overflow-hidden ${!s.enabled ? "opacity-70" : ""}`} style={{ borderLeft: `3px solid ${accentColor(s)}` }}>
                 <div className="flex">
@@ -235,6 +291,12 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
                         ? <span className="pill-info"><Zap className="w-[11px] h-[11px]" />Active</span>
                         : <span className="pill-neutral">Paused</span>
                       }
+                      {isCurrentlyRunning && (
+                        <span className="pill-info">
+                          <Loader2 className="w-[11px] h-[11px] animate-spin" />
+                          Running…
+                        </span>
+                      )}
                       {s.steps.length > 1 && (
                         <span className="pill-neutral">{s.steps.length}-step pipeline</span>
                       )}
@@ -302,6 +364,21 @@ export function ScheduleList({ environments = [], typesByEnv = {} }: {
                       </button>
                     </div>
                   </div>
+                </div>
+                {/* Recent runs disclosure */}
+                <div className="border-t border-slate-100">
+                  <button
+                    onClick={() => toggleExpanded(s.id)}
+                    className="flex items-center gap-1.5 w-full px-4 py-2 text-xs text-slate-500 hover:text-slate-700 hover:bg-slate-50/60 transition-colors text-left"
+                  >
+                    <ChevronDown
+                      className={`w-[13px] h-[13px] transition-transform duration-150 ${isExpanded ? "rotate-180" : ""}`}
+                    />
+                    Recent runs ({runCount})
+                  </button>
+                  {isExpanded && (
+                    <RecentRunsPanel runs={s.recentRuns} />
+                  )}
                 </div>
               </div>
             );

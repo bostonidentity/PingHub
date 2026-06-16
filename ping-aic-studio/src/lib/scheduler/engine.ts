@@ -18,17 +18,22 @@ export async function runSchedule(id: string, now: Date = new Date()): Promise<S
     let anyFailed = false;
     let anySucceeded = false;
     let stopped = false;
+    let totalMs = 0;
+    let okCount = 0;
     for (const step of schedule.steps) {
       const result = await runStep(step, id, NOOP_SINK);
+      totalMs += result.durationMs ?? 0;
       if (result.status === "failed") {
         anyFailed = true;
         if (schedule.onError === "stop") { stopped = true; break; }
       } else {
         anySucceeded = true;
+        okCount++;
       }
     }
     const status: ScheduleRunRef["status"] = !anyFailed ? "success" : (stopped || !anySucceeded) ? "failed" : "partial";
-    const lastRun: ScheduleRunRef = { at: now.toISOString(), status };
+    const summary = `${okCount}/${schedule.steps.length} steps ok`;
+    const lastRun: ScheduleRunRef = { at: now.toISOString(), status, durationMs: totalMs, summary };
     const nextRunAt = computeNextRun(schedule.trigger, now);
     recordRun(id, lastRun, nextRunAt);
     return status;
@@ -76,3 +81,6 @@ export function startScheduler(): void {
 export function stopScheduler(): void {
   if (timer) { clearInterval(timer); timer = null; }
 }
+
+export function isRunning(id: string): boolean { return inFlight.has(id); }
+export function runningIds(): string[] { return [...inFlight]; }

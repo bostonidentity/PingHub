@@ -22,6 +22,8 @@ export interface ScheduleRunRef {
   at: string;
   status: "success" | "failed" | "partial" | "skipped-overlap";
   runId?: string;
+  durationMs?: number;   // total wall time of the run
+  summary?: string;      // e.g. "3/3 steps ok"
 }
 
 export interface Schedule {
@@ -36,6 +38,8 @@ export interface Schedule {
   nextRunAt: string;   // ISO
   createdAt: string;
   updatedAt: string;
+  recentRuns?: ScheduleRunRef[];   // most-recent first, capped at 20 (persisted)
+  running?: boolean;               // TRANSIENT — attached by the API from the engine, never persisted
 }
 
 /** Fields a client may send when creating/updating; server fills the rest. */
