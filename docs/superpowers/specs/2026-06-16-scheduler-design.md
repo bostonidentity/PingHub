@@ -48,8 +48,14 @@ to the browser:
 | Operation | Route | Core logic location |
 |-----------|-------|---------------------|
 | Sync (config pull) | `src/app/api/pull/route.ts` | inline in POST handler |
-| Pull data | `src/app/api/data/pull/route.ts` | `src/lib/data/job-registry.ts` |
-| Git push | `src/app/api/push/route.ts` | `src/lib/git.ts` |
+| Pull data | `src/app/api/data/pull/route.ts` | `src/lib/data/pull-runner.ts` + `src/lib/data/job-registry.ts` |
+| Git commit & push | `src/app/api/git/push/route.ts` | `runGit`/`runGitStream` in `src/lib/git-settings.ts` |
+
+> **Important distinction:** `/api/git/push` (git add/commit/push to the configured
+> git **remote**) is the target for task 3 — *not* `/api/push`, which pushes config
+> **to the AIC tenant** and is unrelated to this feature. The environments directory
+> is a **single git repo** shared by all environments, so git-push is a **whole-repo**
+> operation, not per-environment.
 
 Persistence patterns already in use:
 - `environments.json` — environment definitions (JSON file in `ENVIRONMENTS_DIR`).
@@ -68,11 +74,18 @@ writes an op-log entry, with **no dependency on a `Request`/`Response`**:
 
 ```
 src/lib/operations/
-  run-sync.ts       export async function runSync(opts): Promise<OpResult>
-  run-data-pull.ts  export async function runDataPull(opts): Promise<OpResult>
-  run-git-push.ts   export async function runGitPush(opts): Promise<OpResult>
-  types.ts          OpResult, OpLogSink, etc.
+  run-sync.ts       export async function runSync(opts): Promise<OpResult>   // wraps pull route logic
+  run-data-pull.ts  export async function runDataPull(opts): Promise<OpResult>// wraps data/pull job kickoff
+  run-git-push.ts   export async function runGitPush(opts): Promise<OpResult>// wraps git/push (whole repo)
+  types.ts          OpResult, OpEvent sink, etc.
 ```
+
+Each existing runner (`spawnFrConfig`/`spawnFrodo`/`runIgaApi`) already returns a
+`{ stream }`. The cores accept an `onEvent(evt)` callback: the **API routes** pass a
+callback that enqueues each event into their `ReadableStream` (preserving the exact
+browser-facing JSONL contract), while the **scheduler** passes a callback that
+ignores/buffers events. The core consumes the merged stream to completion, performs
+the post-step git commit + op-log write, and returns `OpResult`.
 
 - The **existing API routes** are refactored to call these cores and adapt the
   emitted log events into their current JSONL stream (no change to the
@@ -103,7 +116,8 @@ type StepType = 'sync' | 'pull-data' | 'git-push';
 
 interface SyncStep      { type: 'sync';      environment: string; scopes: ConfigScope[]; }
 interface PullDataStep  { type: 'pull-data'; environment: string; managedObjects: string[]; }
-interface GitPushStep   { type: 'git-push';  environment: string; message?: string; }
+// git-push is whole-repo (the environments dir is one shared repo), so no environment field.
+interface GitPushStep   { type: 'git-push';  message?: string; force?: boolean; }
 type Step = SyncStep | PullDataStep | GitPushStep;
 
 interface Trigger {
