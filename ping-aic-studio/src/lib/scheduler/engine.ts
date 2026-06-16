@@ -1,4 +1,4 @@
-import { getSchedule, recordRun } from "@/lib/scheduler/store";
+import { getSchedule, listSchedules, recordRun } from "@/lib/scheduler/store";
 import { runStep } from "@/lib/scheduler/run-step";
 import { computeNextRun } from "@/lib/scheduler/cron";
 import { NOOP_SINK } from "@/lib/operations/types";
@@ -32,4 +32,30 @@ export async function runSchedule(id: string, now: Date = new Date()): Promise<S
   } finally {
     inFlight.delete(id);
   }
+}
+
+/** Fire every enabled schedule whose nextRunAt <= now. */
+export async function tick(now: Date = new Date()): Promise<void> {
+  let schedules;
+  try { schedules = listSchedules(); } catch { return; }
+  for (const s of schedules) {
+    if (!s.enabled) continue;
+    if (new Date(s.nextRunAt).getTime() > now.getTime()) continue;
+    try { await runSchedule(s.id, now); } catch { /* engine never crashes on one schedule */ }
+  }
+}
+
+let timer: ReturnType<typeof setInterval> | null = null;
+const TICK_MS = 60_000;
+
+/** Start the tick loop. Idempotent. On boot, runs an immediate catch-up tick. */
+export function startScheduler(): void {
+  if (timer) return;
+  void tick().catch(() => {});
+  timer = setInterval(() => { void tick().catch(() => {}); }, TICK_MS);
+  if (typeof timer.unref === "function") timer.unref();
+}
+
+export function stopScheduler(): void {
+  if (timer) { clearInterval(timer); timer = null; }
 }
