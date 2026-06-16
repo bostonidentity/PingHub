@@ -122,7 +122,10 @@ export function rollForwardSkipped(now: Date = new Date()): void {
   }
 }
 
-const TICK_MS = 60_000;
+// Poll frequently so a due schedule starts within a few seconds of its scheduled
+// minute. Cron is minute-resolution, and recordRun advances nextRunAt immediately
+// (with the in-flight lock preventing re-fire), so a short interval can't double-fire.
+const TICK_MS = 5_000;
 
 /** Start the tick loop. Idempotent (process-wide). On boot, runs an immediate catch-up tick. */
 export function startScheduler(): void {
