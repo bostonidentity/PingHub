@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Logs: Text time range keeps milliseconds.** A pasted timestamp such as `2026-11-14T12:36:22.039Z` is now sent to AIC exactly, instead of being rounded to the second (start down, end up), which pulled in other entries from the same seconds.
+
 ## [0.5.0] - 2026-10-13
 
 ### Added
