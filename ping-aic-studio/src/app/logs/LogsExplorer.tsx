@@ -182,18 +182,20 @@ function computeNowrapScrollCap(clientH: number): number {
 
 
 
-function toDatetimeLocal(iso: string, tz: TzMode = "local"): string {
+/** `keepMs` appends non-zero milliseconds (`.fff`), which datetime-local values allow. */
+function toDatetimeLocal(iso: string, tz: TzMode = "local", keepMs = false): string {
   const d = new Date(iso);
   const pad = (n: number) => String(n).padStart(2, "0");
+  const ms = keepMs && d.getMilliseconds() ? `.${String(d.getMilliseconds()).padStart(3, "0")}` : "";
   if (tz === "epoch") {
     // datetime-local input can't show epoch; fall back to UTC representation
-    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}${ms}`;
   }
   if (tz === "utc") {
-    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}${ms}`;
   }
   // local
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}${ms}`;
 }
 
 function fromDatetimeLocal(val: string, tz: TzMode = "local"): string {
@@ -1804,13 +1806,11 @@ function FilterBuilderBar({
  * doesn't parse, so Search reports the range as incomplete. Keyed by mode so
  * the text draft restarts from `value` on each switch.
  */
-function CustomTimeInput({ mode, value, onChange, tz, round, invalid, disabled }: {
+function CustomTimeInput({ mode, value, onChange, tz, invalid, disabled }: {
   mode: "pick" | "text";
   value: string;
   onChange: (v: string) => void;
   tz: TzMode;
-  /** floor for the range start, ceil for the end, so a pasted entry stays in range. */
-  round: "floor" | "ceil";
   invalid: boolean;
   disabled: boolean;
 }) {
@@ -1831,8 +1831,8 @@ function CustomTimeInput({ mode, value, onChange, tz, round, invalid, disabled }
       value={draft}
       onChange={(e) => {
         setDraft(e.target.value);
-        const d = parsePastedTimestamp(e.target.value, tz === "local" ? "local" : "utc", round);
-        onChange(d ? toDatetimeLocal(d.toISOString(), tz) : "");
+        const d = parsePastedTimestamp(e.target.value, tz === "local" ? "local" : "utc");
+        onChange(d ? toDatetimeLocal(d.toISOString(), tz, true) : "");
       }}
       placeholder="2026-10-13T02:08:30.383Z"
       title={draftInvalid
@@ -3229,7 +3229,6 @@ export function LogsExplorer({
                         value={customBegin}
                         onChange={(v) => onConfigChange({ customBegin: v })}
                         tz={tz}
-                        round="floor"
                         invalid={customRangeInvalid}
                         disabled={searching}
                       />
@@ -3240,7 +3239,6 @@ export function LogsExplorer({
                         value={customEnd}
                         onChange={(v) => onConfigChange({ customEnd: v })}
                         tz={tz}
-                        round="ceil"
                         invalid={customRangeInvalid}
                         disabled={searching}
                       />
